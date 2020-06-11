@@ -8,7 +8,7 @@ from typing import Optional
 import jwt
 import requests
 from django.conf import settings
-from django.core import cache
+from django.core.cache import cache
 from django.http import HttpResponseRedirect
 from jwt.algorithms import RSAAlgorithm
 
