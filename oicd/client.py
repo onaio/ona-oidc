@@ -6,12 +6,13 @@ import secrets
 from typing import Optional
 
 import jwt
-import oicd.settings as default
 import requests
 from django.conf import settings
 from django.core.cache import cache
 from django.http import HttpResponseRedirect
 from jwt.algorithms import RSAAlgorithm
+
+import oicd.settings as default
 
 config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
 default_config = getattr(default, "OPENID_CONNECT_AUTH_SERVERS", {})["default"]
