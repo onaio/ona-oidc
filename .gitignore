@@ -1,0 +1,6 @@
+# Code Editor
+.vscode/
+
+# Python files
+*.egg-info/
+__pycache__/
