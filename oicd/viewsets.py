@@ -16,13 +16,22 @@ from .client import OpenIDClient
 config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 
 
+def _import_classes(class_list: list) -> list:
+    final_class_list = []
+    for klass in class_list:
+        module = __import__(klass.rsplit(".", 1)[0])
+        kls = getattr(module, klass.rsplit(".", 1)[1])
+        final_class_list.append(kls)
+    return final_class_list
+
+
 class OpenIDConnectViewset(viewsets.ViewSet):
     """
     OpenIDConnectViewSet: Handles OpenID connect authentication.
     """
 
-    permission_classes = config["PERMISSION_CLASSES"]
-    authentication_classes = config["PERMISSION_CLASSES"]
+    permission_classes = _import_classes(config["PERMISSION_CLASSES"])
+    authentication_classes = _import_classes(config["AUTHENTICATION_CLASSES"])
 
     def _get_client(self, auth_server: str) -> Optional[OpenIDClient]:
         if auth_server in config:
