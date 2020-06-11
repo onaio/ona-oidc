@@ -10,7 +10,7 @@ import requests
 from django.conf import settings
 from django.core import cache
 from django.http import HttpResponseRedirect
-from jwt.contrib.algorithms.pycrypto import RSAAlgorithm
+from jwt.algorithms import RSAAlgorithm
 
 config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
 
