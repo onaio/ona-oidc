@@ -13,10 +13,7 @@ isort = "*"
 [packages]
 e1839a8 = {editable = true,path = "."}
 setuptools = "*"
-django = "==2.2"
 ona-oicd = {editable = true,path = "."}
-requests = "*"
-pyjwt = {extras = ["crypto"],version = "*"}
 
 [requires]
 python_version = "3.7"

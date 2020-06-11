@@ -14,6 +14,8 @@ setup(
     install_requires=[
         "Django >= 2.2",
         "djangorestframework >= 3.9",
+        "pyjwt[crypto]",
+        "requests"
     ],
     classifiers=[
         "Programming Language :: Python",
