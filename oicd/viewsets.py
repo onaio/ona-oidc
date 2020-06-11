@@ -60,16 +60,21 @@ class OpenIDConnectViewset(viewsets.ViewSet):
                 user = user_model.objects.get(email=email)
                 user_data = request.POST.get("user_data") or decoded_token
                 if config["USER_CREATION_CLAIMS"] in user_data and not user:
-                    email = user_data.pop("email")
                     user_default = {
                         config["MAP_CLAIM_TO_MODEL"].get("k"): v
                         for k, v in user_data.items()
                         if k in config["USER_CREATION_CLAIMS"]
                     }
-                    user = user_model.objects.get_or_create(
-                        email=email,
-                        defaults=user_default,
-                    )
+                    if (
+                        not user_model.object.filter(
+                            username=user_default.get("username")
+                        ).count()
+                        > 0
+                    ):
+                        user = user_model.objects.create(user_default)
+                    user_data[
+                        "error"
+                    ] = f"Username \"{user_default.get('username')}\" is not available"
 
                 if user:
                     login(request, user)
@@ -88,8 +93,12 @@ class OpenIDConnectViewset(viewsets.ViewSet):
                         )
                     return response
                 else:
+                    claims = config["USER_CREATION_CLAIMS"]
+                    if "email" not in claims:
+                        claims.append("email")
+                    existing_data = {k: v for k, v in user_data if k in claims}
                     return Response(
-                        user_data, template_name="oidc_user_data_entry.html"
+                        existing_data, template_name="oidc_user_data_entry.html"
                     )
         return Response(
             "Unable to process OpenID connect authentication request.",
