@@ -9,6 +9,7 @@ black = "==19.10b0"
 flake8 = "*"
 mypy = "*"
 isort = "*"
+pre-commit = "*"
 
 [packages]
 e1839a8 = {editable = true,path = "."}
