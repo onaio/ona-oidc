@@ -10,6 +10,7 @@ flake8 = "*"
 mypy = "*"
 isort = "*"
 pre-commit = "*"
+mock = "*"
 
 [packages]
 e1839a8 = {editable = true,path = "."}
