@@ -8,7 +8,7 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
         "email": "email",
         "given_name": "first_name",
         "family_name": "last_name",
-        "username": "username"
+        "username": "username",
     },
     "SSO_COOKIE_DATA": "email",
     "JWT_ALGORITHM": "HS256",

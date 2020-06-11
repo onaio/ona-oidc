@@ -15,13 +15,13 @@ setup(
         "Django >= 2.2",
         "djangorestframework >= 3.9",
         "pyjwt[crypto]",
-        "requests"
+        "requests",
     ],
     classifiers=[
         "Programming Language :: Python",
         "Programming Language :: Python :: 3.6",
         "Framework :: Django",
         "Framework :: Django :: 2.2",
-        "Framework :: Django :: 3.0"
-    ]
+        "Framework :: Django :: 3.0",
+    ],
 )
