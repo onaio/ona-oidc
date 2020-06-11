@@ -7,10 +7,14 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     "MAP_CLAIM_TO_MODEL": {
         "email": "email",
         "given_name": "first_name",
-        "family_name": "last_name"
+        "family_name": "last_name",
     },
     "SSO_COOKIE_DATA": "email",
     "JWT_ALGORITHM": "HS256",
+    "RENDERER_CLASSES": [
+        "rest_framework.renderers.JSONRenderer",
+        "rest_framework.renderers.TemplateHTMLRenderer",
+    ],
 }
 
 OPENID_CONNECT_AUTH_SERVERS = {
@@ -18,6 +22,6 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "SCOPE": "openid",
         "RESPONSE_TYPE": "id_token",
         "RESPONSE_MODE": "form_post",
-        "USE_NONCES": True
+        "USE_NONCES": True,
     }
 }

@@ -34,6 +34,9 @@ class OpenIDConnectViewset(viewsets.ViewSet):
 
     permission_classes = _import_classes(config.get("PERMISSION_CLASSES", []))
     authentication_classes = _import_classes(config.get("AUTHENTICATION_CLASSES", []))
+    renderer_classes = _import_classes(
+        config.get("RENDERER_CLASSES", default_config["RENDERER_CLASSES"])
+    )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
