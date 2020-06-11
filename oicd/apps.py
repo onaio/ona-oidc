@@ -13,14 +13,3 @@ class OICDConfig(AppConfig):
     name = "oicd"
     app_label = "oicd"
     verbose_name = _("OpenID Connect")
-
-    def ready(self):
-        """
-        Setup ona-oicd default settings
-        """
-        from django.conf import settings
-        import oicd.settings as defaults
-
-        for name in dir(defaults):
-            if name.isupper() and not hasattr(settings, name):
-                setattr(settings, name, getattr(defaults, name))

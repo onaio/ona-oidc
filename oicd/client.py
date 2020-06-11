@@ -12,7 +12,10 @@ from django.core import cache
 from django.http import HttpResponseRedirect
 from jwt.algorithms import RSAAlgorithm
 
+import oicd.settings as default
+
 config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
+default_config = getattr(default, "OPENID_CONNECT_AUTH_SERVERS", {})["default"]
 
 
 class OpenIDClient:
@@ -25,17 +28,22 @@ class OpenIDClient:
         Initializes an OpenID Connect Client object
         """
         self.auth_server = auth_server
-        self.authorization_endpoint = config[auth_server]["AUTHORIZATION_ENDPOINT"]
-        self.client_id = config[auth_server]["CLIENT_ID"]
-        self.client_secret = config[auth_server]["CLIENT_SECRET"]
-        self.jwks_endpoint = config[auth_server]["JWKS_ENDPOINT"]
-        self.scope = config[auth_server]["SCOPE"]
-        self.token_endpoint = config[auth_server]["TOKEN_ENDPOINT"]
-        self.end_session_endpoint = config[auth_server]["END_SESSION_ENDPOINT"]
-        self.redirect_uri = config[auth_server]["REDIRECT_URI"]
-        self.response_type = config[auth_server]["RESPONSE_TYPE"]
-        self.response_mode = config[auth_server]["RESPONSE_MODE"]
-        self.cache_nonces = config[auth_server]["USE_NONCES"]
+        self.authorization_endpoint = config[auth_server].get("AUTHORIZATION_ENDPOINT")
+        self.client_id = config[auth_server].get("CLIENT_ID")
+        self.jwks_endpoint = config[auth_server].get("JWKS_ENDPOINT")
+        self.scope = config[auth_server].get("SCOPE") or default_config["SCOPE"]
+        self.token_endpoint = config[auth_server].get("TOKEN_ENDPOINT")
+        self.end_session_endpoint = config[auth_server].get("END_SESSION_ENDPOINT")
+        self.redirect_uri = config[auth_server].get("REDIRECT_URI")
+        self.response_type = (
+            config[auth_server].get("RESPONSE_TYPE") or default_config["RESPONSE_TYPE"]
+        )
+        self.response_mode = (
+            config[auth_server].get("RESPONSE_MODE") or default_config["RESPONSE_MODE"]
+        )
+        self.cache_nonces = (
+            config[auth_server].get("USE_NONCES") or default_config["USE_NONCES"]
+        )
 
     def _retrieve_jwks_related_to_kid(self, kid: str) -> Optional[str]:
         """

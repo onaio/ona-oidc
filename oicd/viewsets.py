@@ -11,9 +11,11 @@ from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.decorators import action
 
-from .client import OpenIDClient
+from oicd.client import OpenIDClient
+import oicd.settings as default
 
 config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
+default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 
 
 def _import_classes(class_list: list) -> list:
@@ -30,8 +32,27 @@ class OpenIDConnectViewset(viewsets.ViewSet):
     OpenIDConnectViewSet: Handles OpenID connect authentication.
     """
 
-    permission_classes = _import_classes(config["PERMISSION_CLASSES"])
-    authentication_classes = _import_classes(config["AUTHENTICATION_CLASSES"])
+    permission_classes = _import_classes(config.get("PERMISSION_CLASSES", []))
+    authentication_classes = _import_classes(config.get("AUTHENTICATION_CLASSES", []))
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.jwt = config.get("JWT_SECRET_KEY", "")
+        self.user_creation_claims = (
+            config.get("USER_CREATION_CLAIMS") or default_config["USER_CREATION_CLAIMS"]
+        )
+        self.map_claim_to_model = (
+            config.get("MAP_CLAIM_TO_MODEL") or default_config["MAP_CLAIM_TO_MODEL"]
+        )
+        self.use_sso = config.get("USE_SSO_COOKIE", False)
+        self.sso_cookie = (
+            config.get("SSO_COOKIE_DATA") or default_config["SSO_COOKIE_DATA"]
+        )
+        self.jwt_algorithm = (
+            config.get("JWT_ALGORITHM") or default_config["JWT_ALGORITHM"]
+        )
+        self.cookie_max_age = config.get("SSO_COOKIE_MAX_AGE")
+        self.cookie_domain = config.get("SSO_COOKIE_DOMAIN", "localhost")
 
     def _get_client(self, auth_server: str) -> Optional[OpenIDClient]:
         if auth_server in config:
@@ -68,11 +89,11 @@ class OpenIDConnectViewset(viewsets.ViewSet):
                 user_model = get_user_model()
                 user = user_model.objects.get(email=email)
                 user_data = request.POST.get("user_data") or decoded_token
-                if config["USER_CREATION_CLAIMS"] in user_data and not user:
+                if self.user_creation_claims in user_data and not user:
                     user_default = {
-                        config["MAP_CLAIM_TO_MODEL"].get("k"): v
+                        self.map_claim_to_model.get("k"): v
                         for k, v in user_data.items()
-                        if k in config["USER_CREATION_CLAIMS"]
+                        if k in self.user_creation_claims
                     }
                     if (
                         not user_model.object.filter(
@@ -87,25 +108,24 @@ class OpenIDConnectViewset(viewsets.ViewSet):
 
                 if user:
                     login(request, user)
-                    response = HttpResponseRedirect(config["REDIRECT_AFTER_AUTH"])
-                    if config["USE_SSO_COOKIE"]:
+                    response = HttpResponseRedirect(config.get("REDIRECT_AFTER_AUTH"))
+                    if self.use_sso:
                         sso_cookie = jwt.encode(
-                            getattr(user, config["SSO_COOKIE_DATA"], "email"),
-                            config["JWT_SECRET_KEY"],
-                            config["JWT_ALGORITHM"],
+                            getattr(user, self.sso_cookie, "email"),
+                            config.get("JWT_SECRET_KEY"),
+                            config.get("JWT_ALGORITHM"),
                         )
                         response.set_cookie(
                             "SSO",
                             value=sso_cookie.decode("utf-8"),
-                            max_age=config["SSO_COOKIE_MAX_AGE"],
-                            domain=config["SSO_COOKIE_DOMAIN"],
+                            max_age=self.cookie_max_age,
+                            domain=self.cookie_domain,
                         )
                     return response
                 else:
-                    claims = config["USER_CREATION_CLAIMS"]
-                    if "email" not in claims:
-                        claims.append("email")
-                    existing_data = {k: v for k, v in user_data if k in claims}
+                    existing_data = {
+                        k: v for k, v in user_data if k in self.user_creation_claims
+                    }
                     return Response(
                         existing_data, template_name="oidc_user_data_entry.html"
                     )
