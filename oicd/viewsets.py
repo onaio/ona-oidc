@@ -132,8 +132,7 @@ class OpenIDConnectViewset(viewsets.ViewSet):
                         if k in self.user_creation_claims or k == "error"
                     }
                     return Response(
-                        existing_data,
-                        template_name=config.get("OIDC_DATA_ENTRY_TEMPLATE"),
+                        existing_data, template_name="oicd/oidc_user_data_entry.html",
                     )
         return Response(
             "Unable to process OpenID connect authentication request.",

@@ -19,7 +19,7 @@ class TestOpenIDConnectViewset(TestCase):
     def test_returns_data_entry_template_on_missing_creation_claim(self):
         """
         Test that users are redirected to the data entry
-        page when the user creation claims are empty
+        page when missing a required user creation claim
         """
         view = OpenIDConnectViewset.as_view({"post": "callback"})
         with patch(
@@ -35,3 +35,4 @@ class TestOpenIDConnectViewset(TestCase):
             request = self.factory.post("/", data=data)
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.template_name, "oicd/oidc_user_data_entry.html")
