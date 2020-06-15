@@ -6,7 +6,7 @@ from django.test import TestCase
 from mock import patch
 from rest_framework.test import APIRequestFactory
 
-from oicd.viewsets import OpenIDConnectViewset
+from oidc.viewsets import OpenIDConnectViewset
 
 User = get_user_model()
 
@@ -27,7 +27,7 @@ class TestOpenIDConnectViewset(TestCase):
         """
         view = OpenIDConnectViewset.as_view({"post": "callback"})
         with patch(
-            "oicd.viewsets.OpenIDClient.verify_and_decode_id_token"
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
         ) as mock_func:
             mock_func.return_value = {
                 "family_name": "bob",
@@ -39,7 +39,7 @@ class TestOpenIDConnectViewset(TestCase):
             request = self.factory.post("/", data=data)
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.template_name, "oicd/oidc_user_data_entry.html")
+            self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
 
     def test_create_non_existing_user(self):
         """
@@ -48,7 +48,7 @@ class TestOpenIDConnectViewset(TestCase):
         """
         view = OpenIDConnectViewset.as_view({"post": "callback"})
         with patch(
-            "oicd.viewsets.OpenIDClient.verify_and_decode_id_token"
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
         ) as mock_func:
             mock_func.return_value = {
                 "given_name": "john",
@@ -106,7 +106,7 @@ class TestOpenIDConnectViewset(TestCase):
         """
         view = OpenIDConnectViewset.as_view({"post": "callback"})
         with patch(
-            "oicd.viewsets.OpenIDClient.verify_and_decode_id_token"
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
         ) as mock_func:
             mock_func.return_value = {
                 "given_name": "john",

@@ -1,4 +1,4 @@
-# ona-oicd [![Build Status](https://travis-ci.org/onaio/ona-oicd.svg?branch=master)](https://travis-ci.org/onaio/ona-oicd)
+# Ona OpenID Connect Client [![Build Status](https://travis-ci.org/onaio/ona-oidc.svg?branch=master)](https://travis-ci.org/onaio/ona-oidc)
 
 A pluggable django application that implements OpenID Connect client functionalities.
 
@@ -7,17 +7,17 @@ A pluggable django application that implements OpenID Connect client functionali
 1. Install package using pip:
 
 ```sh
-$ pip install -e git+https://github.com/onaio/ona-oicd.git#egg=ona-oicd
+$ pip install -e git+https://github.com/onaio/ona-oidc.git#egg=ona-oidc
 ```
 
-2. Add `oicd` to the list of `INSTALLED_APPS`
+2. Add `oidc` to the list of `INSTALLED_APPS`
 
 ```python
 ...
 
 INSTALLED_APPS = [
     ...,
-    "oicd",
+    "oidc",
     ...,
 ]
 
@@ -59,18 +59,19 @@ OPENID_CONNECT_AUTH_SERVERS = {
 
 ```
 
-4. (Optional) If you'd like to use the default OpenID Connect Viewset register the urls located in `oicd.urls`.
+4. (Optional) If you'd like to use the default OpenID Connect Viewset register the urls located in `oidc.urls`.
 
 ```python
 # urls.py file
 
 ...
-from oicd.urls import urlpatterns as oicd_urls
+from django.conf.urls import include, url
 
 urlpatterns = [
-    ...
+    ...,
+    url(r"^", include("oidc.urls")),
+    ...,
 ]
-urlpatterns += oicd_urls
 ...
 
 ```
