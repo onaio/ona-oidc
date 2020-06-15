@@ -18,6 +18,11 @@ matrix:
           env: TOXENV=py38-django30
         - python: 3.6
           env: TOXENV=lint
+addons:
+  apt:
+    packages:
+      - gdal-bin
+      - libgdal-dev
 install:
     - pip install tox
 script: tox
