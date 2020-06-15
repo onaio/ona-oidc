@@ -1,5 +1,5 @@
 """
-Client module for the OICD app
+Client module for the oidc app
 """
 import json
 import secrets
@@ -12,7 +12,7 @@ from django.core.cache import cache
 from django.http import HttpResponseRedirect
 from jwt.algorithms import RSAAlgorithm
 
-import oicd.settings as default
+import oidc.settings as default
 
 config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
 default_config = getattr(default, "OPENID_CONNECT_AUTH_SERVERS", {})["default"]

@@ -15,11 +15,8 @@ tox = "*"
 
 [packages]
 e1839a8 = {editable = true,path = "."}
-setuptools = "*"
-ona-oicd = {editable = true,path = "."}
+ona-oidc = {editable = true,path = "."}
 
 [requires]
 python_version = "3.7"
 
-[pipenv]
-allow_prereleases = true

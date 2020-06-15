@@ -1,15 +1,15 @@
 """
-Application Module for oicd app
+Application Module for oidc app
 """
 from django.apps import AppConfig
 from django.utils.translation import ugettext_lazy as _
 
 
-class OICDConfig(AppConfig):
+class oidcConfig(AppConfig):
     """
-    OICD Config Class
+    oidc Config Class
     """
 
-    name = "oicd"
-    app_label = "oicd"
+    name = "oidc"
+    app_label = "oidc"
     verbose_name = _("OpenID Connect")

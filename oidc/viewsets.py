@@ -1,5 +1,5 @@
 """
-OICD Viewsets module
+oidc Viewsets module
 """
 from typing import Optional
 
@@ -7,16 +7,21 @@ import jwt
 from django.conf import settings
 from django.contrib.auth import get_user_model, login
 from django.db.models import QuerySet
-from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
+from django.http import (
+    HttpRequest,
+    HttpResponse,
+    HttpResponseBadRequest,
+    HttpResponseRedirect,
+)
 from django.utils.translation import ugettext as _
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.renderers import JSONRenderer, TemplateHTMLRenderer
 from rest_framework.response import Response
 
-import oicd.settings as default
-from oicd.client import OpenIDClient
-from oicd.client import config as auth_config
+import oidc.settings as default
+from oidc.client import OpenIDClient
+from oidc.client import config as auth_config
 
 config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
@@ -62,18 +67,16 @@ class OpenIDConnectViewset(viewsets.ViewSet):
     def login(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         if self._get_client(**kwargs):
             return self._get_client(**kwargs).login()
-        return Response(
+        return HttpResponseBadRequest(
             _("Unable to process OpenID connect login request."),
-            status=status.HTTP_400_BAD_REQUEST,
         )
 
     @action(methods=["GET"], detail=False)
     def logout(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         if self._get_client(**kwargs):
             return self._get_client(**kwargs).logout()
-        return Response(
+        return HttpResponseBadRequest(
             _("Unable to process OpenID connect logout request."),
-            status=status.HTTP_400_BAD_REQUEST,
         )
 
     @action(methods=["POST"], detail=False)
@@ -150,9 +153,8 @@ class OpenIDConnectViewset(viewsets.ViewSet):
                     }
                     return Response(
                         {"existing_data": existing_data},
-                        template_name="oicd/oidc_user_data_entry.html",
+                        template_name="oidc/oidc_user_data_entry.html",
                     )
-        return Response(
+        return HttpResponseBadRequest(
             _("Unable to process OpenID connect authentication request."),
-            status=status.HTTP_400_BAD_REQUEST,
         )

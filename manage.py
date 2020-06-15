@@ -1,5 +1,5 @@
 """
-ona-oicd manage.py file, used for testing
+ona-oidc manage.py file, used for testing
 """
 import os
 

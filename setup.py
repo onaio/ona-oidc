@@ -1,11 +1,11 @@
 """
-Setup file for ona-oicd
+Setup file for ona-oidc
 """
 from setuptools import find_packages, setup
 
 setup(
-    name="ona-oicd",
-    version=__import__("oicd").__version__,
+    name="ona-oidc",
+    version=__import__("oidc").__version__,
     description="A Django app that adds OpenID connect client functionality.",
     license="",
     author="Ona Kenya",

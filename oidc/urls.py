@@ -1,10 +1,11 @@
 """
-URL Configuration file for ona-oicd
+URL Configuration file for ona-oidc
 """
 from django.urls import re_path
 
-from oicd.viewsets import OpenIDConnectViewset
+from oidc.viewsets import OpenIDConnectViewset
 
+app_name = "oidc"
 urlpatterns = [
     re_path(
         r"^oidc/(?P<auth_server>\w+)/login",

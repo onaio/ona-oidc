@@ -1,5 +1,5 @@
 """
-Settings Module for the OICD App
+Settings Module for the oidc App
 """
 
 OPENID_CONNECT_VIEWSET_CONFIG = {

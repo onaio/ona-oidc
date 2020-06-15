@@ -10,7 +10,7 @@ INSTALLED_APPS = (
     "django.contrib.contenttypes",
     "django.contrib.gis",
     "rest_framework",
-    "oicd",
+    "oidc",
 )
 
 DATABASES = {
