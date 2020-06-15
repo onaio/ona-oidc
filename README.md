@@ -1,4 +1,4 @@
-# ona-oicd
+# ona-oicd [![Build Status](https://travis-ci.org/onaio/ona-oicd.svg?branch=master)](https://travis-ci.org/onaio/ona-oicd)
 
 A pluggable django application that implements OpenID Connect client functionalities.
 
@@ -37,7 +37,8 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     "JWT_ALGORITHM": JWT_ALGORITHM,
     "SSO_COOKIE_MAX_AGE": None,
     "SSO_COOKIE_DOMAIN": "localhost",
-    "OIDC_DATA_ENTRY_TEMPLATE": "oidc_user_data_entry.html"   # Sample template can be found in oicd/templates
+    "USE_AUTH_BACKEND": False,
+    "AUTH_BACKEND": "",  # Defaults to django.contrib.auth.backends.ModelBackend
 }
 
 OPENID_CONNECT_AUTH_SERVERS = {
