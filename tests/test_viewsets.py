@@ -4,9 +4,9 @@ Tests for the OpenID Client
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from mock import patch
-from oicd.viewsets import OpenIDConnectViewset
 from rest_framework.test import APIRequestFactory
 
+from oicd.viewsets import OpenIDConnectViewset
 
 User = get_user_model()
 

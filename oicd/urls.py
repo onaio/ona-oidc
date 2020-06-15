@@ -2,6 +2,7 @@
 URL Configuration file for ona-oicd
 """
 from django.urls import re_path
+
 from oicd.viewsets import OpenIDConnectViewset
 
 urlpatterns = [
