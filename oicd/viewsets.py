@@ -100,7 +100,9 @@ class OpenIDConnectViewset(viewsets.ViewSet):
                             data[self.map_claim_to_model.get(k)] = v
 
                     if (
-                        user_model.objects.filter(username=data.get("username")).count()
+                        user_model.objects.filter(
+                            username__iexact=data.get("username")
+                        ).count()
                         == 0
                     ):
                         if not data.get("first_name") and not data.get("last_name"):

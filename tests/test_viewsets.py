@@ -95,3 +95,51 @@ class TestOpenIDConnectViewset(TestCase):
                 "Missing required fields: family_name, given_name",
                 response.rendered_content.decode("utf-8"),
             )
+
+    def test_validates_username(self):
+        """
+        Test that the endpoint validates whether a username is already
+        used within the system.
+
+        i. Returns an error if same username is used
+        ii. Returns an error if same username is used even if differently cased
+        """
+        view = OpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oicd.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "given_name": "john",
+                "family_name": "doe",
+                "email": "john@doe.com",
+            }
+            data = {"id_token": "saasdrrw.fdfdfdswg4gdfs.sadadsods", "username": "john"}
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            # Redirects to the redirect url on successful user creation
+            self.assertEqual(response.status_code, 302)
+
+            # Test returns an error if an existing username is used
+            mock_func.return_value = {
+                "given_name": "jane",
+                "family_name": "doe",
+                "email": "jane@doe.com",
+            }
+            data = {"id_token": "ssad9012.fdfdfdswg4gdfs.sadadsods", "username": "john"}
+            user_count = User.objects.count()
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            self.assertEqual(user_count, User.objects.count())
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(
+                "Username is not available", response.rendered_content.decode("utf-8")
+            )
+
+            # Test error still returned even if username is cased differently
+            data = {"id_token": "ssad9012.fdfdfdswg4gdfs.sadadsods", "username": "JoHn"}
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(
+                "Username is not available", response.rendered_content.decode("utf-8")
+            )
