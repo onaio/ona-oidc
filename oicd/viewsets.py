@@ -38,7 +38,7 @@ class OpenIDConnectViewset(viewsets.ViewSet):
         self.map_claim_to_model = (
             config.get("MAP_CLAIM_TO_MODEL") or default_config["MAP_CLAIM_TO_MODEL"]
         )
-        self.use_sso = config.get("USE_SSO_COOKIE", False)
+        self.use_sso = config.get("USE_SSO_COOKIE", True)
         self.sso_cookie = (
             config.get("SSO_COOKIE_DATA") or default_config["SSO_COOKIE_DATA"]
         )
@@ -111,7 +111,8 @@ class OpenIDConnectViewset(viewsets.ViewSet):
                                 _("Missing required fields: family_name, given_name"),
                                 status=status.HTTP_400_BAD_REQUEST,
                             )
-                        elif not data.get("first_name"):
+
+                        if not data.get("first_name"):
                             data["first_name"] = data.get("last_name")
 
                         user = user_model.objects.create(**data)
@@ -134,7 +135,8 @@ class OpenIDConnectViewset(viewsets.ViewSet):
                             max_age=self.cookie_max_age,
                             domain=self.cookie_domain,
                         )
-                    elif self.use_auth_backend:
+
+                    if self.use_auth_backend:
                         login(
                             request, user, backend=self.auth_backend,
                         )
