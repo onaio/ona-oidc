@@ -9,6 +9,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model, login
 from django.db.models import QuerySet
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
+from django.utils.translation import ugettext as _
 from oicd.client import OpenIDClient
 from oicd.client import config as auth_config
 from rest_framework import permissions, status, viewsets
@@ -37,7 +38,7 @@ class OpenIDConnectViewset(viewsets.ViewSet):
         self.map_claim_to_model = (
             config.get("MAP_CLAIM_TO_MODEL") or default_config["MAP_CLAIM_TO_MODEL"]
         )
-        self.use_sso = config.get("USE_SSO_COOKIE", False)
+        self.use_sso = config.get("USE_SSO_COOKIE", True)
         self.sso_cookie = (
             config.get("SSO_COOKIE_DATA") or default_config["SSO_COOKIE_DATA"]
         )
@@ -46,6 +47,10 @@ class OpenIDConnectViewset(viewsets.ViewSet):
         )
         self.cookie_max_age = config.get("SSO_COOKIE_MAX_AGE")
         self.cookie_domain = config.get("SSO_COOKIE_DOMAIN", "localhost")
+        self.use_auth_backend = config.get("USE_AUTH_BACKEND", False)
+        self.auth_backend = config.get(
+            "AUTH_BACKEND", "django.contrib.auth.backends.ModelBackend"
+        )
 
     def _get_client(self, auth_server: str) -> Optional[OpenIDClient]:
         if auth_server in auth_config:
@@ -57,7 +62,7 @@ class OpenIDConnectViewset(viewsets.ViewSet):
         if self._get_client(**kwargs):
             return self._get_client(**kwargs).login()
         return Response(
-            "Unable to process OpenID connect login request.",
+            _("Unable to process OpenID connect login request."),
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -66,7 +71,7 @@ class OpenIDConnectViewset(viewsets.ViewSet):
         if self._get_client(**kwargs):
             return self._get_client(**kwargs).logout()
         return Response(
-            "Unable to process OpenID connect logout request.",
+            _("Unable to process OpenID connect logout request."),
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -81,13 +86,13 @@ class OpenIDConnectViewset(viewsets.ViewSet):
 
                 if user_data.get("id_token"):
                     decoded_token = client.verify_and_decode_id_token(
-                        user_data.get("id_token")
+                        user_data.pop("id_token")
                     )
                     email = decoded_token.get("email")
                     if user_model.objects.filter(email=email).count() > 0:
                         user = user_model.objects.get(email=email)
                     else:
-                        user_data = decoded_token
+                        user_data.update(decoded_token)
 
                 if not user and user_data.get("username"):
                     data = {}
@@ -96,9 +101,20 @@ class OpenIDConnectViewset(viewsets.ViewSet):
                             data[self.map_claim_to_model.get(k)] = v
 
                     if (
-                        user_model.objects.filter(username=data.get("username")).count()
+                        user_model.objects.filter(
+                            username__iexact=data.get("username")
+                        ).count()
                         == 0
                     ):
+                        if not data.get("first_name") and not data.get("last_name"):
+                            return Response(
+                                _("Missing required fields: family_name, given_name"),
+                                status=status.HTTP_400_BAD_REQUEST,
+                            )
+
+                        if not data.get("first_name"):
+                            data["first_name"] = data.get("last_name")
+
                         user = user_model.objects.create(**data)
                     else:
                         user_data["error"] = "Username is not available"
@@ -106,11 +122,6 @@ class OpenIDConnectViewset(viewsets.ViewSet):
                 if user:
                     if isinstance(user, QuerySet):
                         user = user.first()
-                    login(
-                        request,
-                        user,
-                        backend="django.contrib.auth.backends.ModelBackend",
-                    )
                     response = HttpResponseRedirect(config.get("REDIRECT_AFTER_AUTH"))
                     if self.use_sso:
                         sso_cookie = jwt.encode(
@@ -124,6 +135,11 @@ class OpenIDConnectViewset(viewsets.ViewSet):
                             max_age=self.cookie_max_age,
                             domain=self.cookie_domain,
                         )
+
+                    if self.use_auth_backend:
+                        login(
+                            request, user, backend=self.auth_backend,
+                        )
                     return response
                 else:
                     existing_data = {
@@ -132,10 +148,10 @@ class OpenIDConnectViewset(viewsets.ViewSet):
                         if k in self.user_creation_claims or k == "error"
                     }
                     return Response(
-                        existing_data,
-                        template_name=config.get("OIDC_DATA_ENTRY_TEMPLATE"),
+                        {"existing_data": existing_data},
+                        template_name="oicd/oidc_user_data_entry.html",
                     )
         return Response(
-            "Unable to process OpenID connect authentication request.",
+            _("Unable to process OpenID connect authentication request."),
             status=status.HTTP_400_BAD_REQUEST,
         )

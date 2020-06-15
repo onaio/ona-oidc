@@ -10,7 +10,7 @@ setup(
     license="",
     author="Ona Kenya",
     url="",
-    packages=find_packages(exclude=[]),
+    packages=find_packages(exclude=["tests"]),
     install_requires=[
         "Django >= 2.2",
         "djangorestframework >= 3.9",
