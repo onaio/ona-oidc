@@ -9,6 +9,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model, login
 from django.db.models import QuerySet
 from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
+from django.utils.translation import ugettext as _
 from oicd.client import OpenIDClient
 from oicd.client import config as auth_config
 from rest_framework import permissions, status, viewsets
@@ -61,7 +62,7 @@ class OpenIDConnectViewset(viewsets.ViewSet):
         if self._get_client(**kwargs):
             return self._get_client(**kwargs).login()
         return Response(
-            "Unable to process OpenID connect login request.",
+            _("Unable to process OpenID connect login request."),
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -70,7 +71,7 @@ class OpenIDConnectViewset(viewsets.ViewSet):
         if self._get_client(**kwargs):
             return self._get_client(**kwargs).logout()
         return Response(
-            "Unable to process OpenID connect logout request.",
+            _("Unable to process OpenID connect logout request."),
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -107,7 +108,7 @@ class OpenIDConnectViewset(viewsets.ViewSet):
                     ):
                         if not data.get("first_name") and not data.get("last_name"):
                             return Response(
-                                "Missing required fields: family_name, given_name",
+                                _("Missing required fields: family_name, given_name"),
                                 status=status.HTTP_400_BAD_REQUEST,
                             )
                         elif not data.get("first_name"):
@@ -149,6 +150,6 @@ class OpenIDConnectViewset(viewsets.ViewSet):
                         template_name="oicd/oidc_user_data_entry.html",
                     )
         return Response(
-            "Unable to process OpenID connect authentication request.",
+            _("Unable to process OpenID connect authentication request."),
             status=status.HTTP_400_BAD_REQUEST,
         )
