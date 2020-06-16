@@ -6,12 +6,12 @@ from django.test import TestCase
 from mock import patch
 from rest_framework.test import APIRequestFactory
 
-from oidc.viewsets import OpenIDConnectViewset
+from oidc.viewsets import UserModelOpenIDConnectViewset
 
 User = get_user_model()
 
 
-class TestOpenIDConnectViewset(TestCase):
+class TestUserModelOpenIDConnectViewset(TestCase):
     """
     Test class for the OpenID Connect class
     """
@@ -25,7 +25,7 @@ class TestOpenIDConnectViewset(TestCase):
         Test that users are redirected to the data entry
         page when username is not present in decoded token
         """
-        view = OpenIDConnectViewset.as_view({"post": "callback"})
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         with patch(
             "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
         ) as mock_func:
@@ -46,7 +46,7 @@ class TestOpenIDConnectViewset(TestCase):
         Test that a new user is created if the username is present and
         that the user is redirected to the `REDIRECT_AFTER_AUTH` link
         """
-        view = OpenIDConnectViewset.as_view({"post": "callback"})
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         with patch(
             "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
         ) as mock_func:
@@ -104,7 +104,7 @@ class TestOpenIDConnectViewset(TestCase):
         i. Returns an error if same username is used
         ii. Returns an error if same username is used even if differently cased
         """
-        view = OpenIDConnectViewset.as_view({"post": "callback"})
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         with patch(
             "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
         ) as mock_func:
