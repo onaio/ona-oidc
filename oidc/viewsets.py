@@ -27,13 +27,15 @@ config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 
 
-class OpenIDConnectViewset(viewsets.ViewSet):
+class BaseOpenIDConnectViewset(viewsets.ViewSet):
     """
-    OpenIDConnectViewSet: Handles OpenID connect authentication.
+    BaseOpenIDConnectViewset: Base viewset that implements login and logout
+    Open ID Connect Functionality.
     """
 
     permission_classes = [permissions.AllowAny]
     renderer_classes = [JSONRenderer, TemplateHTMLRenderer]
+    user_model = None
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -84,8 +86,7 @@ class OpenIDConnectViewset(viewsets.ViewSet):
         if self._get_client(**kwargs):
             client = self._get_client(**kwargs)
             if request.POST.get("id_token") or "username" in request.POST:
-                user_data = request.POST.copy()
-                user_model = get_user_model()
+                user_data = request.POST.copy().dict()
                 user = None
 
                 if user_data.get("id_token"):
@@ -93,8 +94,8 @@ class OpenIDConnectViewset(viewsets.ViewSet):
                         user_data.pop("id_token")
                     )
                     email = decoded_token.get("email")
-                    if user_model.objects.filter(email=email).count() > 0:
-                        user = user_model.objects.get(email=email)
+                    if self.user_model.objects.filter(email=email).count() > 0:
+                        user = self.user_model.objects.get(email=email)
                     else:
                         user_data.update(decoded_token)
 
@@ -105,7 +106,7 @@ class OpenIDConnectViewset(viewsets.ViewSet):
                             data[self.map_claim_to_model.get(k)] = v
 
                     if (
-                        user_model.objects.filter(
+                        self.user_model.objects.filter(
                             username__iexact=data.get("username")
                         ).count()
                         == 0
@@ -119,7 +120,7 @@ class OpenIDConnectViewset(viewsets.ViewSet):
                         if not data.get("first_name"):
                             data["first_name"] = data.get("last_name")
 
-                        user = user_model.objects.create(**data)
+                        user = self.create_login_user(data)
                     else:
                         user_data["error"] = "Username is not available"
 
@@ -158,3 +159,22 @@ class OpenIDConnectViewset(viewsets.ViewSet):
         return HttpResponseBadRequest(
             _("Unable to process OpenID connect authentication request."),
         )
+
+    def create_login_user(self, kwargs: dict):
+        """
+        Function used to create a login user from the information retrieved
+        from the ID Token
+        """
+        raise NotImplementedError()
+
+
+class UserModelOpenIDConnectViewset(BaseOpenIDConnectViewset):
+    """
+    OpenID Connect Viewset that utilizes the user model to create/retrieve
+    request user account
+    """
+
+    user_model = get_user_model()
+
+    def create_login_user(self, kwargs: dict):
+        return self.user_model.objects.create(**kwargs)
