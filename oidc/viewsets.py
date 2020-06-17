@@ -59,6 +59,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         self.auth_backend = config.get(
             "AUTH_BACKEND", "django.contrib.auth.backends.ModelBackend"
         )
+        self.unique_user_filter_field = (
+            config.get("USER_UNIQUE_FILTER_FIELD")
+            or default_config["USER_UNIQUE_FILTER_FIELD"]
+        )
 
     def _get_client(self, auth_server: str) -> Optional[OpenIDClient]:
         if auth_server in auth_config:
@@ -81,81 +85,98 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             _("Unable to process OpenID connect logout request."),
         )
 
+    def _check_user_exists(self, user_data: dict) -> bool:
+        """
+        Helper function that checks if a user exists
+        """
+        if user_data.get(self.unique_user_filter_field):
+            field_value = user_data.get(self.unique_user_filter_field)
+            field = self.unique_user_filter_field + "__iexact"
+            return self.user_model.objects.filter(**{field: field_value}).count() > 0
+        return True
+
+    def generate_successful_response(self, request, user) -> HttpResponse:
+        """
+        Generates a success response for a successful Open ID Connect
+        Authentication request
+        """
+        response = HttpResponseRedirect(config.get("REDIRECT_AFTER_AUTH"))
+
+        if self.use_auth_backend:
+            login(
+                request, user, backend=self.auth_backend,
+            )
+
+        if self.use_sso:
+            sso_cookie = jwt.encode(
+                {"email": getattr(user, self.sso_cookie, "email")},
+                config.get("JWT_SECRET_KEY"),
+                config.get("JWT_ALGORITHM"),
+            )
+            response.set_cookie(
+                "SSO",
+                value=sso_cookie.decode("utf-8"),
+                max_age=self.cookie_max_age,
+                domain=self.cookie_domain,
+            )
+
+        return response
+
+    def map_claims_to_model_field(self, user_data) -> dict:
+        """
+        Maps claims to the appropriate field for model ingestion
+        """
+        data = {}
+        for k, v in user_data.items():
+            if k in self.user_creation_claims:
+                data[self.map_claim_to_model[k]] = v
+        return data
+
     @action(methods=["POST"], detail=False)
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
+        client = self._get_client(**kwargs)
         if self._get_client(**kwargs):
-            client = self._get_client(**kwargs)
-            if request.POST.get("id_token") or "username" in request.POST:
-                user_data = request.POST.copy().dict()
+            if request.POST.get("id_token"):
+                id_token = request.POST.get("id_token")
                 user = None
 
-                if user_data.get("id_token"):
-                    decoded_token = client.verify_and_decode_id_token(
-                        user_data.pop("id_token")
-                    )
-                    email = decoded_token.get("email")
-                    if self.user_model.objects.filter(email=email).count() > 0:
-                        user = self.user_model.objects.get(email=email)
-                    else:
-                        user_data.update(decoded_token)
+                # Verify, decode and retrieve user information from ID Token
+                decoded_token = client.verify_and_decode_id_token(id_token)
+                email = decoded_token.get("email")
 
-                if not user and user_data.get("username"):
-                    data = {}
-                    for k, v in user_data.items():
-                        if k in self.user_creation_claims:
-                            data[self.map_claim_to_model.get(k)] = v
-
-                    if (
-                        self.user_model.objects.filter(
-                            username__iexact=data.get("username")
-                        ).count()
-                        == 0
+                if self.user_model.objects.filter(email=email).count() > 0:
+                    user = self.user_model.objects.get(email=email)
+                else:
+                    user_data = self.map_claims_to_model_field(decoded_token)
+                    if "username" not in user_data or self._check_user_exists(
+                        user_data
                     ):
-                        if not data.get("first_name") and not data.get("last_name"):
-                            return Response(
-                                _("Missing required fields: family_name, given_name"),
-                                status=status.HTTP_400_BAD_REQUEST,
-                            )
+                        # If username is not present within the user_data
+                        # Return the data_entry template so the user can
+                        # input the username manually.
+                        return Response(
+                            {
+                                "id_token": id_token,
+                                "error": _("Username is not available"),
+                            },
+                            template_name="oidc/oidc_user_data_entry.html",
+                        )
 
-                        if not data.get("first_name"):
-                            data["first_name"] = data.get("last_name")
+                if not user and "username" in user_data:
+                    if not user_data.get("first_name") and not user_data.get(
+                        "last_name"
+                    ):
+                        return Response(
+                            _("Missing required fields: family_name, given_name"),
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    elif not user_data.get("first_name"):
+                        user_data["first_name"] = user_data.get("last_name")
 
-                        user = self.create_login_user(data)
-                    else:
-                        user_data["error"] = "Username is not available"
+                    user = self.create_login_user(user_data)
 
                 if user:
-                    if isinstance(user, QuerySet):
-                        user = user.first()
-                    response = HttpResponseRedirect(config.get("REDIRECT_AFTER_AUTH"))
-                    if self.use_sso:
-                        sso_cookie = jwt.encode(
-                            {"email": getattr(user, self.sso_cookie, "email")},
-                            config.get("JWT_SECRET_KEY"),
-                            config.get("JWT_ALGORITHM"),
-                        )
-                        response.set_cookie(
-                            "SSO",
-                            value=sso_cookie.decode("utf-8"),
-                            max_age=self.cookie_max_age,
-                            domain=self.cookie_domain,
-                        )
-
-                    if self.use_auth_backend:
-                        login(
-                            request, user, backend=self.auth_backend,
-                        )
-                    return response
-                else:
-                    existing_data = {
-                        k: v
-                        for k, v in user_data.items()
-                        if k in self.user_creation_claims or k == "error"
-                    }
-                    return Response(
-                        {"existing_data": existing_data},
-                        template_name="oidc/oidc_user_data_entry.html",
-                    )
+                    return self.generate_successful_response(request, user)
         return HttpResponseBadRequest(
             _("Unable to process OpenID connect authentication request."),
         )

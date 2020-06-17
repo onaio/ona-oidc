@@ -54,8 +54,9 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 "given_name": "john",
                 "family_name": "doe",
                 "email": "john@doe.com",
+                "preferred_username": "john",
             }
-            data = {"id_token": "saasdrrw.fdfdfdswg4gdfs.sadadsods", "username": "john"}
+            data = {"id_token": "saasdrrw.fdfdfdswg4gdfs.sadadsods"}
             user_count = User.objects.filter(username="john").count()
             request = self.factory.post("/", data=data)
             response = view(request, auth_server="default")
@@ -69,10 +70,10 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             mock_func.return_value = {
                 "family_name": "davis",
                 "email": "davis@justdavis.com",
+                "preferred_username": "davis",
             }
             data = {
                 "id_token": "sdadsadjaosd.sdadjiaodj.sdj91019d9",
-                "username": "davis",
             }
             user_count = User.objects.filter(username="davis").count()
             request = self.factory.post("/", data=data)
@@ -86,8 +87,11 @@ class TestUserModelOpenIDConnectViewset(TestCase):
 
             # Returns a 400 response if both family_name and given_name
             # are missing
-            mock_func.return_value = {"email": "jake@doe.com"}
-            data = {"id_token": "sdaodjadoaj9.sdoa09dj901.sd0h091", "username": "jake"}
+            mock_func.return_value = {
+                "email": "jake@doe.com",
+                "preferred_username": "jake",
+            }
+            data = {"id_token": "sdaodjadoaj9.sdoa09dj901.sd0h091"}
             request = self.factory.post("/", data=data)
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 400)
@@ -112,8 +116,9 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 "given_name": "john",
                 "family_name": "doe",
                 "email": "john@doe.com",
+                "preferred_username": "john",
             }
-            data = {"id_token": "saasdrrw.fdfdfdswg4gdfs.sadadsods", "username": "john"}
+            data = {"id_token": "saasdrrw.fdfdfdswg4gdfs.sadadsods"}
             request = self.factory.post("/", data=data)
             response = view(request, auth_server="default")
             # Redirects to the redirect url on successful user creation
@@ -124,8 +129,9 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 "given_name": "jane",
                 "family_name": "doe",
                 "email": "jane@doe.com",
+                "preferred_username": "john",
             }
-            data = {"id_token": "ssad9012.fdfdfdswg4gdfs.sadadsods", "username": "john"}
+            data = {"id_token": "ssad9012.fdfdfdswg4gdfs.sadadsods"}
             user_count = User.objects.count()
             request = self.factory.post("/", data=data)
             response = view(request, auth_server="default")
@@ -136,7 +142,13 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             )
 
             # Test error still returned even if username is cased differently
-            data = {"id_token": "ssad9012.fdfdfdswg4gdfs.sadadsods", "username": "JoHn"}
+            mock_func.return_value = {
+                "given_name": "jane",
+                "family_name": "doe",
+                "email": "jane@doe.com",
+                "preferred_username": "JoHn",
+            }
+            data = {"id_token": "ssad9012.fdfdfdswg4gdfs.sadadsods"}
             request = self.factory.post("/", data=data)
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 200)
