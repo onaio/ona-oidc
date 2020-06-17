@@ -1,12 +1,12 @@
 """
 oidc Viewsets module
 """
+import importlib
 from typing import Optional
 
 import jwt
 from django.conf import settings
 from django.contrib.auth import get_user_model, login
-from django.db.models import QuerySet
 from django.http import (
     HttpRequest,
     HttpResponse,
@@ -103,9 +103,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         response = HttpResponseRedirect(config.get("REDIRECT_AFTER_AUTH"))
 
         if self.use_auth_backend:
-            login(
-                request, user, backend=self.auth_backend,
-            )
+            login(request, user, backend=self.auth_backend)
 
         if self.use_sso:
             sso_cookie = jwt.encode(
@@ -136,8 +134,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         client = self._get_client(**kwargs)
         if self._get_client(**kwargs):
-            if request.POST.get("id_token"):
-                id_token = request.POST.get("id_token")
+            id_token = request.POST.get("id_token")
+            if id_token:
                 user = None
 
                 # Verify, decode and retrieve user information from ID Token
@@ -181,7 +179,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             _("Unable to process OpenID connect authentication request."),
         )
 
-    def create_login_user(self, kwargs: dict):
+    def create_login_user(self, user_data: dict):
         """
         Function used to create a login user from the information retrieved
         from the ID Token
@@ -197,5 +195,43 @@ class UserModelOpenIDConnectViewset(BaseOpenIDConnectViewset):
 
     user_model = get_user_model()
 
-    def create_login_user(self, kwargs: dict):
-        return self.user_model.objects.create(**kwargs)
+    def create_login_user(self, user_data: dict):
+        return self.user_model.objects.create(**user_data)
+
+
+class RapidProOpenIDConnectViewset(BaseOpenIDConnectViewset):
+    """
+    OpenID Connect Viewset tailored to work with
+    RapidPro(https://github.com/rapidpro/rapidpro)
+    """
+
+    user_model = get_user_model()
+
+    def create_login_user(self, user_data: dict):
+        Org = importlib.import_module("temba").orgs.models.Org
+        timezone = importlib.import_module("pytz").timezone
+        org_name = user_data.pop("username")
+        user_data["username"] = user_data.get("email")
+
+        org_data = {
+            "name": org_name,
+            "slug": Org.get_unique_slug(org_name),
+            "brand": settings.DEFAULT_BRAND,
+            "timezone": timezone("UTC"),
+        }
+        user = self.user_model.objects.create(**user_data)
+
+        language = self.request.branding.get("language", settings.DEFAULT_LANGUAGE)
+        user_settings = user.get_settings()
+        user_settings.language = language
+        user_settings.save()
+
+        org_data.update({"created_by": user, "modified_by": user})
+        org = Org.objects.create(**org_data)
+        org.administrators.add(user)
+        branding = org.get_branding()
+        org.initialize(
+            branding=branding, topup_size=branding.get("welcome_topup", 1000)
+        )
+
+        return user
