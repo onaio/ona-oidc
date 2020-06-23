@@ -134,7 +134,13 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         client = self._get_client(**kwargs)
         if self._get_client(**kwargs):
-            id_token = request.POST.get("id_token")
+            user_data = request.POST.dict()
+            id_token = user_data.pop("id_token") if "id_token" in user_data else None
+            code = user_data.pop("code") if "code" in user_data else None
+
+            if code and not id_token:
+                id_token = client.retrieve_token_using_auth_code(code)
+
             if id_token:
                 user = None
 
@@ -145,7 +151,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 if self.user_model.objects.filter(email=email).count() > 0:
                     user = self.user_model.objects.get(email=email)
                 else:
-                    user_data = self.map_claims_to_model_field(decoded_token)
+                    user_data.update(self.map_claims_to_model_field(decoded_token))
                     if "username" not in user_data or self._check_user_exists(
                         user_data
                     ):

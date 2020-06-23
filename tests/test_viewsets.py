@@ -3,12 +3,28 @@ Tests for the OpenID Client
 """
 from django.contrib.auth import get_user_model
 from django.test import TestCase
-from mock import patch
+from django.test.utils import override_settings
+from mock import patch, MagicMock
 from rest_framework.test import APIRequestFactory
 
 from oidc.viewsets import UserModelOpenIDConnectViewset
 
 User = get_user_model()
+
+OPENID_CONNECT_AUTH_SERVERS = {
+    "default": {
+        "AUTHORIZATION_ENDPOINT": "example.com/oauth2/v2.0/authorize",
+        "CLIENT_ID": "client",
+        "JWKS_ENDPOINT": "example.com/discovery/v2.0/keys",
+        "SCOPE": "openid profile",
+        "TOKEN_ENDPOINT": "example.com/oauth2/v2.0/token",
+        "END_SESSION_ENDPOINT": "http://localhost:3000",
+        "REDIRECT_URI": "http://localhost:8000/oidc/msft/callback",
+        "RESPONSE_TYPE": "code",
+        "RESPONSE_MODE": "form_post",
+        "USE_NONCES": False,
+    }
+}
 
 
 class TestUserModelOpenIDConnectViewset(TestCase):
@@ -155,3 +171,37 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertIn(
                 "Username is not available", response.rendered_content.decode("utf-8")
             )
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch(
+        "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+        MagicMock(
+            return_value={
+                "given_name": "john",
+                "family_name": "doe",
+                "email": "john@doe.com",
+                "preferred_username": "john",
+            }
+        ),
+    )
+    @patch("oidc.viewsets.OpenIDClient.retrieve_token_using_auth_code")
+    def test_auth_code_flow(self, mock_retrieve_auth_code):
+        """
+        Test that the authorization code flow works as expected
+        """
+        mock_retrieve_auth_code.return_value = "ssad9012.fdfdfdswg4gdfs.sadadsods"
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        data = {"code": "SplxlOBeZQQYbYS6WxSbIA"}
+        user_count = User.objects.filter(username="john").count()
+        request = self.factory.post("/", data=data)
+        response = view(request, auth_server="default")
+
+        # Assert that the retrieve_token_using_auth_code function was called
+        # and the code token was passed
+        self.assertTrue(mock_retrieve_auth_code, True)
+        self.assertEqual(mock_retrieve_auth_code.call_args[0][0], data["code"])
+
+        self.assertEqual(user_count + 1, User.objects.filter(username="john").count())
+        # Redirects to the redirect url on successful user creation
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "http://localhost:3000")

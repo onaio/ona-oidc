@@ -30,6 +30,7 @@ class OpenIDClient:
         self.auth_server = auth_server
         self.authorization_endpoint = config[auth_server].get("AUTHORIZATION_ENDPOINT")
         self.client_id = config[auth_server].get("CLIENT_ID")
+        self.client_secret = config[auth_server].get("CLIENT_SECRET")
         self.jwks_endpoint = config[auth_server].get("JWKS_ENDPOINT")
         self.scope = config[auth_server].get("SCOPE") or default_config["SCOPE"]
         self.token_endpoint = config[auth_server].get("TOKEN_ENDPOINT")
