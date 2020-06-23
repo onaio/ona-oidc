@@ -112,7 +112,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 400)
             self.assertIn(
-                "Missing required fields: family_name, given_name",
+                "Missing required fields",
                 response.rendered_content.decode("utf-8"),
             )
 
@@ -154,7 +154,8 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(user_count, User.objects.count())
             self.assertEqual(response.status_code, 200)
             self.assertIn(
-                "Username is not available", response.rendered_content.decode("utf-8")
+                "Username field missing or already in use.",
+                response.rendered_content.decode("utf-8"),
             )
 
             # Test error still returned even if username is cased differently
@@ -169,7 +170,8 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 200)
             self.assertIn(
-                "Username is not available", response.rendered_content.decode("utf-8")
+                "Username field missing or already in use.",
+                response.rendered_content.decode("utf-8"),
             )
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)

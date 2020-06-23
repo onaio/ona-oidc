@@ -3,14 +3,12 @@ Settings Module for the oidc App
 """
 
 OPENID_CONNECT_VIEWSET_CONFIG = {
-    "USER_CREATION_CLAIMS": [
+    "REQUIRED_USER_CREATION_FIELDS": [
         "email",
-        "given_name",
-        "family_name",
-        "preferred_username",
+        "first_name",
+        "username",
     ],
     "MAP_CLAIM_TO_MODEL": {
-        "email": "email",
         "given_name": "first_name",
         "family_name": "last_name",
         "preferred_username": "username",

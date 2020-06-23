@@ -40,8 +40,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.jwt = config.get("JWT_SECRET_KEY", "")
-        self.user_creation_claims = (
-            config.get("USER_CREATION_CLAIMS") or default_config["USER_CREATION_CLAIMS"]
+        self.user_creation_fields = (
+            config.get("REQUIRED_USER_CREATION_FIELDS")
+            or default_config["REQUIRED_USER_CREATION_FIELDS"]
         )
         self.map_claim_to_model = (
             config.get("MAP_CLAIM_TO_MODEL") or default_config["MAP_CLAIM_TO_MODEL"]
@@ -87,7 +88,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
     def _check_user_exists(self, user_data: dict) -> bool:
         """
-        Helper function that checks if a user exists
+        Helper function that checks if a user exists. If user_data does not
+        contain the unique user field the assumption is that the user
+        exists.
         """
         if user_data.get(self.unique_user_filter_field):
             field_value = user_data.get(self.unique_user_filter_field)
@@ -126,14 +129,16 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         """
         data = {}
         for k, v in user_data.items():
-            if k in self.user_creation_claims:
+            if k in self.map_claim_to_model:
                 data[self.map_claim_to_model[k]] = v
+            else:
+                data[k] = v
         return data
 
     @action(methods=["POST"], detail=False)
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         client = self._get_client(**kwargs)
-        if self._get_client(**kwargs):
+        if client:
             user_data = request.POST.dict()
             id_token = user_data.pop("id_token") if "id_token" in user_data else None
             code = user_data.pop("code") if "code" in user_data else None
@@ -151,31 +156,36 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 if self.user_model.objects.filter(email=email).count() > 0:
                     user = self.user_model.objects.get(email=email)
                 else:
-                    user_data.update(self.map_claims_to_model_field(decoded_token))
-                    if "username" not in user_data or self._check_user_exists(
-                        user_data
-                    ):
-                        # If username is not present within the user_data
-                        # Return the data_entry template so the user can
-                        # input the username manually.
+                    user_data.update(decoded_token)
+                    user_data = self.map_claims_to_model_field(user_data)
+                    if self._check_user_exists(user_data):
+                        # If a user with the unique field exists request the
+                        # user to enter unique field
+                        field = self.unique_user_filter_field.capitalize()
                         return Response(
                             {
                                 "id_token": id_token,
-                                "error": _("Username is not available"),
+                                "error": _(f"{field} field missing or already in use."),
                             },
                             template_name="oidc/oidc_user_data_entry.html",
                         )
 
-                if not user and "username" in user_data:
-                    if not user_data.get("first_name") and not user_data.get(
-                        "last_name"
-                    ):
+                if not user:
+                    missing_fields = set(self.user_creation_fields).difference(
+                        set(user_data.keys())
+                    )
+
+                    # Use last_name as first_name if first_name is missing
+                    if "first_name" in missing_fields and "last_name" in user_data:
+                        user_data["first_name"] = user_data["last_name"]
+                        missing_fields.remove("first_name")
+
+                    if len(missing_fields) > 0:
+                        missing_fields = ", ".join(missing_fields)
                         return Response(
-                            _("Missing required fields: family_name, given_name"),
+                            _(f"Missing required fields: {missing_fields}"),
                             status=status.HTTP_400_BAD_REQUEST,
                         )
-                    elif not user_data.get("first_name"):
-                        user_data["first_name"] = user_data.get("last_name")
 
                     user = self.create_login_user(user_data)
 
