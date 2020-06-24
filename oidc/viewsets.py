@@ -7,6 +7,7 @@ from typing import Optional
 import jwt
 from django.conf import settings
 from django.contrib.auth import get_user_model, login
+from django.contrib.auth import logout as logout_backend
 from django.http import (
     HttpRequest,
     HttpResponse,
@@ -25,6 +26,7 @@ from oidc.client import config as auth_config
 
 config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
+SSO_COOKIE_NAME = "SSO"
 
 
 class BaseOpenIDConnectViewset(viewsets.ViewSet):
@@ -75,16 +77,25 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
     @action(methods=["GET"], detail=False)
     def login(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
-        if self._get_client(**kwargs):
-            return self._get_client(**kwargs).login()
+        client = self._get_client(**kwargs)
+        if client:
+            return client.login()
         return HttpResponseBadRequest(
             _("Unable to process OpenID connect login request."),
         )
 
     @action(methods=["GET"], detail=False)
     def logout(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
-        if self._get_client(**kwargs):
-            return self._get_client(**kwargs).logout()
+        client = self._get_client(**kwargs)
+        if client:
+            response = client.logout()
+
+            if self.use_auth_backend:
+                logout_backend(request)
+            if self.use_sso:
+                response.delete_cookie(SSO_COOKIE_NAME)
+
+            return response
         return HttpResponseBadRequest(
             _("Unable to process OpenID connect logout request."),
         )
@@ -118,7 +129,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 config.get("JWT_ALGORITHM"),
             )
             response.set_cookie(
-                "SSO",
+                SSO_COOKIE_NAME,
                 value=sso_cookie.decode("utf-8"),
                 max_age=self.cookie_max_age,
                 domain=self.cookie_domain,
