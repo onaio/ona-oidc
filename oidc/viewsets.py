@@ -40,9 +40,12 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.jwt = config.get("JWT_SECRET_KEY", "")
-        self.user_creation_fields = (
+        self.required_fields = (
             config.get("REQUIRED_USER_CREATION_FIELDS")
             or default_config["REQUIRED_USER_CREATION_FIELDS"]
+        )
+        self.user_creation_fields = (
+            config.get("USER_CREATION_FIELDS") or default_config["USER_CREATION_FIELDS"]
         )
         self.map_claim_to_model = (
             config.get("MAP_CLAIM_TO_MODEL") or default_config["MAP_CLAIM_TO_MODEL"]
@@ -171,7 +174,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         )
 
                 if not user:
-                    missing_fields = set(self.user_creation_fields).difference(
+                    missing_fields = set(self.required_fields).difference(
                         set(user_data.keys())
                     )
 
@@ -187,6 +190,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             status=status.HTTP_400_BAD_REQUEST,
                         )
 
+                    user_data = {
+                        k: v
+                        for k, v in user_data.items()
+                        if k in self.user_creation_fields
+                    }
                     user = self.create_login_user(user_data)
 
                 if user:

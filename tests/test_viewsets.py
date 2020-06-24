@@ -4,7 +4,7 @@ Tests for the OpenID Client
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.test.utils import override_settings
-from mock import patch, MagicMock
+from mock import MagicMock, patch
 from rest_framework.test import APIRequestFactory
 
 from oidc.viewsets import UserModelOpenIDConnectViewset
@@ -112,8 +112,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 400)
             self.assertIn(
-                "Missing required fields",
-                response.rendered_content.decode("utf-8"),
+                "Missing required fields", response.rendered_content.decode("utf-8"),
             )
 
     def test_validates_username(self):
@@ -207,3 +206,35 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         # Redirects to the redirect url on successful user creation
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, "http://localhost:3000")
+
+    @patch(
+        "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+        MagicMock(
+            return_value={
+                "given_name": "john",
+                "family_name": "doe",
+                "email": "john@doe.com",
+                "preferred_username": "john",
+                "age": "unknown",
+            }
+        ),
+    )
+    @patch("oidc.viewsets.UserModelOpenIDConnectViewset.create_login_user")
+    def test_only_creation_claims_passed(self, mock_func):
+        """
+        Test that only user creation fields are passed to the
+        create_login_user function
+        """
+        expected_data = {
+            "first_name": "john",
+            "last_name": "doe",
+            "email": "john@doe.com",
+            "username": "john",
+        }
+        mock_func.return_value = User.objects.create(username="test")
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        data = {"id_token": "saasdrrw.fdfdfdswg4gdfs.sadadsods"}
+        request = self.factory.post("/", data=data)
+        view(request, auth_server="default")
+        self.assertTrue(mock_func.called)
+        self.assertEqual(mock_func.call_args[0][0], expected_data)
