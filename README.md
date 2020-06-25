@@ -39,6 +39,7 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     "SSO_COOKIE_DOMAIN": "localhost",
     "USE_AUTH_BACKEND": False,
     "AUTH_BACKEND": "",  # Defaults to django.contrib.auth.backends.ModelBackend
+    "USE_RAPIDPRO_VIEWSET": False,
 }
 
 OPENID_CONNECT_AUTH_SERVERS = {

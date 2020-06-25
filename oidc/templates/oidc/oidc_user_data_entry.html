@@ -10,9 +10,7 @@
             {% csrf_token %}
             <p class="error-message">{{ error }}</p>
             <input type="text" name="username" placeholder="Username" pattern="^[A-Za-z0-9_]*$" title="Username should not contain . @ - symbols">
-            {% for field_key, field_value in existing_data.items %}
-            <input type="hidden" name="{{ field_key }}" value="{{ field_value }}">
-            {% endfor %}
+            <input type="hidden" name="id_token" value="{{ id_token }}">
             <input type="submit" value="Save">
         </form>
     </div>
