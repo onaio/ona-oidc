@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+{% load rest_framework %}
+
+{% block title %}Error: Missing Details{% endblock %}
+
+{% block content %}
+<div class="content">
+    <div class="content-body">
+        <p class="error-message">{{ error }}</a></p>
+    </div>
+</div>
+{% endblock %}

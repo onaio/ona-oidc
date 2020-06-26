@@ -197,8 +197,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     if len(missing_fields) > 0:
                         missing_fields = ", ".join(missing_fields)
                         return Response(
-                            _(f"Missing required fields: {missing_fields}"),
+                            {"error": _(f"Missing required fields: {missing_fields}")},
                             status=status.HTTP_400_BAD_REQUEST,
+                            template_name="oidc/oidc_missing_detail.html",
                         )
 
                     user_data = {
