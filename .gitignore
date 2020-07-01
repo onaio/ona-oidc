@@ -4,5 +4,6 @@
 # Python files
 *.egg-info/
 __pycache__/
+build
 dist/
 .tox/

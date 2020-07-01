@@ -5,6 +5,7 @@ import importlib
 from typing import Optional
 
 import jwt
+from django.db.utils import IntegrityError
 from django.conf import settings
 from django.contrib.auth import get_user_model, login
 from django.contrib.auth import logout as logout_backend
@@ -255,19 +256,24 @@ class RapidProOpenIDConnectViewset(BaseOpenIDConnectViewset):
             "brand": settings.DEFAULT_BRAND,
             "timezone": timezone("UTC"),
         }
-        user = self.user_model.objects.create(**user_data)
+        try:
+            user = self.user_model.objects.create(**user_data)
+        except IntegrityError:
+            user = self.user_model.objects.get(username=user_data['username'])
+        else:
+            language = self.request.branding.get("language",
+                                                 settings.DEFAULT_LANGUAGE)
+            user_settings = user.get_settings()
+            user_settings.language = language
+            user_settings.save()
 
-        language = self.request.branding.get("language", settings.DEFAULT_LANGUAGE)
-        user_settings = user.get_settings()
-        user_settings.language = language
-        user_settings.save()
-
-        org_data.update({"created_by": user, "modified_by": user})
-        org = Org.objects.create(**org_data)
-        org.administrators.add(user)
-        branding = org.get_branding()
-        org.initialize(
-            branding=branding, topup_size=branding.get("welcome_topup", 1000)
-        )
+            org_data.update({"created_by": user, "modified_by": user})
+            org = Org.objects.create(**org_data)
+            org.administrators.add(user)
+            branding = org.get_branding()
+            org.initialize(
+                branding=branding,
+                topup_size=branding.get("welcome_topup", 1000)
+            )
 
         return user
