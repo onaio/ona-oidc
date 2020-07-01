@@ -24,7 +24,6 @@ import oidc.settings as default
 from oidc.client import OpenIDClient
 from oidc.client import config as auth_config
 
-config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 SSO_COOKIE_NAME = "SSO"
 
@@ -41,6 +40,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
         self.jwt = config.get("JWT_SECRET_KEY", "")
         self.required_fields = (
             config.get("REQUIRED_USER_CREATION_FIELDS")
@@ -117,6 +117,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         Generates a success response for a successful Open ID Connect
         Authentication request
         """
+        config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
         response = HttpResponseRedirect(config.get("REDIRECT_AFTER_AUTH"))
 
         if self.use_auth_backend:
@@ -165,13 +166,13 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
                 # Verify, decode and retrieve user information from ID Token
                 decoded_token = client.verify_and_decode_id_token(id_token)
-                email = decoded_token.get("email")
+                user_data.update(decoded_token)
+                user_data = self.map_claims_to_model_field(user_data)
+                email = user_data.get("email")
 
                 if self.user_model.objects.filter(email=email).count() > 0:
                     user = self.user_model.objects.get(email=email)
                 else:
-                    user_data.update(decoded_token)
-                    user_data = self.map_claims_to_model_field(user_data)
                     if self._check_user_exists(user_data):
                         # If a user with the unique field exists request the
                         # user to enter unique field
@@ -193,6 +194,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     if "first_name" in missing_fields and "last_name" in user_data:
                         user_data["first_name"] = user_data["last_name"]
                         missing_fields.remove("first_name")
+
+                    # use email as username if username is missing
+                    if "username" in missing_fields and "email" in user_data:
+                        user_data["username"] = user_data["email"]
+                        missing_fields.remove("username")
 
                     if len(missing_fields) > 0:
                         missing_fields = ", ".join(missing_fields)

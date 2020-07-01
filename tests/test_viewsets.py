@@ -25,6 +25,19 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "USE_NONCES": False,
     }
 }
+OPENID_CONNECT_VIEWSET_CONFIG = {
+    "REQUIRED_USER_CREATION_FIELDS": ["email", "first_name", "username"],
+    "USER_CREATION_FIELDS": ["email", "first_name", "last_name", "username"],
+    "MAP_CLAIM_TO_MODEL": {
+        "given_name": "first_name",
+        "family_name": "last_name",
+        "sub": "email",
+    },
+    "USER_UNIQUE_FILTER_FIELD": "email",
+    "SSO_COOKIE_DATA": "email",
+    "JWT_ALGORITHM": "HS256",
+    "JWT_SECRET_KEY": "abc",
+}
 
 
 class TestUserModelOpenIDConnectViewset(TestCase):
@@ -238,3 +251,40 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         view(request, auth_server="default")
         self.assertTrue(mock_func.called)
         self.assertEqual(mock_func.call_args[0][0], expected_data)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG
+    )
+    def test_map_claim_to_model(self):
+        """
+        Test that MAP_CLAIM_TO_MODEL maps sub to username and email.
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "given_name": "john",
+                "family_name": "doe",
+                "sub": "john@doe.com",
+            }
+            user_count = User.objects.count()
+            data = {"id_token": "saasdrrw.fdfdfdswg4gdfs.sadadsods"}
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            # Redirects to the redirect url on successful user creation
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(User.objects.count(), user_count + 1)
+
+            mock_func.return_value = {
+                "given_name": "john",
+                "family_name": "doe",
+                "sub": "john@doe.com",
+            }
+            data = {"id_token": "saasdrrw.fdfdfdswg4gdfs.sadadsods"}
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            # Redirects to the redirect url on successful user creation
+            self.assertEqual(response.status_code, 302)
+            # There has been no change in number of User accounts
+            self.assertEqual(User.objects.count(), user_count + 1)
