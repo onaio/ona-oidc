@@ -4,6 +4,8 @@ oidc Viewsets module
 import importlib
 from typing import Optional
 
+import logging
+
 import jwt
 from django.db.utils import IntegrityError
 from django.conf import settings
@@ -28,6 +30,7 @@ from oidc.client import config as auth_config
 config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 SSO_COOKIE_NAME = "SSO"
+logger = logging.getLogger(__name__)
 
 
 class BaseOpenIDConnectViewset(viewsets.ViewSet):
@@ -167,6 +170,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 # Verify, decode and retrieve user information from ID Token
                 decoded_token = client.verify_and_decode_id_token(id_token)
                 email = decoded_token.get("email")
+                logger.debug(f"Email decoded {email}")
 
                 if self.user_model.objects.filter(email=email).count() > 0:
                     user = self.user_model.objects.get(email=email)
@@ -177,6 +181,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         # If a user with the unique field exists request the
                         # user to enter unique field
                         field = self.unique_user_filter_field.capitalize()
+                        logger.debug(f"{field} field missing or already in use. {id_token}")
                         return Response(
                             {
                                 "id_token": id_token,
@@ -197,6 +202,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
                     if len(missing_fields) > 0:
                         missing_fields = ", ".join(missing_fields)
+                        logger.debug(f"Missing fields: {missing_fields}")
                         return Response(
                             {"error": _(f"Missing required fields: {missing_fields}")},
                             status=status.HTTP_400_BAD_REQUEST,
