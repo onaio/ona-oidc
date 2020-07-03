@@ -4,7 +4,6 @@ oidc Viewsets module
 import importlib
 from typing import Optional
 
-import jwt
 from django.conf import settings
 from django.contrib.auth import get_user_model, login
 from django.contrib.auth import logout as logout_backend
@@ -15,6 +14,8 @@ from django.http import (
     HttpResponseRedirect,
 )
 from django.utils.translation import ugettext as _
+
+import jwt
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.renderers import JSONRenderer, TemplateHTMLRenderer

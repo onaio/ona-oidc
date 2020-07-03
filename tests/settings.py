@@ -45,5 +45,5 @@ OPENID_CONNECT_AUTH_SERVERS = {
     }
 }
 
-ROOT_URLCONF = 'oidc.urls'
+ROOT_URLCONF = "oidc.urls"
 SECRET_KEY = "secret"
