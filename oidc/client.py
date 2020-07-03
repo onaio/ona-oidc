@@ -5,11 +5,12 @@ import json
 import secrets
 from typing import Optional
 
-import jwt
-import requests
 from django.conf import settings
 from django.core.cache import cache
 from django.http import HttpResponseRedirect
+
+import jwt
+import requests
 from jwt.algorithms import RSAAlgorithm
 
 import oidc.settings as default

@@ -4,6 +4,7 @@ Tests for the OpenID Client
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.test.utils import override_settings
+
 from mock import MagicMock, patch
 from rest_framework.test import APIRequestFactory
 
@@ -252,16 +253,14 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertTrue(mock_func.called)
         self.assertEqual(mock_func.call_args[0][0], expected_data)
 
-    @override_settings(
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG
-    )
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
     def test_map_claim_to_model(self):
         """
         Test that MAP_CLAIM_TO_MODEL maps sub to username and email.
         """
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         with patch(
-                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
         ) as mock_func:
             mock_func.return_value = {
                 "given_name": "john",
