@@ -1,17 +1,19 @@
 """
 URL Configuration file for ona-oidc
 """
+from django.conf import settings
 from django.urls import re_path
 
 from oidc.viewsets import (
     RapidProOpenIDConnectViewset,
     UserModelOpenIDConnectViewset,
-    config,
 )
 
 app_name = "oidc"
 
 viewset_class = UserModelOpenIDConnectViewset
+
+config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 if config.get("USE_RAPIDPRO_VIEWSET", False):
     viewset_class = RapidProOpenIDConnectViewset
 
