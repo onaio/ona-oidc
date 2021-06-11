@@ -132,7 +132,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             )
             response.set_cookie(
                 SSO_COOKIE_NAME,
-                value=sso_cookie.decode("utf-8"),
+                value=sso_cookie,
                 max_age=self.cookie_max_age,
                 domain=self.cookie_domain,
             )
