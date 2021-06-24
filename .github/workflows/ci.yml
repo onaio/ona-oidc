@@ -1,0 +1,53 @@
+name: CI
+on:
+  - push
+  - pull_request
+concurrency:
+  group: ${{ github.head_ref }}-${{ github.event }}
+  cancel-in-progress: true
+
+jobs:
+  github-action-ci:
+    runs-on: ubuntu-20.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python_version: 3.6
+            toxenv: "py36-django22"
+          - python_version: 3.6
+            toxenv: "py36-django30"
+          - python_version: 3.7
+            toxenv: "py37-django22"
+          - python_version: 3.7
+            toxenv: "py37-django30"
+          - python_version: 3.8
+            toxenv: "py38-django22"
+          - python_version: 3.8
+            toxenv: "py38-django30"
+          - python_version: 3.6
+            toxenv: "lint"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Setup python
+        uses: actions/setup-python@v2
+        with:
+          python-version: ${{ matrix.python_version }}
+          architecture: 'x64'
+
+      - name: Install APT requirements
+        run: |
+          sudo apt-get install -y --no-install-recommends gdal-bin libgdal-dev
+          sudo rm -rf /var/lib/apt/lists/*
+
+      - name: Install tox
+        run: |
+          pip install -U pip
+          pip install tox
+
+      - name: Run tests
+        run: tox
+        env:
+          TOXENV: ${{ matrix.toxenv }}
