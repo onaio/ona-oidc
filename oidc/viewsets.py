@@ -153,7 +153,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             else:
                 data[k] = v
 
-        # Split the name claim into the `first_name` & `last_name`
+        # Split the name claim into `first_name` & `last_name`
         if (self.split_name_claim and "name" in user_data.keys()) and (
             "first_name" not in data.keys() or "last_name" not in data.keys()
         ):
