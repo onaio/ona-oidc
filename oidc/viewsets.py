@@ -2,6 +2,7 @@
 oidc Viewsets module
 """
 import importlib
+import re
 from typing import Optional
 
 from django.conf import settings
@@ -72,6 +73,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         self.unique_user_filter_field = (
             config.get("USER_UNIQUE_FILTER_FIELD")
             or default_config["USER_UNIQUE_FILTER_FIELD"]
+        )
+        self.field_validation_regex = (
+            config.get("FIELD_VALIDATION_REGEX")
+            or default_config["FIELD_VALIDATION_REGEX"]
         )
 
     def _get_client(self, auth_server: str) -> Optional[OpenIDClient]:
@@ -162,6 +167,13 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             data["last_name"] = " ".join(split_name[1:])
         return data
 
+    def validate_fields(self, data: dict) -> dict:
+        for k, v in data.items():
+            if k in self.field_validation_regex:
+                regex = re.compile(self.field_validation_regex[k])
+                if not regex.search(data[k]):
+                    raise ValueError(f'Invalid `{k}` value `{data[k]}`')
+
     @action(methods=["POST"], detail=False)
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         client = self._get_client(**kwargs)
@@ -218,6 +230,15 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             {"error": _(f"Missing required fields: {missing_fields}")},
                             status=status.HTTP_400_BAD_REQUEST,
                             template_name="oidc/oidc_missing_detail.html",
+                        )
+
+                    try:
+                        self.validate_fields(user_data)
+                    except ValueError as e:
+                        return Response(
+                            {"error": str(e)},
+                            status=status.HTTP_400_BAD_REQUEST,
+                            template_name="oidc/oidc_missing_detail.html"
                         )
 
                     user_data = {
