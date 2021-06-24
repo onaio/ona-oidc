@@ -48,6 +48,10 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     "USE_AUTH_BACKEND": False,
     "AUTH_BACKEND": "",  # Defaults to django.contrib.auth.backends.ModelBackend
     "REDIRECT_AFTER_AUTH": "http://localhost:3000",
+    "USE_RAPIDPRO_VIEWSET": False,
+    # A map containing a field as a key and a regex string as it's value that's used to
+    # validate all field inputs retrieved for the particular key
+    "FIELD_VALIDATION_REGEX": {"username": "(?!^\d+$)^.+$"}
 }
 
 OPENID_CONNECT_AUTH_SERVERS = {
