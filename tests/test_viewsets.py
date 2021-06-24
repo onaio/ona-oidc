@@ -267,7 +267,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 "given_name": "john",
                 "family_name": "doe",
                 "sub": "john@doe.com",
-                "name": "Avoided name"
+                "name": "Avoided name",
             }
             user_count = User.objects.count()
             data = {"id_token": "saasdrrw.fdfdfdswg4gdfs.sadadsods"}

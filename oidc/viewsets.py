@@ -154,12 +154,12 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 data[k] = v
 
         # Split the name claim into the `first_name` & `last_name`
-        if self.split_name_claim and (
+        if (self.split_name_claim and "name" in user_data.keys()) and (
             "first_name" not in data.keys() or "last_name" not in data.keys()
-            ) and "name" in user_data.keys():
-            split_name = user_data["name"].split(' ')
-            data["first_name"] = ' '.join(split_name[:1])
-            data["last_name"] = ' '.join(split_name[1:])
+        ):
+            split_name = user_data["name"].split(" ")
+            data["first_name"] = " ".join(split_name[:1])
+            data["last_name"] = " ".join(split_name[1:])
         return data
 
     @action(methods=["POST"], detail=False)
