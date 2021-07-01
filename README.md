@@ -76,3 +76,17 @@ urlpatterns = [
 ...
 
 ```
+5. (Optional) If you would want to use cookie authentication, update the `REST_FRAMEWORK` settings.
+
+```python
+...
+
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'onadata.libs.authentication.SSOHeaderAuthentication',
+        ...,
+    ),
+}
+...
+
+```
