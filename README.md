@@ -48,7 +48,6 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     "USE_AUTH_BACKEND": False,
     "AUTH_BACKEND": "",  # Defaults to django.contrib.auth.backends.ModelBackend
     "REDIRECT_AFTER_AUTH": "http://localhost:3000",
-    "USER_UNIQUE_FILTER_FIELD": None # Defaults to username
 }
 
 OPENID_CONNECT_AUTH_SERVERS = {
