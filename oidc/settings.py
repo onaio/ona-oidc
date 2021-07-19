@@ -10,6 +10,7 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
         "family_name": "last_name",
         "preferred_username": "username",
     },
+    "SPLIT_NAME_CLAIM": False,
     "USER_UNIQUE_FILTER_FIELD": "username",
     "SSO_COOKIE_DATA": "email",
     "JWT_ALGORITHM": "HS256",

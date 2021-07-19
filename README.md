@@ -30,16 +30,24 @@ INSTALLED_APPS = [
 ```python
 ...
 OPENID_CONNECT_VIEWSET_CONFIG = {
-    "REDIRECT_AFTER_AUTH": "http://localhost:3000",
-    "USE_SSO_COOKIE": True,
-    "SSO_COOKIE_DATA": "email",
     "JWT_SECRET_KEY": JWT_SECRET_KEY,
     "JWT_ALGORITHM": JWT_ALGORITHM,
+    "REQUIRED_USER_CREATION_FIELDS": ["email", "first_name", "username"],
+    "USER_CREATION_FIELDS": ["email", "first_name", "last_name", "username"],
+    "MAP_CLAIM_TO_MODEL": {
+        "given_name": "first_name",
+        "family_name": "last_name",
+        "preferred_username": "username",
+    },
+    "SPLIT_NAME_CLAIM": False, # Whether to split the `name` claim into first_name & last_name if present
+    "USER_UNIQUE_FILTER_FIELD": "username",
+    "USE_SSO_COOKIE": True,
+    "SSO_COOKIE_DATA": "email",
     "SSO_COOKIE_MAX_AGE": None,
     "SSO_COOKIE_DOMAIN": "localhost",
     "USE_AUTH_BACKEND": False,
     "AUTH_BACKEND": "",  # Defaults to django.contrib.auth.backends.ModelBackend
-    "USE_RAPIDPRO_VIEWSET": False,
+    "REDIRECT_AFTER_AUTH": "http://localhost:3000",
 }
 
 OPENID_CONNECT_AUTH_SERVERS = {

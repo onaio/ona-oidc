@@ -34,6 +34,7 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
         "family_name": "last_name",
         "sub": "email",
     },
+    "SPLIT_NAME_CLAIM": True,
     "USER_UNIQUE_FILTER_FIELD": "email",
     "SSO_COOKIE_DATA": "email",
     "JWT_ALGORITHM": "HS256",
@@ -266,6 +267,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 "given_name": "john",
                 "family_name": "doe",
                 "sub": "john@doe.com",
+                "name": "Avoided name",
             }
             user_count = User.objects.count()
             data = {"id_token": "saasdrrw.fdfdfdswg4gdfs.sadadsods"}
@@ -273,7 +275,15 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             response = view(request, auth_server="default")
             # Redirects to the redirect url on successful user creation
             self.assertEqual(response.status_code, 302)
-            self.assertEqual(User.objects.count(), user_count + 1)
+            user_count += 1
+            self.assertEqual(User.objects.count(), user_count)
+            # User attributes were set correctly
+            # Ensure `name` claim was not used since the mapped first_name
+            # & last_name were present
+            user = User.objects.last()
+            self.assertEqual(user.first_name, "john")
+            self.assertEqual(user.last_name, "doe")
+            self.assertEqual(user.email, "john@doe.com")
 
             mock_func.return_value = {
                 "given_name": "john",
@@ -286,4 +296,22 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             # Redirects to the redirect url on successful user creation
             self.assertEqual(response.status_code, 302)
             # There has been no change in number of User accounts
+            self.assertEqual(User.objects.count(), user_count)
+
+            # Name is split into first_name and last_name if both any is not
+            # present
+            mock_func.return_value = {
+                "given_name": "Wrong",
+                "name": "Davis Raym",
+                "sub": "davis@m.com",
+            }
+            data = {"id_token": "saasdrrw.fdfdfdswg4gdfs.sadadsods"}
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 302)
             self.assertEqual(User.objects.count(), user_count + 1)
+            # Ensure user attributes were set correctly
+            user = User.objects.last()
+            self.assertEqual(user.first_name, "Davis")
+            self.assertEqual(user.last_name, "Raym")
+            self.assertEqual(user.email, "davis@m.com")

@@ -60,6 +60,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         self.jwt_algorithm = (
             config.get("JWT_ALGORITHM") or default_config["JWT_ALGORITHM"]
         )
+        self.split_name_claim = (
+            config.get("SPLIT_NAME_CLAIM") or default_config["SPLIT_NAME_CLAIM"]
+        )
         self.cookie_max_age = config.get("SSO_COOKIE_MAX_AGE")
         self.cookie_domain = config.get("SSO_COOKIE_DOMAIN", "localhost")
         self.use_auth_backend = config.get("USE_AUTH_BACKEND", False)
@@ -149,6 +152,14 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 data[self.map_claim_to_model[k]] = v
             else:
                 data[k] = v
+
+        # Split the name claim into `first_name` & `last_name`
+        if (self.split_name_claim and "name" in user_data.keys()) and (
+            "first_name" not in data.keys() or "last_name" not in data.keys()
+        ):
+            split_name = user_data["name"].split(" ")
+            data["first_name"] = " ".join(split_name[:1])
+            data["last_name"] = " ".join(split_name[1:])
         return data
 
     @action(methods=["POST"], detail=False)
