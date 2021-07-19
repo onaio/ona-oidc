@@ -45,7 +45,6 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     "SSO_COOKIE_DATA": "email",
     "SSO_COOKIE_MAX_AGE": None,
     "SSO_COOKIE_DOMAIN": "localhost",
-    "JWT_ALGORITHM": "HS256",
     "USE_AUTH_BACKEND": False,
     "AUTH_BACKEND": "",  # Defaults to django.contrib.auth.backends.ModelBackend
     "REDIRECT_AFTER_AUTH": "http://localhost:3000",
