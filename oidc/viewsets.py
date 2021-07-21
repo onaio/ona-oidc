@@ -172,7 +172,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             if k in self.field_validation_regex:
                 regex = re.compile(self.field_validation_regex[k])
                 if not regex.search(data[k]):
-                    raise ValueError(f'Invalid `{k}` value `{data[k]}`')
+                    raise ValueError(f"Invalid `{k}` value `{data[k]}`")
 
     @action(methods=["POST"], detail=False)
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
@@ -238,7 +238,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         return Response(
                             {"error": str(e)},
                             status=status.HTTP_400_BAD_REQUEST,
-                            template_name="oidc/oidc_missing_detail.html"
+                            template_name="oidc/oidc_missing_detail.html",
                         )
 
                     user_data = {

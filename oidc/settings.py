@@ -14,9 +14,7 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     "USER_UNIQUE_FILTER_FIELD": "username",
     "SSO_COOKIE_DATA": "email",
     "JWT_ALGORITHM": "HS256",
-    "FIELD_VALIDATION_REGEX": {
-        "username": "(?!^\d+$)^.+$"  # noqa
-    }
+    "FIELD_VALIDATION_REGEX": {"username": "(?!^\d+$)^.+$"},  # noqa
 }
 
 OPENID_CONNECT_AUTH_SERVERS = {
