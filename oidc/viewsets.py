@@ -170,9 +170,13 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     def validate_fields(self, data: dict) -> dict:
         for k, v in data.items():
             if k in self.field_validation_regex:
-                regex = re.compile(self.field_validation_regex[k])
-                if not regex.search(data[k]):
-                    raise ValueError(f"Invalid `{k}` value `{data[k]}`")
+                field_validation_regex = self.field_validation_regex[k]
+                regex = re.compile(field_validation_regex.get("regex"))
+                if regex and not regex.search(data[k]):
+                    raise ValueError(
+                        field_validation_regex.get("help_text")
+                        or f"Invalid `{k}` value `{data[k]}`"
+                    )
 
     @action(methods=["POST"], detail=False)
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:

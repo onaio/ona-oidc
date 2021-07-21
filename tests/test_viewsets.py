@@ -201,7 +201,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 400)
             self.assertIn(
-                "Invalid `username` value `12345`",
+                "Username should only contain alpha numeric characters",
                 response.rendered_content.decode("utf-8"),
             )
 
