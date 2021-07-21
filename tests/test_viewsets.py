@@ -130,13 +130,14 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 "Missing required fields", response.rendered_content.decode("utf-8"),
             )
 
-    def test_validates_username(self):
+    def test_validates_data(self):
         """
         Test that the endpoint validates whether a username is already
         used within the system.
 
         i. Returns an error if same username is used
         ii. Returns an error if same username is used even if differently cased
+        iii. Returns an error if value doesn't match regex
         """
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         with patch(
@@ -185,6 +186,22 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertIn(
                 "Username field missing or already in use.",
+                response.rendered_content.decode("utf-8"),
+            )
+
+            # Test error returned when username doesn't match regex
+            mock_func.return_value = {
+                "given_name": "jane",
+                "family_name": "doe",
+                "email": "jane@doe.com",
+                "preferred_username": "12345",
+            }
+            data = {"id_token": "ssad9012.fdfdfdswg4gdfs.sadadsods"}
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 400)
+            self.assertIn(
+                "Username should only contain alpha numeric characters",
                 response.rendered_content.decode("utf-8"),
             )
 
