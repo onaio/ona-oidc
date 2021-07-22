@@ -1,11 +1,13 @@
+from django.conf import settings
 from django.contrib.auth import get_user_model
 
 import jwt
 
 
-def authenticate_sso(
-    request, secret_key: str, algorithm: str, unique_user_field: str = "email"
-):
+def authenticate_sso(request, unique_user_field: str = "email"):
+    config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
+    secret_key = config.get("JWT_SECRET_KEY", "")
+    algorithm = config.get("JWT_ALGORITHM", "HS256")
     sso = request.META.get("HTTP_SSO") or request.COOKIES.get("SSO")
     if not sso:
         return None
