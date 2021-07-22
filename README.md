@@ -56,7 +56,8 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
             "regex": "(?!^\d+$)^.+$",
             "help_text": "Username should only contain alpha numeric characters",
         }
-    }
+    },
+    "USER_DEFAULTS": {}
 }
 
 OPENID_CONNECT_AUTH_SERVERS = {
