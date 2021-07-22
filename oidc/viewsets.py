@@ -30,6 +30,15 @@ default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 SSO_COOKIE_NAME = "SSO"
 
 
+def _import_class(class_path: str):
+    modules = class_path.split('.')
+    module = __import__(modules[0])
+
+    for mod in modules[1:]:
+        module = getattr(module, mod)
+    return module
+
+
 class BaseOpenIDConnectViewset(viewsets.ViewSet):
     """
     BaseOpenIDConnectViewset: Base viewset that implements login and logout
@@ -67,8 +76,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         self.cookie_max_age = config.get("SSO_COOKIE_MAX_AGE")
         self.cookie_domain = config.get("SSO_COOKIE_DOMAIN", "localhost")
         self.use_auth_backend = config.get("USE_AUTH_BACKEND", False)
-        self.auth_backend = config.get(
+        self.auth_backend = _import_class(
+            config.get(
             "AUTH_BACKEND", "django.contrib.auth.backends.ModelBackend"
+            )
         )
         self.unique_user_filter_field = (
             config.get("USER_UNIQUE_FILTER_FIELD")
