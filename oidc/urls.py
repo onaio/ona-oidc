@@ -4,8 +4,8 @@ URL Configuration file for ona-oidc
 from django.conf import settings
 from django.urls import re_path
 
-from oidc.viewsets import RapidProOpenIDConnectViewset, UserModelOpenIDConnectViewset
 from oidc.utils import str_to_bool
+from oidc.viewsets import RapidProOpenIDConnectViewset, UserModelOpenIDConnectViewset
 
 app_name = "oidc"
 
