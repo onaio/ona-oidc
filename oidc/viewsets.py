@@ -51,6 +51,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         self.user_creation_fields = (
             config.get("USER_CREATION_FIELDS") or default_config["USER_CREATION_FIELDS"]
         )
+        self.user_default_fields = config.get("USER_DEFAULTS") or {}
         self.map_claim_to_model = (
             config.get("MAP_CLAIM_TO_MODEL") or default_config["MAP_CLAIM_TO_MODEL"]
         )
@@ -250,7 +251,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         for k, v in user_data.items()
                         if k in self.user_creation_fields
                     }
-                    user = self.create_login_user(user_data)
+                    create_data = self.user_default_fields
+                    create_data.update(user_data)
+                    user = self.create_login_user(create_data)
 
                 if user:
                     return self.generate_successful_response(request, user)
