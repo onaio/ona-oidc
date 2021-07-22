@@ -16,3 +16,9 @@ def authenticate_sso(
     if user and user.is_active:
         return (user, True)
     return None
+
+
+def str_to_bool(val):
+    if isinstance(val, str):
+        val = 0 if val == "False" else 1
+    return val
