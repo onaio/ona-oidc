@@ -12,9 +12,13 @@ def authenticate_sso(request, unique_user_field: str = "email"):
     if not sso:
         return None
 
-    jwt_payload = jwt.decode(sso, secret_key, algorithm=[algorithm])
+    jwt_payload = jwt.decode(sso, secret_key, algorithms=[algorithm])
     unique_user_value = jwt_payload.get(unique_user_field)
-    user = get_user_model().objects.filter(**{unique_user_field: unique_user_value})
+    user = (
+        get_user_model()
+        .objects.filter(**{unique_user_field: unique_user_value})
+        .first()
+    )
     if user and user.is_active:
         return (user, True)
     return None
