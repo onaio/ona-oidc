@@ -14,6 +14,7 @@ import requests
 from jwt.algorithms import RSAAlgorithm
 
 import oidc.settings as default
+from oidc.utils import str_to_bool
 
 config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
 default_config = getattr(default, "OPENID_CONNECT_AUTH_SERVERS", {})["default"]
@@ -43,7 +44,7 @@ class OpenIDClient:
         self.response_mode = (
             config[auth_server].get("RESPONSE_MODE") or default_config["RESPONSE_MODE"]
         )
-        self.cache_nonces = (
+        self.cache_nonces = str_to_bool(
             config[auth_server].get("USE_NONCES") or default_config["USE_NONCES"]
         )
 

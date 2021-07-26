@@ -4,6 +4,7 @@ URL Configuration file for ona-oidc
 from django.conf import settings
 from django.urls import re_path
 
+from oidc.utils import str_to_bool
 from oidc.viewsets import RapidProOpenIDConnectViewset, UserModelOpenIDConnectViewset
 
 app_name = "oidc"
@@ -11,7 +12,7 @@ app_name = "oidc"
 viewset_class = UserModelOpenIDConnectViewset
 
 config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
-if config.get("USE_RAPIDPRO_VIEWSET", False):
+if str_to_bool(config.get("USE_RAPIDPRO_VIEWSET", False)):
     viewset_class = RapidProOpenIDConnectViewset
 
 urlpatterns = [

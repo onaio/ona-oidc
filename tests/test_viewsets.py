@@ -34,6 +34,9 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
         "family_name": "last_name",
         "sub": "email",
     },
+    "USER_DEFAULTS": {
+        "is_active": False
+    },
     "SPLIT_NAME_CLAIM": True,
     "USER_UNIQUE_FILTER_FIELD": "email",
     "SSO_COOKIE_DATA": "email",
@@ -332,3 +335,5 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(user.first_name, "Davis")
             self.assertEqual(user.last_name, "Raym")
             self.assertEqual(user.email, "davis@m.com")
+            # Ensure default values are respected if not overriden
+            self.assertEqual(user.is_active, False)

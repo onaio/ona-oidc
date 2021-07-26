@@ -25,6 +25,7 @@ from rest_framework.response import Response
 import oidc.settings as default
 from oidc.client import OpenIDClient
 from oidc.client import config as auth_config
+from oidc.utils import str_to_bool
 
 default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 SSO_COOKIE_NAME = "SSO"
@@ -51,10 +52,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         self.user_creation_fields = (
             config.get("USER_CREATION_FIELDS") or default_config["USER_CREATION_FIELDS"]
         )
+        self.user_default_fields = config.get("USER_DEFAULTS") or {}
         self.map_claim_to_model = (
             config.get("MAP_CLAIM_TO_MODEL") or default_config["MAP_CLAIM_TO_MODEL"]
         )
-        self.use_sso = config.get("USE_SSO_COOKIE", True)
+        self.use_sso = str_to_bool(config.get("USE_SSO_COOKIE", True))
         self.sso_cookie = (
             config.get("SSO_COOKIE_DATA") or default_config["SSO_COOKIE_DATA"]
         )
@@ -66,7 +68,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         )
         self.cookie_max_age = config.get("SSO_COOKIE_MAX_AGE")
         self.cookie_domain = config.get("SSO_COOKIE_DOMAIN", "localhost")
-        self.use_auth_backend = config.get("USE_AUTH_BACKEND", False)
+        self.use_auth_backend = str_to_bool(config.get("USE_AUTH_BACKEND", False))
         self.auth_backend = config.get(
             "AUTH_BACKEND", "django.contrib.auth.backends.ModelBackend"
         )
@@ -250,7 +252,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         for k, v in user_data.items()
                         if k in self.user_creation_fields
                     }
-                    user = self.create_login_user(user_data)
+                    create_data = self.user_default_fields
+                    create_data.update(user_data)
+                    user = self.create_login_user(create_data)
 
                 if user:
                     return self.generate_successful_response(request, user)
