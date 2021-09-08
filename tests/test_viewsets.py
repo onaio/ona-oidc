@@ -36,7 +36,7 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     },
     "USER_DEFAULTS": {
         "default": {"is_active": False},
-        "^.*@ona.io$": {"is_active": True},
+        "^.*@ona.io$": {"is_active": True}
     },
     "SPLIT_NAME_CLAIM": True,
     "USER_UNIQUE_FILTER_FIELD": "email",
@@ -370,7 +370,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             user = User.objects.last()
             self.assertEqual(user.first_name, "john")
             self.assertEqual(user.last_name, "doe")
-            self.assertEqual(user.email, "john@doe.com")
+            self.assertEqual(user.email, "john@ona.io")
             self.assertEqual(user.is_active, True)
 
             # User who aren't from @ona.io should have is_active set to False
