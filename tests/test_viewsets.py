@@ -35,7 +35,8 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
         "sub": "email",
     },
     "USER_DEFAULTS": {
-        "is_active": False
+        "default": {"is_active": False},
+        "^.*@ona.io$": {"is_active": True},
     },
     "SPLIT_NAME_CLAIM": True,
     "USER_UNIQUE_FILTER_FIELD": "email",
@@ -130,7 +131,8 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 400)
             self.assertIn(
-                "Missing required fields", response.rendered_content.decode("utf-8"),
+                "Missing required fields",
+                response.rendered_content.decode("utf-8"),
             )
 
     def test_validates_data(self):
@@ -336,4 +338,60 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(user.last_name, "Raym")
             self.assertEqual(user.email, "davis@m.com")
             # Ensure default values are respected if not overriden
+            self.assertEqual(user.is_active, False)
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_user_defaults_flows(self):
+        """
+        Test that different user defaults flows....
+        """
+        # Mock two ID Tokens
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "given_name": "john",
+                "family_name": "doe",
+                "sub": "john@ona.io",
+                "name": "Avoided name",
+            }
+            user_count = User.objects.count()
+            data = {"id_token": "saasdrrw.fdfdfdswg4gdfs.sadadsods"}
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            # Redirects to the redirect url on successful user creation
+            self.assertEqual(response.status_code, 302)
+            user_count += 1
+            self.assertEqual(User.objects.count(), user_count)
+            # User attributes were set correctly
+            # Ensure `name` claim was not used since the mapped first_name
+            # & last_name were present
+            user = User.objects.last()
+            self.assertEqual(user.first_name, "john")
+            self.assertEqual(user.last_name, "doe")
+            self.assertEqual(user.email, "john@doe.com")
+            self.assertEqual(user.is_active, True)
+
+            # User who aren't from @ona.io should have is_active set to False
+            mock_func.return_value = {
+                "given_name": "john",
+                "family_name": "doe",
+                "sub": "john@example.com",
+                "name": "Avoided name",
+            }
+            user_count = User.objects.count()
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            # Redirects to the redirect url on successful user creation
+            self.assertEqual(response.status_code, 302)
+            user_count += 1
+            self.assertEqual(User.objects.count(), user_count)
+            # User attributes were set correctly
+            # Ensure `name` claim was not used since the mapped first_name
+            # & last_name were present
+            user = User.objects.last()
+            self.assertEqual(user.first_name, "john")
+            self.assertEqual(user.last_name, "doe")
+            self.assertEqual(user.email, "john@example.com")
             self.assertEqual(user.is_active, False)
