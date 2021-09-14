@@ -252,7 +252,19 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         for k, v in user_data.items()
                         if k in self.user_creation_fields
                     }
-                    create_data = self.user_default_fields
+
+                    checks = [
+                        key
+                        for key in self.user_default_fields.keys()
+                        if key != "default"
+                    ]
+                    create_data = self.user_default_fields.get("default", {})
+                    for check in checks:
+                        match = re.match(check, user_data.get("email"))
+                        if match:
+                            create_data = self.user_default_fields[check]
+                            break
+
                     create_data.update(user_data)
                     user = self.create_login_user(create_data)
 

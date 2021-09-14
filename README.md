@@ -57,7 +57,16 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
             "help_text": "Username should only contain alpha numeric characters",
         }
     },
-    "USER_DEFAULTS": {}
+    # A map containing an optional `default` key along side other regex keys i.e ^.*@ona.io$ with the value being
+    # what defaults users with emails that match the regex or don't match any regex(default) should get.
+    "USER_DEFAULTS": {
+        "default": {
+            "is_active": False
+        },
+        <regex_value>: {
+            "is_active": True
+        }
+    }
 }
 
 OPENID_CONNECT_AUTH_SERVERS = {
