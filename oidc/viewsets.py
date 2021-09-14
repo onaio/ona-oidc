@@ -27,7 +27,6 @@ from oidc.client import OpenIDClient
 from oidc.client import config as auth_config
 from oidc.utils import str_to_bool
 
-
 default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 SSO_COOKIE_NAME = "SSO"
 
@@ -41,7 +40,6 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     permission_classes = [permissions.AllowAny]
     renderer_classes = [JSONRenderer, TemplateHTMLRenderer]
     user_model = None
-   
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -255,14 +253,18 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         if k in self.user_creation_fields
                     }
 
-                    checks = [key for key in self.user_default_fields.keys() if key != "default"]
+                    checks = [
+                        key
+                        for key in self.user_default_fields.keys()
+                        if key != "default"
+                    ]
                     create_data = self.user_default_fields.get("default", {})
                     for check in checks:
                         match = re.match(check, user_data.get("email"))
                         if match:
                             create_data = self.user_default_fields[check]
                             break
-                  
+
                     create_data.update(user_data)
                     user = self.create_login_user(create_data)
 
