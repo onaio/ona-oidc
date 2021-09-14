@@ -7,9 +7,9 @@ setup(
     name="ona-oidc",
     version=__import__("oidc").__version__,
     description="A Django app that adds OpenID connect client functionality.",
-    license="",
+    license="Apache-2.0 License",
     author="Ona Kenya",
-    url="",
+    url="https://github.com/onaio/ona-oidc",
     packages=find_packages(exclude=["tests"]),
     install_requires=[
         "Django >= 2.2",
