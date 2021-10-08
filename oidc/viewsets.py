@@ -202,6 +202,16 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
                 if self.user_model.objects.filter(email=email).count() > 0:
                     user = self.user_model.objects.get(email=email)
+                elif not email and "emails" in user_data.keys():
+                    emails = user_data.get("emails")
+                    user = self.user_model.objects.filter(
+                        email__in=user_data.get("emails")
+                    ).first()
+                    if not user:
+                        # If a user does not exist for all the users valid emails
+                        # set the `email` claim to the first email in the `emails`
+                        # list
+                        email = emails[0]
                 else:
                     if self._check_user_exists(user_data):
                         # If a user with the unique field exists request the
