@@ -20,6 +20,10 @@ config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
 default_config = getattr(default, "OPENID_CONNECT_AUTH_SERVERS", {})["default"]
 
 
+class NonceVerificationFailed(Exception):
+    pass
+
+
 class OpenIDClient:
     """
     OpenID connect client class
@@ -89,8 +93,9 @@ class OpenIDClient:
                     # provider returning it
                     server = cache.get(decoded_token.get("nonce"))
                     if self.auth_server != server:
-                        return None
-
+                        raise NonceVerificationFailed(
+                            "Failed to verify returned nonce value."
+                        )
                 return decoded_token
             except Exception as e:
                 raise e
