@@ -23,7 +23,7 @@ from rest_framework.renderers import JSONRenderer, TemplateHTMLRenderer
 from rest_framework.response import Response
 
 import oidc.settings as default
-from oidc.client import OpenIDClient
+from oidc.client import OpenIDClient, NonceVerificationFailed
 from oidc.client import config as auth_config
 from oidc.utils import str_to_bool
 
@@ -195,7 +195,22 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 user = None
 
                 # Verify, decode and retrieve user information from ID Token
-                decoded_token = client.verify_and_decode_id_token(id_token)
+                try:
+                    decoded_token = client.verify_and_decode_id_token(id_token)
+                except NonceVerificationFailed as e:
+                    return Response(
+                        {
+                            "error": _(
+                                f"Unable to validate authentication request; Nonce verification has failed. Kindly retry authentication process."
+                            ),
+                            "error-title": _(
+                                f"Authentication request verification failed"
+                            ),
+                        },
+                        status=status.HTTP_401_UNAUTHORIZED,
+                        template_name="oidc/oidc_unrecoverable_error.html",
+                    )
+
                 user_data.update(decoded_token)
                 user_data = self.map_claims_to_model_field(user_data)
                 email = user_data.get("email")
@@ -214,15 +229,20 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         email = emails[0]
                 else:
                     if self._check_user_exists(user_data):
-                        # If a user with the unique field exists request the
-                        # user to enter unique field
-                        field = self.unique_user_filter_field.capitalize()
+                        data = {"id_token": id_token}
+                        unique_field = self.unique_user_filter_field
+
+                        if user_data.get(unique_field):
+                            # If the unique field is present in the user creation data; Inform the user that the
+                            # username is already in use.
+                            data.update(
+                                {
+                                    "error": f"{unique_field.capitalize()} field is already in use."
+                                }
+                            )
+
                         return Response(
-                            {
-                                "id_token": id_token,
-                                "error": _(f"{field} field missing or already in use."),
-                            },
-                            template_name="oidc/oidc_user_data_entry.html",
+                            data, template_name="oidc/oidc_user_data_entry.html",
                         )
 
                 if not user:
@@ -243,9 +263,14 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     if len(missing_fields) > 0:
                         missing_fields = ", ".join(missing_fields)
                         return Response(
-                            {"error": _(f"Missing required fields: {missing_fields}")},
+                            {
+                                "error": _(
+                                    f"Missing required fields: {missing_fields}"
+                                ),
+                                "error-title": _(f"Missing details in ID Token"),
+                            },
                             status=status.HTTP_400_BAD_REQUEST,
-                            template_name="oidc/oidc_missing_detail.html",
+                            template_name="oidc/oidc_unrecoverable_error.html",
                         )
 
                     try:
@@ -254,7 +279,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         return Response(
                             {"error": str(e)},
                             status=status.HTTP_400_BAD_REQUEST,
-                            template_name="oidc/oidc_missing_detail.html",
+                            template_name="oidc/oidc_user_data_entry.html",
                         )
 
                     user_data = {
