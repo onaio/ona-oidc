@@ -3,7 +3,7 @@ oidc Viewsets module
 """
 import importlib
 import re
-from typing import Optional
+from typing import Optional, Tuple
 
 from django.conf import settings
 from django.contrib.auth import get_user_model, login
@@ -23,7 +23,7 @@ from rest_framework.renderers import JSONRenderer, TemplateHTMLRenderer
 from rest_framework.response import Response
 
 import oidc.settings as default
-from oidc.client import OpenIDClient
+from oidc.client import NonceVerificationFailed, OpenIDClient
 from oidc.client import config as auth_config
 from oidc.utils import str_to_bool
 
@@ -111,9 +111,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             _("Unable to process OpenID connect logout request."),
         )
 
-    def _check_user_exists(self, user_data: dict) -> bool:
+    def _check_user_uniqueness(self, user_data: dict) -> bool:
         """
-        Helper function that checks if a user exists. If user_data does not
+        Helper function that checks if the supplied user data is unique. If user_data does not
         contain the unique user field the assumption is that the user
         exists.
         """
@@ -180,106 +180,125 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         or f"Invalid `{k}` value `{data[k]}`"
                     )
 
+    def _get_user_group_defaults(self, email: str) -> dict:
+        groups = [key for key in self.user_default_fields.keys() if key != "default"]
+
+        user_default = self.user_default_fields.get("default", {})
+        for group in groups:
+            match = re.match(group, email)
+            if match:
+                user_default = self.user_default_fields[group]
+                break
+
+        return user_default
+
+    def _clean_user_data(self, user_data) -> Tuple[dict, Optional[list]]:
+        user_data = {
+            k: v for k, v in user_data.items() if k in self.user_creation_fields
+        }
+        missing_fields = set(self.required_fields).difference(set(user_data.keys()))
+
+        # Use last_name as first_name if first_name is missing
+        if "first_name" in missing_fields and "last_name" in user_data:
+            user_data["first_name"] = user_data["last_name"]
+            missing_fields.remove("first_name")
+
+        # use email as username if username is missing
+        if "username" in missing_fields and "email" in user_data:
+            user_data["username"] = user_data["email"]
+            missing_fields.remove("username")
+
+        return user_data, missing_fields
+
     @action(methods=["POST"], detail=False)
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         client = self._get_client(**kwargs)
+        user = None
         if client:
             user_data = request.POST.dict()
-            id_token = user_data.pop("id_token") if "id_token" in user_data else None
-            code = user_data.pop("code") if "code" in user_data else None
+            id_token = user_data.get("id_token")
 
-            if code and not id_token:
-                id_token = client.retrieve_token_using_auth_code(code)
+            if not id_token and user_data.get("code"):
+                id_token = client.retrieve_token_using_auth_code(user_data.get("code"))
 
             if id_token:
-                user = None
+                try:
+                    decoded_token = client.verify_and_decode_id_token(id_token)
+                    user_data.update(decoded_token)
+                    user_data = self.map_claims_to_model_field(user_data)
+                    filter_kwargs = None
 
-                # Verify, decode and retrieve user information from ID Token
-                decoded_token = client.verify_and_decode_id_token(id_token)
-                user_data.update(decoded_token)
-                user_data = self.map_claims_to_model_field(user_data)
-                email = user_data.get("email")
+                    if "email" in user_data:
+                        filter_kwargs = {"email": user_data.get("email")}
+                    elif "emails" in user_data:
+                        user_data["email"] = user_data.get("emails")[0]
+                        filter_kwargs = {"email__in": user_data.get("emails")}
 
-                if self.user_model.objects.filter(email=email).count() > 0:
-                    user = self.user_model.objects.get(email=email)
-                elif not email and "emails" in user_data.keys():
-                    emails = user_data.get("emails")
-                    user = self.user_model.objects.filter(
-                        email__in=user_data.get("emails")
-                    ).first()
+                    if (
+                        filter_kwargs
+                        and self.user_model.objects.filter(**filter_kwargs).count() > 0
+                    ):
+                        user = self.user_model.objects.get(**filter_kwargs)
+                    else:
+                        if self._check_user_uniqueness(user_data):
+                            data = {"id_token": id_token}
+                            if user_data.get(self.unique_user_filter_field):
+                                data.update(
+                                    {
+                                        "error": f"{self.unique_user_filter_field.capitalize()} field is already in use."
+                                    }
+                                )
+                            return Response(
+                                data, template_name="oidc/oidc_user_data_entry.html"
+                            )
+
                     if not user:
-                        # If a user does not exist for all the users valid emails
-                        # set the `email` claim to the first email in the `emails`
-                        # list
-                        email = emails[0]
-                else:
-                    if self._check_user_exists(user_data):
-                        # If a user with the unique field exists request the
-                        # user to enter unique field
-                        field = self.unique_user_filter_field.capitalize()
-                        return Response(
-                            {
-                                "id_token": id_token,
-                                "error": _(f"{field} field missing or already in use."),
-                            },
-                            template_name="oidc/oidc_user_data_entry.html",
-                        )
+                        user_data, missing_fields = self._clean_user_data(user_data)
 
-                if not user:
-                    missing_fields = set(self.required_fields).difference(
-                        set(user_data.keys())
-                    )
+                        if missing_fields:
+                            missing_fields = ", ".join(missing_fields)
+                            return Response(
+                                {
+                                    "error": _(
+                                        f"Missing required fields: {missing_fields}"
+                                    ),
+                                    "error-title": _("Missing details in ID Token"),
+                                },
+                                status=status.HTTP_400_BAD_REQUEST,
+                                template_name="oidc/oidc_unrecoverable_error.html",
+                            )
 
-                    # Use last_name as first_name if first_name is missing
-                    if "first_name" in missing_fields and "last_name" in user_data:
-                        user_data["first_name"] = user_data["last_name"]
-                        missing_fields.remove("first_name")
-
-                    # use email as username if username is missing
-                    if "username" in missing_fields and "email" in user_data:
-                        user_data["username"] = user_data["email"]
-                        missing_fields.remove("username")
-
-                    if len(missing_fields) > 0:
-                        missing_fields = ", ".join(missing_fields)
-                        return Response(
-                            {"error": _(f"Missing required fields: {missing_fields}")},
-                            status=status.HTTP_400_BAD_REQUEST,
-                            template_name="oidc/oidc_missing_detail.html",
-                        )
-
-                    try:
                         self.validate_fields(user_data)
-                    except ValueError as e:
-                        return Response(
-                            {"error": str(e)},
-                            status=status.HTTP_400_BAD_REQUEST,
-                            template_name="oidc/oidc_missing_detail.html",
+
+                        create_data = self._get_user_group_defaults(
+                            user_data.get("email")
                         )
+                        create_data.update(user_data)
 
-                    user_data = {
-                        k: v
-                        for k, v in user_data.items()
-                        if k in self.user_creation_fields
-                    }
+                        user = self.create_login_user(create_data)
 
-                    checks = [
-                        key
-                        for key in self.user_default_fields.keys()
-                        if key != "default"
-                    ]
-                    create_data = self.user_default_fields.get("default", {})
-                    for check in checks:
-                        match = re.match(check, user_data.get("email"))
-                        if match:
-                            create_data = self.user_default_fields[check]
-                            break
-
-                    create_data.update(user_data)
-                    user = self.create_login_user(create_data)
-
-                if user:
-                    return self.generate_successful_response(request, user)
+                except ValueError as e:
+                    return Response(
+                        {"error": str(e)},
+                        status=status.HTTP_400_BAD_REQUEST,
+                        template_name="oidc/oidc_user_data_entry.html",
+                    )
+                except NonceVerificationFailed:
+                    return Response(
+                        {
+                            "error": _(
+                                "Unable to validate authentication request; Nonce verification has failed. Kindly retry authentication process."
+                            ),
+                            "error-title": _(
+                                "Authentication request verification failed"
+                            ),
+                        },
+                        status=status.HTTP_401_UNAUTHORIZED,
+                        template_name="oidc/oidc_unrecoverable_error.html",
+                    )
+                else:
+                    if user:
+                        return self.generate_successful_response(request, user)
         return HttpResponseBadRequest(
             _("Unable to process OpenID connect authentication request."),
         )

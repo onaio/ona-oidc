@@ -174,7 +174,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(user_count, User.objects.count())
             self.assertEqual(response.status_code, 200)
             self.assertIn(
-                "Username field missing or already in use.",
+                "Username field is already in use.",
                 response.rendered_content.decode("utf-8"),
             )
 
@@ -190,8 +190,23 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 200)
             self.assertIn(
-                "Username field missing or already in use.",
+                "Username field is already in use.",
                 response.rendered_content.decode("utf-8"),
+            )
+
+            # Test error not returned if username is not in the ID Token
+            mock_func.return_value = {
+                "given_name": "jane",
+                "family_name": "doe",
+                "email": "jane@doe.com",
+            }
+            data = {"id_token": "ssad9012.fdfdfdswg4gdfs.sadadsods"}
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn(
+                "Username field is already in use.",
+                response.rendered_content.decode("utf-8")
             )
 
             # Test error returned when username doesn't match regex
