@@ -262,7 +262,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                                     "error": _(
                                         f"Missing required fields: {missing_fields}"
                                     ),
-                                    "error-title": _("Missing details in ID Token"),
+                                    "error_title": _("Missing details in ID Token"),
                                 },
                                 status=status.HTTP_400_BAD_REQUEST,
                                 template_name="oidc/oidc_unrecoverable_error.html",
@@ -289,7 +289,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             "error": _(
                                 "Unable to validate authentication request; Nonce verification has failed. Kindly retry authentication process."
                             ),
-                            "error-title": _(
+                            "error_title": _(
                                 "Authentication request verification failed"
                             ),
                         },
