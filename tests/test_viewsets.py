@@ -55,7 +55,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         TestCase().setUp()
         self.factory = APIRequestFactory()
 
-    def test_returns_data_entry_template_on_missing_creation_claim(self):
+    def test_returns_data_entry_template_on_missing_username_claim(self):
         """
         Test that users are redirected to the data entry
         page when username is not present in decoded token
@@ -75,6 +75,29 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
+ 
+    def test_unrecoverable_error_on_missing_claim(self):
+        """
+        Test that an error is returned when a required claim field other than the
+        username is missing from the ID Token
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "username": "bob",
+                "email": "bob@example.com",
+            }
+
+            data = {"id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia"}
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.template_name, "oidc/oidc_unrecoverable_error.html")
+            self.assertEqual(
+                response.data.get('error'),
+                'Missing required fields: first_name')
 
     def test_create_non_existing_user(self):
         """
