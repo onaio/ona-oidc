@@ -66,6 +66,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         self.split_name_claim = (
             config.get("SPLIT_NAME_CLAIM") or default_config["SPLIT_NAME_CLAIM"]
         )
+        self.use_email_as_username = config.get(
+            "USE_EMAIL_USERNAME", default_config["USE_EMAIL_USERNAME"]
+        )
         self.cookie_max_age = config.get("SSO_COOKIE_MAX_AGE")
         self.cookie_domain = config.get("SSO_COOKIE_DOMAIN", "localhost")
         self.use_auth_backend = str_to_bool(config.get("USE_AUTH_BACKEND", False))
@@ -248,9 +251,18 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                                         "error": f"{self.unique_user_filter_field.capitalize()} field is already in use."
                                     }
                                 )
-                            return Response(
-                                data, template_name="oidc/oidc_user_data_entry.html"
-                            )
+                            elif (
+                                not user_data.get("username")
+                                and self.use_email_as_username
+                            ):
+                                if user_data.get("email"):
+                                    user_data["username"] = user_data["email"].split(
+                                        "@"
+                                    )[0]
+                            else:
+                                return Response(
+                                    data, template_name="oidc/oidc_user_data_entry.html"
+                                )
 
                     if not user:
                         user_data, missing_fields = self._clean_user_data(user_data)
