@@ -39,6 +39,7 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
         "^.*@ona.io$": {"is_active": True}
     },
     "SPLIT_NAME_CLAIM": True,
+    "USE_EMAIL_USERNAME": True,
     "USER_UNIQUE_FILTER_FIELD": "email",
     "SSO_COOKIE_DATA": "email",
     "JWT_ALGORITHM": "HS256",
@@ -247,6 +248,31 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 "Username should only contain alpha numeric characters",
                 response.rendered_content.decode("utf-8"),
             )
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_uses_first_part_of_email_as_username(self):
+        """
+        Test that when the USE_EMAIL_USERNAME setting is set to True
+        the first part of the returned email address is used as a
+        username
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "family_name": "bob",
+                "given_name": "just bob",
+                "email": "bob@example.com",
+            }
+
+            data = {"id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia"}
+            count = User.objects.all().count()
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(count + 1, User.objects.all().count())
+            self.assertEqual(1, User.objects.filter(username='bob').count())
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch(
