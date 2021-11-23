@@ -435,13 +435,14 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(user.first_name, "john")
             self.assertEqual(user.last_name, "doe")
             self.assertEqual(user.email, "john@ona.io")
+            self.assertEqual(user.username, "john")
             self.assertEqual(user.is_active, True)
 
             # User who aren't from @ona.io should have is_active set to False
             mock_func.return_value = {
                 "given_name": "john",
                 "family_name": "doe",
-                "sub": "john@example.com",
+                "sub": "johne@example.com",
                 "name": "Avoided name",
             }
             user_count = User.objects.count()
@@ -457,5 +458,6 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             user = User.objects.last()
             self.assertEqual(user.first_name, "john")
             self.assertEqual(user.last_name, "doe")
-            self.assertEqual(user.email, "john@example.com")
+            self.assertEqual(user.username, "johne")
+            self.assertEqual(user.email, "johne@example.com")
             self.assertEqual(user.is_active, False)
