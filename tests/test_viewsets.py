@@ -39,6 +39,7 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
         "^.*@ona.io$": {"is_active": True}
     },
     "SPLIT_NAME_CLAIM": True,
+    "USE_EMAIL_USERNAME": True,
     "USER_UNIQUE_FILTER_FIELD": "email",
     "SSO_COOKIE_DATA": "email",
     "JWT_ALGORITHM": "HS256",
@@ -248,6 +249,31 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 response.rendered_content.decode("utf-8"),
             )
 
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_uses_first_part_of_email_as_username(self):
+        """
+        Test that when the USE_EMAIL_USERNAME setting is set to True
+        the first part of the returned email address is used as a
+        username
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "family_name": "bob",
+                "given_name": "just bob",
+                "email": "bob@example.com",
+            }
+
+            data = {"id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia"}
+            count = User.objects.all().count()
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(count + 1, User.objects.all().count())
+            self.assertEqual(1, User.objects.filter(username='bob').count())
+
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch(
         "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
@@ -409,13 +435,14 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(user.first_name, "john")
             self.assertEqual(user.last_name, "doe")
             self.assertEqual(user.email, "john@ona.io")
+            self.assertEqual(user.username, "john")
             self.assertEqual(user.is_active, True)
 
             # User who aren't from @ona.io should have is_active set to False
             mock_func.return_value = {
                 "given_name": "john",
                 "family_name": "doe",
-                "sub": "john@example.com",
+                "sub": "johne@example.com",
                 "name": "Avoided name",
             }
             user_count = User.objects.count()
@@ -431,5 +458,6 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             user = User.objects.last()
             self.assertEqual(user.first_name, "john")
             self.assertEqual(user.last_name, "doe")
-            self.assertEqual(user.email, "john@example.com")
+            self.assertEqual(user.username, "johne")
+            self.assertEqual(user.email, "johne@example.com")
             self.assertEqual(user.is_active, False)

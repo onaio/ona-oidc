@@ -66,6 +66,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         self.split_name_claim = (
             config.get("SPLIT_NAME_CLAIM") or default_config["SPLIT_NAME_CLAIM"]
         )
+        self.use_email_as_username = config.get(
+            "USE_EMAIL_USERNAME", default_config["USE_EMAIL_USERNAME"]
+        )
         self.cookie_max_age = config.get("SSO_COOKIE_MAX_AGE")
         self.cookie_domain = config.get("SSO_COOKIE_DOMAIN", "localhost")
         self.use_auth_backend = str_to_bool(config.get("USE_AUTH_BACKEND", False))
@@ -118,10 +121,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         exists.
         """
         if user_data.get(self.unique_user_filter_field):
-            field_value = user_data.get(self.unique_user_filter_field)
-            field = self.unique_user_filter_field + "__iexact"
-            return self.user_model.objects.filter(**{field: field_value}).count() > 0
-        return True
+            unique_field_value = user_data.get(self.unique_user_filter_field)
+            unique_field = self.unique_user_filter_field + "__iexact"
+            filter_kwargs = {unique_field: unique_field_value}
+            return not self.user_model.objects.filter(**filter_kwargs).count() > 0
+        return False
 
     def generate_successful_response(self, request, user) -> HttpResponse:
         """
@@ -204,9 +208,15 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             missing_fields.remove("first_name")
 
         # use email as username if username is missing
-        if "username" in missing_fields and "email" in user_data:
-            user_data["username"] = user_data["email"]
-            missing_fields.remove("username")
+        if self.use_email_as_username:
+            if "username" in missing_fields and "email" in user_data:
+                username = user_data["email"].split("@")[0]
+                if (
+                    self.user_model.objects.filter(username__iexact=username).count()
+                    == 0
+                ):
+                    user_data["username"] = user_data["email"].split("@")[0]
+                    missing_fields.remove("username")
 
         return user_data, missing_fields
 
@@ -239,33 +249,37 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         and self.user_model.objects.filter(**filter_kwargs).count() > 0
                     ):
                         user = self.user_model.objects.get(**filter_kwargs)
-                    else:
-                        if self._check_user_uniqueness(user_data):
-                            data = {"id_token": id_token}
-                            if user_data.get(self.unique_user_filter_field):
-                                data.update(
-                                    {
-                                        "error": f"{self.unique_user_filter_field.capitalize()} field is already in use."
-                                    }
-                                )
-                            return Response(
-                                data, template_name="oidc/oidc_user_data_entry.html"
-                            )
 
                     if not user:
                         user_data, missing_fields = self._clean_user_data(user_data)
-
                         if missing_fields:
-                            missing_fields = ", ".join(missing_fields)
+                            if (
+                                len(missing_fields) == 1
+                                and list(missing_fields)[0] == "username"
+                            ):
+                                data = {"id_token": id_token}
+                                return Response(
+                                    data, template_name="oidc/oidc_user_data_entry.html"
+                                )
+                            else:
+                                missing_fields = ", ".join(missing_fields)
+                                return Response(
+                                    {
+                                        "error": _(
+                                            f"Missing required fields: {missing_fields}"
+                                        ),
+                                        "error_title": _("Missing details in ID Token"),
+                                    },
+                                    status=status.HTTP_400_BAD_REQUEST,
+                                    template_name="oidc/oidc_unrecoverable_error.html",
+                                )
+                        elif not self._check_user_uniqueness(user_data):
+                            data = {
+                                "id_token": id_token,
+                                "error": f"{self.unique_user_filter_field.capitalize()} field is already in use.",
+                            }
                             return Response(
-                                {
-                                    "error": _(
-                                        f"Missing required fields: {missing_fields}"
-                                    ),
-                                    "error_title": _("Missing details in ID Token"),
-                                },
-                                status=status.HTTP_400_BAD_REQUEST,
-                                template_name="oidc/oidc_unrecoverable_error.html",
+                                data, template_name="oidc/oidc_user_data_entry.html"
                             )
 
                         self.validate_fields(user_data)
@@ -276,7 +290,6 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         create_data.update(user_data)
 
                         user = self.create_login_user(create_data)
-
                 except ValueError as e:
                     return Response(
                         {"error": str(e)},
