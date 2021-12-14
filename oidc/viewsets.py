@@ -107,7 +107,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             if self.use_auth_backend:
                 logout_backend(request)
             if self.use_sso:
-                response.delete_cookie(SSO_COOKIE_NAME)
+                response.delete_cookie(SSO_COOKIE_NAME, domain=self.cookie_domain)
 
             return response
         return HttpResponseBadRequest(

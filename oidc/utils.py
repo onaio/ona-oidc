@@ -2,6 +2,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 
 import jwt
+from jwt.exceptions import InvalidSignatureError
 
 
 def authenticate_sso(request, unique_user_field: str = "email"):
@@ -12,15 +13,18 @@ def authenticate_sso(request, unique_user_field: str = "email"):
     if not sso:
         return None
 
-    jwt_payload = jwt.decode(sso, secret_key, algorithms=[algorithm])
-    unique_user_value = jwt_payload.get(unique_user_field)
-    user = (
-        get_user_model()
-        .objects.filter(**{unique_user_field: unique_user_value})
-        .first()
-    )
-    if user and user.is_active:
-        return (user, True)
+    try:
+        jwt_payload = jwt.decode(sso, secret_key, algorithms=[algorithm])
+        unique_user_value = jwt_payload.get(unique_user_field)
+        user = (
+            get_user_model()
+            .objects.filter(**{unique_user_field: unique_user_value})
+            .first()
+        )
+        if user and user.is_active:
+            return (user, True)
+    except InvalidSignatureError:
+        pass
     return None
 
 
