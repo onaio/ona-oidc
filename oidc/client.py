@@ -19,6 +19,8 @@ from oidc.utils import str_to_bool
 config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
 default_config = getattr(default, "OPENID_CONNECT_AUTH_SERVERS", {})["default"]
 
+REDIRECT_AFTER_AUTH = 'redirect_after_auth'
+
 
 class NonceVerificationFailed(Exception):
     pass
@@ -81,21 +83,25 @@ class OpenIDClient:
         if jwks:
             alg = unverified_header.get("alg")
             public_key = RSAAlgorithm.from_jwk(json.dumps(jwks))
+            cached_data = {}
 
             try:
                 decoded_token = jwt.decode(
                     id_token, public_key, audience=[self.client_id], algorithms=alg
                 )
 
-                if self.cache_nonces:
+                if decoded_token.get("nonce"):
                     # Verify that the cached nonce is present and that
                     # the provider the nonce was initiated for, is the same
                     # provider returning it
-                    server = cache.get(decoded_token.get("nonce"))
-                    if self.auth_server != server:
+                    cached_data = cache.get(decoded_token["nonce"])
+                    if self.cache_nonces and self.auth_server != cached_data.get(
+                        "auth_server"
+                    ):
                         raise NonceVerificationFailed(
                             "Failed to verify returned nonce value."
                         )
+                decoded_token[REDIRECT_AFTER_AUTH] = cached_data.get("redirect_after")
                 return decoded_token
             except Exception as e:
                 raise e
@@ -120,7 +126,7 @@ class OpenIDClient:
             return id_token
         return None
 
-    def login(self) -> str:
+    def login(self, redirect_after: Optional[str] = None) -> str:
         """
         Redirects the user to the authorization endpoint for Authorization
         """
@@ -129,10 +135,14 @@ class OpenIDClient:
             f"scope={self.scope}&response_type={self.response_type}&"
             f"response_mode={self.response_mode}"
         )
-        if self.cache_nonces:
+        if self.cache_nonces or redirect_after:
             nonce = secrets.randbits(16)
-            cache.set(nonce, self.auth_server)
+            cache.set(
+                nonce,
+                {"auth_server": self.auth_server, "redirect_after": redirect_after},
+            )
             url += f"&nonce={nonce}"
+
         return HttpResponseRedirect(url)
 
     def logout(self):

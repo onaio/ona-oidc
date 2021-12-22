@@ -23,7 +23,7 @@ from rest_framework.renderers import JSONRenderer, TemplateHTMLRenderer
 from rest_framework.response import Response
 
 import oidc.settings as default
-from oidc.client import NonceVerificationFailed, OpenIDClient
+from oidc.client import NonceVerificationFailed, OpenIDClient, REDIRECT_AFTER_AUTH
 from oidc.client import config as auth_config
 from oidc.utils import str_to_bool
 
@@ -93,7 +93,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     def login(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         client = self._get_client(**kwargs)
         if client:
-            return client.login()
+            return client.login(redirect_after=request.query_params.get("next"))
         return HttpResponseBadRequest(
             _("Unable to process OpenID connect login request."),
         )
@@ -127,13 +127,17 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             return not self.user_model.objects.filter(**filter_kwargs).count() > 0
         return False
 
-    def generate_successful_response(self, request, user) -> HttpResponse:
+    def generate_successful_response(
+        self, request, user, redirect_after=None
+    ) -> HttpResponse:
         """
         Generates a success response for a successful Open ID Connect
         Authentication request
         """
         config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
-        response = HttpResponseRedirect(config.get("REDIRECT_AFTER_AUTH"))
+        response = HttpResponseRedirect(
+            redirect_after or config.get("REDIRECT_AFTER_AUTH")
+        )
 
         if self.use_auth_backend:
             login(request, user, backend=self.auth_backend)
@@ -224,6 +228,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         client = self._get_client(**kwargs)
         user = None
+        redirect_after = None
         if client:
             user_data = request.POST.dict()
             id_token = user_data.get("id_token")
@@ -233,7 +238,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
             if id_token:
                 try:
-                    decoded_token = client.verify_and_decode_id_token(id_token)
+                    decoded_token = client.verify_and_decode_id_token(
+                        id_token
+                    )
+                    if decoded_token.get(REDIRECT_AFTER_AUTH):
+                        redirect_after = decoded_token.pop(REDIRECT_AFTER_AUTH)
                     user_data.update(decoded_token)
                     user_data = self.map_claims_to_model_field(user_data)
                     filter_kwargs = None
@@ -311,7 +320,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     )
                 else:
                     if user:
-                        return self.generate_successful_response(request, user)
+                        return self.generate_successful_response(
+                            request, user, redirect_after=redirect_after
+                        )
         return HttpResponseBadRequest(
             _("Unable to process OpenID connect authentication request."),
         )
