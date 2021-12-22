@@ -114,6 +114,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 "family_name": "doe",
                 "email": "john@doe.com",
                 "preferred_username": "john",
+                "redirect_after_auth": "localhost/authenticate"
             }
             data = {"id_token": "saasdrrw.fdfdfdswg4gdfs.sadadsods"}
             user_count = User.objects.filter(username="john").count()
@@ -124,6 +125,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             )
             # Redirects to the redirect url on successful user creation
             self.assertEqual(response.status_code, 302)
+            self.assertEqual(response.url, "localhost/authenticate")
 
             # Uses last_name as first_name if missing
             mock_func.return_value = {
