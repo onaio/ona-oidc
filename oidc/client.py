@@ -19,7 +19,7 @@ from oidc.utils import str_to_bool
 config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
 default_config = getattr(default, "OPENID_CONNECT_AUTH_SERVERS", {})["default"]
 
-REDIRECT_AFTER_AUTH = 'redirect_after_auth'
+REDIRECT_AFTER_AUTH = "redirect_after_auth"
 
 
 class NonceVerificationFailed(Exception):

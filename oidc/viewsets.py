@@ -23,7 +23,7 @@ from rest_framework.renderers import JSONRenderer, TemplateHTMLRenderer
 from rest_framework.response import Response
 
 import oidc.settings as default
-from oidc.client import NonceVerificationFailed, OpenIDClient, REDIRECT_AFTER_AUTH
+from oidc.client import REDIRECT_AFTER_AUTH, NonceVerificationFailed, OpenIDClient
 from oidc.client import config as auth_config
 from oidc.utils import str_to_bool
 
@@ -238,9 +238,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
             if id_token:
                 try:
-                    decoded_token = client.verify_and_decode_id_token(
-                        id_token
-                    )
+                    decoded_token = client.verify_and_decode_id_token(id_token)
                     if decoded_token.get(REDIRECT_AFTER_AUTH):
                         redirect_after = decoded_token.pop(REDIRECT_AFTER_AUTH)
                     user_data.update(decoded_token)
