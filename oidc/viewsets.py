@@ -79,6 +79,13 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             config.get("USER_UNIQUE_FILTER_FIELD")
             or default_config["USER_UNIQUE_FILTER_FIELD"]
         )
+        self.replaceable_username_characters = config.get(
+            "REPLACE_USERNAME_CHARACTERS", default_config["REPLACE_USERNAME_CHARACTERS"]
+        )
+        self.username_char_replacement = config.get(
+            "USERNAME_REPLACEMENT_CHARACTER",
+            default_config["USERNAME_REPLACEMENT_CHARACTER"],
+        )
         self.field_validation_regex = (
             config.get("FIELD_VALIDATION_REGEX")
             or default_config["FIELD_VALIDATION_REGEX"]
@@ -220,6 +227,14 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     == 0
                 ):
                     user_data["username"] = user_data["email"].split("@")[0]
+                    if (
+                        self.replaceable_username_characters
+                        and self.username_char_replacement
+                    ):
+                        for char in list(self.replaceable_username_characters):
+                            user_data["username"] = user_data["username"].replace(
+                                char, self.username_char_replacement
+                            )
                     missing_fields.remove("username")
 
         return user_data, missing_fields

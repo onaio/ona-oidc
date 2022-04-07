@@ -276,6 +276,24 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(count + 1, User.objects.all().count())
             self.assertEqual(1, User.objects.filter(username='bob').count())
 
+        # Invalid characters are replaced
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "family_name": "jane",
+                "given_name": "doe",
+                "email": "jane.doe@example.com",
+            }
+
+            data = {"id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia"}
+            count = User.objects.all().count()
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(count + 1, User.objects.all().count())
+            self.assertEqual(1, User.objects.filter(username='jane_doe').count())
+
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch(
         "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
