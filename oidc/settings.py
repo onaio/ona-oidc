@@ -22,6 +22,8 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
             "help_text": "Username should only contain alpha numeric characters",
         }
     },
+    "REPLACE_USERNAME_CHARACTERS": "-.",
+    "USERNAME_REPLACEMENT_CHARACTER": "_",
 }
 
 OPENID_CONNECT_AUTH_SERVERS = {

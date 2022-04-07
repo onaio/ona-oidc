@@ -44,6 +44,12 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     "SSO_COOKIE_DATA": "email",
     "JWT_ALGORITHM": "HS256",
     "JWT_SECRET_KEY": "abc",
+    "FIELD_VALIDATION_REGEX": {
+        "username": {
+            "regex": "^[\w\d]*$",
+            "help_text": "Username should only contain word characters & numbers i.e datatester23",
+        },
+    },
 }
 
 
@@ -275,6 +281,45 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(response.status_code, 302)
             self.assertEqual(count + 1, User.objects.all().count())
             self.assertEqual(1, User.objects.filter(username='bob').count())
+
+        # Invalid characters are replaced
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "family_name": "jane",
+                "given_name": "doe",
+                "email": "jane.doe@example.com",
+            }
+
+            data = {"id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia"}
+            count = User.objects.all().count()
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(count + 1, User.objects.all().count())
+            self.assertEqual(1, User.objects.filter(username='jane_doe').count())
+
+        # Invalid characters that are not in the replacement list
+        # cause the retrieved username to be ignored & returns the
+        # user data entry form
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "family_name": "hello",
+                "given_name": "jane",
+                "email": "jane.doe+hello@example.com",
+            }
+
+            data = {"id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia"}
+            count = User.objects.all().count()
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                response.template_name,
+                "oidc/oidc_user_data_entry.html")
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch(

@@ -49,6 +49,8 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     "AUTH_BACKEND": "",  # Defaults to django.contrib.auth.backends.ModelBackend
     "REDIRECT_AFTER_AUTH": "http://localhost:3000",
     "USE_RAPIDPRO_VIEWSET": False,
+    "REPLACE_USERNAME_CHARACTERS": "-.",  # A string of characters to replace if found within the captured username when using the `USE_EMAIL_USERNAME` functionality
+    "USERNAME_REPLACEMENT_CHARACTER": "_", # The character used to replace the characters within the `REPLACE_USERNAME_CHARACTERS` string
     # A map containing a field as a key and a map containing the regex and optional help_text strings as it's value
     # that's used to validate all field inputs retrieved for the particular key
     "FIELD_VALIDATION_REGEX": {
