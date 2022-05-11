@@ -12,16 +12,15 @@ setup(
     url="https://github.com/onaio/ona-oidc",
     packages=find_packages(exclude=["tests"]),
     install_requires=[
-        "Django >= 2.2",
-        "djangorestframework >= 3.9",
+        "Django>=3.2.13,<4",
+        "djangorestframework",
         "pyjwt[crypto]",
         "requests",
     ],
     classifiers=[
         "Programming Language :: Python",
-        "Programming Language :: Python :: 3.6",
+        "Programming Language :: Python :: 3.9",
         "Framework :: Django",
-        "Framework :: Django :: 2.2",
-        "Framework :: Django :: 3.0",
+        "Framework :: Django :: 3.2.13",
     ],
 )
