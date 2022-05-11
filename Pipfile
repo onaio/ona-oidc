@@ -5,7 +5,7 @@ verify_ssl = true
 
 [dev-packages]
 ipdb = "*"
-black = "==19.10b0"
+black = "*"
 flake8 = "*"
 mypy = "*"
 isort = "*"
@@ -18,5 +18,5 @@ e1839a8 = {editable = true,path = "."}
 ona-oidc = {editable = true,path = "."}
 
 [requires]
-python_version = "3.7"
+python_version = "3.9"
 
