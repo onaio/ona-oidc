@@ -3,6 +3,7 @@ Client module for the oidc app
 """
 import json
 import secrets
+import logging
 from typing import Optional
 
 from django.conf import settings
@@ -123,8 +124,8 @@ class OpenIDClient:
         response = requests.post(self.token_endpoint, params=params, headers=headers)
         if response.status_code == 200:
             id_token = response.json().get("id_token")
-            return id_token
-        return None
+            return id_token, None
+        return None, response.json()
 
     def login(self, redirect_after: Optional[str] = None) -> str:
         """

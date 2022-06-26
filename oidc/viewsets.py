@@ -252,12 +252,13 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         client = self._get_client(**kwargs)
         user = None
         redirect_after = None
+        error = None
         if client:
             user_data = request.POST.dict()
             id_token = user_data.get("id_token")
 
             if not id_token and user_data.get("code"):
-                id_token = client.retrieve_token_using_auth_code(user_data.get("code"))
+                id_token, error = client.retrieve_token_using_auth_code(user_data.get("code"))
 
             if id_token:
                 try:
@@ -345,7 +346,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             request, user, redirect_after=redirect_after
                         )
         return HttpResponseBadRequest(
-            _(f"Unable to process OpenID connect authentication request: {kwargs}"),
+                _(f"Unable to process OpenID connect authentication request: {kwargs}. Retrieve ID Token error: {error}"),
         )
 
     def create_login_user(self, user_data: dict):
