@@ -323,7 +323,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         user = self.create_login_user(create_data)
                 except ValueError as e:
                     return Response(
-                        {"error": str(e)},
+                        {"error": str(e), "id_token": id_token},
                         status=status.HTTP_400_BAD_REQUEST,
                         template_name="oidc/oidc_user_data_entry.html",
                     )
