@@ -31,6 +31,10 @@ class NoJSONWebKeyFound(Exception):
     pass
 
 
+class TokenVerificationFailed(Exception):
+    pass
+
+
 class OpenIDClient:
     """
     OpenID connect client class
@@ -132,12 +136,13 @@ class OpenIDClient:
         }
 
         response = requests.post(self.token_endpoint, params=params, headers=headers)
-        if response.status_code == 200:
-            id_token = response.json().get("id_token")
-            return id_token
-        else:
-            logging.error(f"Failed to retrieve token: {response.json()}")
-        return None
+        if not response.status_code == 200:
+            raise TokenVerificationFailed(
+                f"Failed to retrieve ID Token: {response.json}"
+            )
+
+        id_token = response.json().get("id_token")
+        return id_token
 
     def login(self, redirect_after: Optional[str] = None) -> str:
         """

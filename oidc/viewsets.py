@@ -23,7 +23,13 @@ from rest_framework.renderers import JSONRenderer, TemplateHTMLRenderer
 from rest_framework.response import Response
 
 import oidc.settings as default
-from oidc.client import REDIRECT_AFTER_AUTH, NonceVerificationFailed, OpenIDClient
+from oidc.client import (
+    REDIRECT_AFTER_AUTH,
+    NonceVerificationFailed,
+    NoJSONWebKeyFound,
+    OpenIDClient,
+    TokenVerificationFailed,
+)
 from oidc.client import config as auth_config
 from oidc.utils import str_to_bool
 
@@ -257,7 +263,23 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             id_token = user_data.get("id_token")
 
             if not id_token and user_data.get("code"):
-                id_token = client.retrieve_token_using_auth_code(user_data.get("code"))
+                try:
+                    id_token = client.retrieve_token_using_auth_code(
+                        user_data.get("code")
+                    )
+                except TokenVerificationFailed as e:
+                    return Response(
+                        {
+                            "error": _(
+                                f"Unable to retrieve ID Token; {e}. Kindly retry authentication process."
+                            ),
+                            "error_title": _(
+                                "Authentication request verification failed"
+                            ),
+                        },
+                        status=status.HTTP_401_UNAUTHORIZED,
+                        template_name="oidc/oidc_unrecoverable_error.html",
+                    )
 
             if id_token:
                 try:
@@ -326,11 +348,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         status=status.HTTP_400_BAD_REQUEST,
                         template_name="oidc/oidc_user_data_entry.html",
                     )
-                except NonceVerificationFailed:
+                except (NonceVerificationFailed, NoJSONWebKeyFound) as e:
                     return Response(
                         {
                             "error": _(
-                                "Unable to validate authentication request; Nonce verification has failed. Kindly retry authentication process."
+                                f"Unable to validate authentication request; {e}. Kindly retry authentication process."
                             ),
                             "error_title": _(
                                 "Authentication request verification failed"
