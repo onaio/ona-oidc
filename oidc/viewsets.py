@@ -345,7 +345,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             request, user, redirect_after=redirect_after
                         )
         return HttpResponseBadRequest(
-            _("Unable to process OpenID connect authentication request."),
+            _(f"Unable to process OpenID connect authentication request: {kwargs}"),
         )
 
     def create_login_user(self, user_data: dict):
