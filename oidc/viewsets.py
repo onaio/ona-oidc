@@ -25,8 +25,8 @@ from rest_framework.response import Response
 import oidc.settings as default
 from oidc.client import (
     REDIRECT_AFTER_AUTH,
-    NonceVerificationFailed,
     NoJSONWebKeyFound,
+    NonceVerificationFailed,
     OpenIDClient,
     TokenVerificationFailed,
 )

@@ -2,8 +2,8 @@
 Client module for the oidc app
 """
 import json
-import secrets
 import logging
+import secrets
 from typing import Optional
 
 from django.conf import settings
