@@ -27,6 +27,10 @@ class NonceVerificationFailed(Exception):
     pass
 
 
+class NoJSONWebKeyFound(Exception):
+    pass
+
+
 class OpenIDClient:
     """
     OpenID connect client class
@@ -81,32 +85,38 @@ class OpenIDClient:
         kid = unverified_header.get("kid")
         jwks = self._retrieve_jwks_related_to_kid(kid)
 
-        if jwks:
-            alg = unverified_header.get("alg")
-            public_key = RSAAlgorithm.from_jwk(json.dumps(jwks))
-            cached_data = {}
+        if not jwks:
+            raise NoJSONWebKeyFound("Failed to retrieve key ID described in Token")
 
-            try:
-                decoded_token = jwt.decode(
-                    id_token, public_key, audience=[self.client_id], algorithms=alg
-                )
+        alg = unverified_header.get("alg")
+        public_key = RSAAlgorithm.from_jwk(json.dumps(jwks))
+        cached_data = {}
 
-                if decoded_token.get("nonce"):
-                    # Verify that the cached nonce is present and that
-                    # the provider the nonce was initiated for, is the same
-                    # provider returning it
-                    cached_data = cache.get(decoded_token["nonce"])
-                    if cached_data and self.cache_nonces and self.auth_server != cached_data.get(
-                        "auth_server"
-                    ):
-                        raise NonceVerificationFailed(
-                            "Failed to verify returned nonce value."
-                        )
+        try:
+            decoded_token = jwt.decode(
+                id_token, public_key, audience=[self.client_id], algorithms=alg
+            )
+            if self.cache_nonces:
+                # Verify that the cached nonce is present and that
+                # the provider the nonce was initiated for, is the same
+                # provider returning it
+                nonce = decoded_token.get("nonce")
+                if not nonce:
+                    raise NonceVerificationFailed(
+                        "Failed to verify login request. Missing nonce value"
+                    )
+                cached_data = cache.get(nonce)
+                if not cached_data or self.auth_server != cached_data.get(
+                    "auth_server"
+                ):
+                    raise NonceVerificationFailed(
+                        "Failed to verify returned nonce value"
+                    )
+
                 decoded_token[REDIRECT_AFTER_AUTH] = cached_data.get("redirect_after")
-                return decoded_token
-            except Exception as e:
-                raise e
-        return None
+            return decoded_token
+        except Exception as e:
+            raise e
 
     def retrieve_token_using_auth_code(self, code: str) -> Optional[str]:
         """
