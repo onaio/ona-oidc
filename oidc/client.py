@@ -3,6 +3,7 @@ Client module for the oidc app
 """
 import json
 import secrets
+import logging
 from typing import Optional
 
 from django.conf import settings
@@ -95,7 +96,7 @@ class OpenIDClient:
                     # the provider the nonce was initiated for, is the same
                     # provider returning it
                     cached_data = cache.get(decoded_token["nonce"])
-                    if self.cache_nonces and self.auth_server != cached_data.get(
+                    if cached_data and self.cache_nonces and self.auth_server != cached_data.get(
                         "auth_server"
                     ):
                         raise NonceVerificationFailed(
@@ -124,6 +125,8 @@ class OpenIDClient:
         if response.status_code == 200:
             id_token = response.json().get("id_token")
             return id_token
+        else:
+            logging.error(f"Failed to retrieve token: {response.json()}")
         return None
 
     def login(self, redirect_after: Optional[str] = None) -> str:
