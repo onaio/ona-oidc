@@ -36,7 +36,7 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     },
     "USER_DEFAULTS": {
         "default": {"is_active": False},
-        "^.*@ona.io$": {"is_active": True}
+        "^.*@ona.io$": {"is_active": True},
     },
     "SPLIT_NAME_CLAIM": True,
     "USE_EMAIL_USERNAME": True,
@@ -82,7 +82,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
- 
+
     def test_unrecoverable_error_on_missing_claim(self):
         """
         Test that an error is returned when a required claim field other than the
@@ -101,10 +101,12 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             request = self.factory.post("/", data=data)
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 400)
-            self.assertEqual(response.template_name, "oidc/oidc_unrecoverable_error.html")
             self.assertEqual(
-                response.data.get('error'),
-                'Missing required fields: first_name')
+                response.template_name, "oidc/oidc_unrecoverable_error.html"
+            )
+            self.assertEqual(
+                response.data.get("error"), "Missing required fields: first_name"
+            )
 
     def test_create_non_existing_user(self):
         """
@@ -120,7 +122,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 "family_name": "doe",
                 "email": "john@doe.com",
                 "preferred_username": "john",
-                "redirect_after_auth": "localhost/authenticate"
+                "redirect_after_auth": "localhost/authenticate",
             }
             data = {"id_token": "saasdrrw.fdfdfdswg4gdfs.sadadsods"}
             user_count = User.objects.filter(username="john").count()
@@ -238,7 +240,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertNotIn(
                 "Username field is already in use.",
-                response.rendered_content.decode("utf-8")
+                response.rendered_content.decode("utf-8"),
             )
 
             # Test error returned when username doesn't match regex
@@ -280,7 +282,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 302)
             self.assertEqual(count + 1, User.objects.all().count())
-            self.assertEqual(1, User.objects.filter(username='bob').count())
+            self.assertEqual(1, User.objects.filter(username="bob").count())
 
         # Invalid characters are replaced
         with patch(
@@ -298,7 +300,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 302)
             self.assertEqual(count + 1, User.objects.all().count())
-            self.assertEqual(1, User.objects.filter(username='jane_doe').count())
+            self.assertEqual(1, User.objects.filter(username="jane_doe").count())
 
         # Invalid characters that are not in the replacement list
         # cause the retrieved username to be ignored & returns the
@@ -317,9 +319,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             request = self.factory.post("/", data=data)
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(
-                response.template_name,
-                "oidc/oidc_user_data_entry.html")
+            self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch(
@@ -508,3 +508,19 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(user.username, "johne")
             self.assertEqual(user.email, "johne@example.com")
             self.assertEqual(user.is_active, False)
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_direct_access_to_callback_fails(self):
+        """
+        Test that requests to the callback endpoint without
+        a valid session / login request fails gracefully
+        """
+        # Mock two ID Tokens
+        view = UserModelOpenIDConnectViewset.as_view({"get": "callback"})
+        request = self.factory.get("/oidc/default/callback")
+        response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.content.decode("utf-8"),
+            "Unable to process OpenID connect authentication request.",
+        )
