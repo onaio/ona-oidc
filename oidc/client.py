@@ -12,6 +12,7 @@ from django.http import HttpResponseRedirect
 import jwt
 import requests
 from jwt.algorithms import RSAAlgorithm
+from jwt.exceptions import DecodeError
 
 import oidc.settings as default
 from oidc.utils import str_to_bool
@@ -118,7 +119,7 @@ class OpenIDClient:
 
                 decoded_token[REDIRECT_AFTER_AUTH] = cached_data.get("redirect_after")
             return decoded_token
-        except Exception as e:
+        except DecodeError as e:
             raise e
 
     def retrieve_token_using_auth_code(self, code: str) -> Optional[str]:

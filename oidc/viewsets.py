@@ -348,6 +348,15 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         status=status.HTTP_400_BAD_REQUEST,
                         template_name="oidc/oidc_user_data_entry.html",
                     )
+                except jwt.exceptions.DecodeError:
+                    return Response(
+                        {
+                            "error": _("Failed to decode ID Token."),
+                            "error_title": _("Invalid ID Token"),
+                        },
+                        status=status.HTTP_401_UNAUTHORIZED,
+                        template_name="oidc/oidc_unrecoverable_error.html",
+                    )
                 except (NonceVerificationFailed, NoJSONWebKeyFound) as e:
                     return Response(
                         {
