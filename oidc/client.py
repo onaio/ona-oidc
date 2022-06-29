@@ -12,7 +12,6 @@ from django.http import HttpResponseRedirect
 import jwt
 import requests
 from jwt.algorithms import RSAAlgorithm
-from jwt.exceptions import DecodeError
 
 import oidc.settings as default
 from oidc.utils import str_to_bool
