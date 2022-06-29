@@ -138,7 +138,7 @@ class OpenIDClient:
         response = requests.post(self.token_endpoint, params=params, headers=headers)
         if not response.status_code == 200:
             raise TokenVerificationFailed(
-                f"Failed to retrieve ID Token: {response.json}"
+                f"Failed to retrieve ID Token: {response.json()}"
             )
 
         id_token = response.json().get("id_token")
