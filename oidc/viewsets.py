@@ -254,7 +254,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         return user_data, missing_fields
 
     @action(methods=["POST"], detail=False)
-    def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
+    def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
         client = self._get_client(**kwargs)
         user = None
         redirect_after = None
