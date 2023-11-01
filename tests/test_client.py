@@ -1,6 +1,5 @@
 """Tests for module oidc.client"""
 import secrets
-
 from unittest.mock import patch
 
 from django.core.cache import cache
