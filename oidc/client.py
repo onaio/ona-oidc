@@ -16,9 +16,6 @@ from jwt.algorithms import RSAAlgorithm
 import oidc.settings as default
 from oidc.utils import str_to_bool
 
-config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
-default_config = getattr(default, "OPENID_CONNECT_AUTH_SERVERS", {})["default"]
-
 REDIRECT_AFTER_AUTH = "redirect_after_auth"
 
 
@@ -43,6 +40,8 @@ class OpenIDClient:
         """
         Initializes an OpenID Connect Client object
         """
+        config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
+        default_config = getattr(default, "OPENID_CONNECT_AUTH_SERVERS", {})["default"]
         self.auth_server = auth_server
         self.authorization_endpoint = config[auth_server].get("AUTHORIZATION_ENDPOINT")
         self.client_id = config[auth_server].get("CLIENT_ID")
@@ -60,6 +59,10 @@ class OpenIDClient:
         )
         self.cache_nonces = str_to_bool(
             config[auth_server].get("USE_NONCES") or default_config["USE_NONCES"]
+        )
+        self.nonce_cache_timeout = int(
+            config[auth_server].get("NONCE_CACHE_TIMEOUT")
+            or default_config["NONCE_CACHE_TIMEOUT"]
         )
 
     def _retrieve_jwks_related_to_kid(self, kid: str) -> Optional[str]:
@@ -149,6 +152,7 @@ class OpenIDClient:
             cache.set(
                 nonce,
                 {"auth_server": self.auth_server, "redirect_after": redirect_after},
+                self.nonce_cache_timeout,
             )
             url += f"&nonce={nonce}"
 

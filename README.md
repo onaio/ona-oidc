@@ -82,7 +82,8 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "REDIRECT_URI": "http://localhost:8000/oidc/msft/callback",
         "RESPONSE_TYPE": "id_token",
         "RESPONSE_MODE": "form_post",
-        "USE_NONCES": True
+        "USE_NONCES": True,
+        "NONCE_CACHE_TIMEOUT": 1800,
     }
 }
 ...
