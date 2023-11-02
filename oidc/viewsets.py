@@ -30,7 +30,6 @@ from oidc.client import (
     OpenIDClient,
     TokenVerificationFailed,
 )
-from oidc.client import config as auth_config
 from oidc.utils import str_to_bool
 
 default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
@@ -98,6 +97,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         )
 
     def _get_client(self, auth_server: str) -> Optional[OpenIDClient]:
+        auth_config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
+
         if auth_server in auth_config:
             return OpenIDClient(auth_server)
         return None

@@ -32,5 +32,6 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "RESPONSE_TYPE": "id_token",
         "RESPONSE_MODE": "form_post",
         "USE_NONCES": True,
+        "NONCE_CACHE_TIMEOUT": 1800,
     }
 }
