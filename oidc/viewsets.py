@@ -15,6 +15,7 @@ from django.http import (
     HttpResponseRedirect,
 )
 from django.utils.translation import gettext as _
+from django.utils import timezone
 
 import jwt
 from rest_framework import permissions, status, viewsets
@@ -410,7 +411,6 @@ class RapidProOpenIDConnectViewset(BaseOpenIDConnectViewset):
 
     def create_login_user(self, user_data: dict):
         Org = importlib.import_module("temba").orgs.models.Org
-        timezone = importlib.import_module("pytz").timezone
         org_name = user_data.pop("username")
         user_data["username"] = user_data.get("email")
 
@@ -418,7 +418,7 @@ class RapidProOpenIDConnectViewset(BaseOpenIDConnectViewset):
             "name": org_name,
             "slug": Org.get_unique_slug(org_name),
             "brand": settings.DEFAULT_BRAND,
-            "timezone": timezone("UTC"),
+            "timezone": f"{timezone.utc}",
         }
         user = self.user_model.objects.create(**user_data)
 
