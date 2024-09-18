@@ -257,7 +257,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         and username_regex.search(username)
                     ):
                         user_data["username"] = username
-                        missing_fields.remove("username")
+                        if "username" in missing_fields:
+                            missing_fields.remove("username")
 
         return user_data, missing_fields
 

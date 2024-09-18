@@ -45,9 +45,10 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     "SSO_COOKIE_DATA": "email",
     "JWT_ALGORITHM": "HS256",
     "JWT_SECRET_KEY": "abc",
+    "REPLACE_USERNAME_CHARACTERS": "-.",
     "FIELD_VALIDATION_REGEX": {
         "username": {
-            "regex": "^(?!\d+$).{4,}$",
+            "regex": "^(?!\d+$)[a-zA-Z0-9_]{3,}$",
             "help_text": "Username should only contain word characters & numbers i.e datatester23",
         },
     },
@@ -82,6 +83,77 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             request = self.factory.post("/", data=data)
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_user_created_successfully_when_email_has_a_valid_username(self):
+        """
+        Test that the user is created ok when
+        username is not present in decoded token but email has a valid username
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "family_name": "bob",
+                "given_name": "just bob",
+                "username": "boby@example.com",
+                "email": "boby@example.com",
+            }
+
+            data = {"id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia"}
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 302)
+            user = User.objects.get(username="boby")
+            self.assertEqual(user.email, "boby@example.com")
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_returns_data_entry_template_on_invalid_username(self):
+        """
+        Test that users are redirected to the data entry
+        page when username is not present in decoded token and
+        provided email also does not provide a valid username
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "family_name": "bob",
+                "given_name": "just bob",
+                "email": "bo@example.com",
+            }
+
+            data = {"id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia"}
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_returns_data_entry_template_on_invalid_username_and_bad_email(self):
+        """
+        Test that users are redirected to the data entry
+        page when username is not present in decoded token and
+        provided email also does not provide a valid username
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "family_name": "bob",
+                "given_name": "just bob",
+                "username": "bob@example.com",
+                "email": "bo@example.com",
+            }
+
+            data = {"id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia"}
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 400)
             self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
 
     def test_unrecoverable_error_on_missing_claim(self):

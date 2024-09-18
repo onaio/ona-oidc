@@ -55,7 +55,7 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     # that's used to validate all field inputs retrieved for the particular key
     "FIELD_VALIDATION_REGEX": {
         "username": {
-            "regex": "^(?!\d+$).{4,}$",
+            "regex": "^(?!\d+$)[a-zA-Z0-9]{3,}$",
             "help_text": "Username should only contain alpha numeric characters",
         }
     },
