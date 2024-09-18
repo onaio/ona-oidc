@@ -1,6 +1,7 @@
 """
 URL Configuration file for ona-oidc
 """
+
 from django.conf import settings
 from django.urls import re_path
 

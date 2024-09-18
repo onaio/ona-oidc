@@ -1,6 +1,7 @@
 """
 oidc Viewsets module
 """
+
 import importlib
 import re
 from typing import Optional, Tuple
