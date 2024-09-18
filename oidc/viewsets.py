@@ -227,9 +227,15 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             user_data["first_name"] = user_data["last_name"]
             missing_fields.remove("first_name")
 
-        # use email as username if username is missing
+        # use email as username if username is missing or username is invalid
         if self.use_email_as_username:
-            if "username" in missing_fields and "email" in user_data:
+            username_regex = re.compile(
+                self.field_validation_regex["username"].get("regex")
+            )
+            if (
+                "username" in missing_fields
+                or not username_regex.search(user_data["username"])
+            ) and "email" in user_data:
                 username = user_data["email"].split("@")[0]
                 if (
                     self.user_model.objects.filter(username__iexact=username).count()
@@ -246,13 +252,12 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             )
 
                     # Validate retrieved username matches regex
-                    if "username" in self.field_validation_regex:
-                        regex = re.compile(
-                            self.field_validation_regex["username"].get("regex")
-                        )
-                        if regex.search(username):
-                            user_data["username"] = username
-                            missing_fields.remove("username")
+                    if (
+                        "username" in self.field_validation_regex
+                        and username_regex.search(username)
+                    ):
+                        user_data["username"] = username
+                        missing_fields.remove("username")
 
         return user_data, missing_fields
 

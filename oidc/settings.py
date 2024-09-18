@@ -18,7 +18,7 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     "JWT_ALGORITHM": "HS256",
     "FIELD_VALIDATION_REGEX": {
         "username": {
-            "regex": "(?!^\d+$)^.+$",  # noqa
+            "regex": "^(?!\d+$).{4,}$",  # noqa
             "help_text": "Username should only contain alpha numeric characters",
         }
     },

@@ -1,6 +1,7 @@
 """
 Tests for the OpenID Client
 """
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.test.utils import override_settings
@@ -46,7 +47,7 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     "JWT_SECRET_KEY": "abc",
     "FIELD_VALIDATION_REGEX": {
         "username": {
-            "regex": "^[\w\d]*$",
+            "regex": "^(?!\d+$).{4,}$",
             "help_text": "Username should only contain word characters & numbers i.e datatester23",
         },
     },
