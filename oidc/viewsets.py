@@ -15,8 +15,8 @@ from django.http import (
     HttpResponseBadRequest,
     HttpResponseRedirect,
 )
-from django.utils.translation import gettext as _
 from django.utils import timezone
+from django.utils.translation import gettext as _
 
 import jwt
 from rest_framework import permissions, status, viewsets
