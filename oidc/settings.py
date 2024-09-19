@@ -13,7 +13,7 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     },
     "SPLIT_NAME_CLAIM": False,
     "USE_EMAIL_USERNAME": False,
-    "USER_UNIQUE_FILTER_FIELD": "username",
+    "USER_UNIQUE_FILTER_FIELDS": ["username", "email"],
     "SSO_COOKIE_DATA": "email",
     "JWT_ALGORITHM": "HS256",
     "FIELD_VALIDATION_REGEX": {
