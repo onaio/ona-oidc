@@ -48,8 +48,8 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     "REPLACE_USERNAME_CHARACTERS": "-.",
     "FIELD_VALIDATION_REGEX": {
         "username": {
-            "regex": "^(?!\d+$)[a-zA-Z0-9_]{3,}$",
-            "help_text": "Username should only contain word characters & numbers i.e datatester23",
+            "regex": r"^(?!\d+$)[a-zA-Z0-9_]{3,}$",
+            "help_text": "Username should only contain word characters & numbers and should have 3 or more characters",
         },
     },
 }
@@ -136,7 +136,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
     def test_returns_data_entry_template_on_invalid_username_and_bad_email(self):
         """
         Test that users are redirected to the data entry
-        page when username is not present in decoded token and
+        page when username provided in decoded token is invalid and
         provided email also does not provide a valid username
         """
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
@@ -154,6 +154,11 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             request = self.factory.post("/", data=data)
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 400)
+            self.assertTrue(
+                response.rendered_content.startswith(
+                    b'{"error":"Username should only contain word characters & numbers and should have 3 or more characters"'
+                )
+            )
             self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
 
     def test_unrecoverable_error_on_missing_claim(self):
