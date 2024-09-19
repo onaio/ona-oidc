@@ -13,15 +13,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - python_version: 3.8
-            toxenv: "py38-django32"
-          - python_version: 3.9
-            toxenv: "py39-django32"
-          - python_version: 3.8
-            toxenv: "py38-django40"
-          - python_version: 3.9
-            toxenv: "py39-django40"
-          - python_version: 3.9
+          - python_version: "3.10"
+            toxenv: "py310-django32"
+          - python_version: 3.11
+            toxenv: "py311-django32"
+          - python_version: "3.10"
+            toxenv: "py310-django40"
+          - python_version: 3.11
+            toxenv: "py311-django40"
+          - python_version: "3.10"
             toxenv: "lint"
     steps:
       - name: Checkout code
