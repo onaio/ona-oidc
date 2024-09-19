@@ -1,6 +1,7 @@
 """
 Client module for the oidc app
 """
+
 import json
 import secrets
 from typing import Optional
