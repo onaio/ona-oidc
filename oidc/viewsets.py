@@ -82,9 +82,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         self.auth_backend = config.get(
             "AUTH_BACKEND", "django.contrib.auth.backends.ModelBackend"
         )
-        self.unique_user_filter_field = (
-            config.get("USER_UNIQUE_FILTER_FIELD")
-            or default_config["USER_UNIQUE_FILTER_FIELD"]
+        self.unique_user_filter_fields = (
+            config.get("USER_UNIQUE_FILTER_FIELDS")
+            or default_config["USER_UNIQUE_FILTER_FIELDS"]
         )
         self.replaceable_username_characters = config.get(
             "REPLACE_USERNAME_CHARACTERS", default_config["REPLACE_USERNAME_CHARACTERS"]
@@ -130,18 +130,20 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             _("Unable to process OpenID connect logout request."),
         )
 
-    def _check_user_uniqueness(self, user_data: dict) -> bool:
+    def _check_user_uniqueness(self, user_data: dict) -> Optional[str]:
         """
         Helper function that checks if the supplied user data is unique. If user_data does not
         contain the unique user field the assumption is that the user
         exists.
         """
-        if user_data.get(self.unique_user_filter_field):
-            unique_field_value = user_data.get(self.unique_user_filter_field)
-            unique_field = self.unique_user_filter_field + "__iexact"
-            filter_kwargs = {unique_field: unique_field_value}
-            return not self.user_model.objects.filter(**filter_kwargs).count() > 0
-        return False
+        for user_field in self.unique_user_filter_fields:
+            if user_data.get(user_field):
+                unique_field_value = user_data.get(user_field)
+                unique_field = user_field + "__iexact"
+                filter_kwargs = {unique_field: unique_field_value}
+                if self.user_model.objects.filter(**filter_kwargs).count() > 0:
+                    return user_field
+        return None
 
     def generate_successful_response(
         self, request, user, redirect_after=None
@@ -334,14 +336,16 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                                     status=status.HTTP_400_BAD_REQUEST,
                                     template_name="oidc/oidc_unrecoverable_error.html",
                                 )
-                        elif not self._check_user_uniqueness(user_data):
-                            data = {
-                                "id_token": id_token,
-                                "error": f"{self.unique_user_filter_field.capitalize()} field is already in use.",
-                            }
-                            return Response(
-                                data, template_name="oidc/oidc_user_data_entry.html"
-                            )
+                        else:
+                            field = self._check_user_uniqueness(user_data)
+                            if field:
+                                data = {
+                                    "id_token": id_token,
+                                    "error": f"{field.capitalize()} field is already in use.",
+                                }
+                                return Response(
+                                    data, template_name="oidc/oidc_user_data_entry.html"
+                                )
 
                         self.validate_fields(user_data)
 

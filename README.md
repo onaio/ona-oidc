@@ -40,7 +40,7 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
         "preferred_username": "username",
     },
     "SPLIT_NAME_CLAIM": False, # Whether to split the `name` claim into first_name & last_name if present
-    "USER_UNIQUE_FILTER_FIELD": "username",
+    "USER_UNIQUE_FILTER_FIELDS": ["username", "email"],
     "USE_SSO_COOKIE": True,
     "SSO_COOKIE_DATA": "email",
     "SSO_COOKIE_MAX_AGE": None,
