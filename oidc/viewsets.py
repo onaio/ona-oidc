@@ -245,27 +245,21 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             ) and "email" in user_data:
                 username = user_data["email"].split("@")[0]
                 if (
-                    self.user_model.objects.filter(username__iexact=username).count()
-                    == 0
+                    self.replaceable_username_characters
+                    and self.username_char_replacement
                 ):
-                    username = user_data["email"].split("@")[0]
-                    if (
-                        self.replaceable_username_characters
-                        and self.username_char_replacement
-                    ):
-                        for char in list(self.replaceable_username_characters):
-                            username = username.replace(
-                                char, self.username_char_replacement
-                            )
+                    for char in list(self.replaceable_username_characters):
+                        username = username.replace(
+                            char, self.username_char_replacement
+                        )
 
-                    # Validate retrieved username matches regex
-                    if (
-                        "username" in self.field_validation_regex
-                        and username_regex.search(username)
-                    ):
-                        user_data["username"] = username
-                        if "username" in missing_fields:
-                            missing_fields.remove("username")
+                # Validate retrieved username matches regex
+                if "username" in self.field_validation_regex and username_regex.search(
+                    username
+                ):
+                    user_data["username"] = username
+                    if "username" in missing_fields:
+                        missing_fields.remove("username")
 
         return user_data, missing_fields
 
@@ -277,6 +271,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         if client:
             user_data = request.POST.dict()
             id_token = user_data.get("id_token")
+            provided_username = user_data.get("username")
 
             if not id_token and user_data.get("code"):
                 try:
@@ -304,6 +299,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         redirect_after = decoded_token.pop(REDIRECT_AFTER_AUTH)
                     user_data.update(decoded_token)
                     user_data = self.map_claims_to_model_field(user_data)
+                    if provided_username:
+                        user_data.update({"username": provided_username})
                     filter_kwargs = None
 
                     if "email" in user_data:
