@@ -3,9 +3,9 @@ oidc Viewsets module
 """
 
 import importlib
+import logging
 import re
 import traceback
-import logging
 from typing import Optional, Tuple
 
 from django.conf import settings
