@@ -35,6 +35,7 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     "MAP_CLAIM_TO_MODEL": {
         "given_name": "first_name",
         "family_name": "last_name",
+        "preferred_username": "username",
         "sub": "email",
     },
     "USER_DEFAULTS": {
@@ -86,6 +87,85 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_create_user_providing_id_token_in_form(self):
+        """
+        Trying to create a user that already exists will ask you to chose a different username
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "email_verified": False,
+                "name": "Alice User",
+                "preferred_username": "useralice@gmail.com",
+                "given_name": "user",
+                "family_name": "Alice",
+                "email": "useralice@gmail.com",
+            }
+
+            data = {
+                "id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia",
+            }
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 302)
+            user = User.objects.get(username="useralice")
+            self.assertEqual(user.email, "useralice@gmail.com")
+
+        # when email username is already in use erorr message should reflect that
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "email_verified": False,
+                "name": "Alice User",
+                "preferred_username": "useralice@ona.io",
+                "given_name": "user",
+                "family_name": "Alice",
+                "email": "useralice@ona.io",
+            }
+
+            data = {
+                "id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia",
+            }
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+
+            self.assertEqual(user.email, "useralice@gmail.com")
+            self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                response.data["error"],
+                "Username field is already in use.",
+            )
+
+        # when preferred username is provided, use the preferred username
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "email_verified": False,
+                "name": "Alice User",
+                "preferred_username": "useralice@ona.io",
+                "given_name": "user",
+                "family_name": "Alice",
+                "email": "useralice@ona.io",
+            }
+
+            data = {
+                "id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia",
+                "username": "preferredusername",
+            }
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+
+            self.assertEqual(user.email, "useralice@gmail.com")
+            self.assertEqual(response.status_code, 302)
+            user = User.objects.get(username="preferredusername")
+            self.assertEqual(user.email, "useralice@ona.io")
 
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
     def test_recreating_already_existing_user(self):

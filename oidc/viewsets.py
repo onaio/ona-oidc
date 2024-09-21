@@ -3,7 +3,9 @@ oidc Viewsets module
 """
 
 import importlib
+import logging
 import re
+import traceback
 from typing import Optional, Tuple
 
 from django.conf import settings
@@ -36,6 +38,8 @@ from oidc.utils import str_to_bool
 
 default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 SSO_COOKIE_NAME = "SSO"
+
+logger = logging.getLogger(__name__)
 
 
 class BaseOpenIDConnectViewset(viewsets.ViewSet):
@@ -201,6 +205,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 field_validation_regex = self.field_validation_regex[k]
                 regex = re.compile(field_validation_regex.get("regex"))
                 if regex and not regex.search(data[k]):
+                    logger.info(f"Invalid `{k}` value `{data[k]}`")
                     raise ValueError(
                         field_validation_regex.get("help_text")
                         or f"Invalid `{k}` value `{data[k]}`"
@@ -240,27 +245,21 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             ) and "email" in user_data:
                 username = user_data["email"].split("@")[0]
                 if (
-                    self.user_model.objects.filter(username__iexact=username).count()
-                    == 0
+                    self.replaceable_username_characters
+                    and self.username_char_replacement
                 ):
-                    username = user_data["email"].split("@")[0]
-                    if (
-                        self.replaceable_username_characters
-                        and self.username_char_replacement
-                    ):
-                        for char in list(self.replaceable_username_characters):
-                            username = username.replace(
-                                char, self.username_char_replacement
-                            )
+                    for char in list(self.replaceable_username_characters):
+                        username = username.replace(
+                            char, self.username_char_replacement
+                        )
 
-                    # Validate retrieved username matches regex
-                    if (
-                        "username" in self.field_validation_regex
-                        and username_regex.search(username)
-                    ):
-                        user_data["username"] = username
-                        if "username" in missing_fields:
-                            missing_fields.remove("username")
+                # Validate retrieved username matches regex
+                if "username" in self.field_validation_regex and username_regex.search(
+                    username
+                ):
+                    user_data["username"] = username
+                    if "username" in missing_fields:
+                        missing_fields.remove("username")
 
         return user_data, missing_fields
 
@@ -272,6 +271,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         if client:
             user_data = request.POST.dict()
             id_token = user_data.get("id_token")
+            provided_username = user_data.get("username")
 
             if not id_token and user_data.get("code"):
                 try:
@@ -299,6 +299,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         redirect_after = decoded_token.pop(REDIRECT_AFTER_AUTH)
                     user_data.update(decoded_token)
                     user_data = self.map_claims_to_model_field(user_data)
+                    if provided_username:
+                        user_data.update({"username": provided_username})
                     filter_kwargs = None
 
                     if "email" in user_data:
@@ -321,11 +323,13 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                                 and list(missing_fields)[0] == "username"
                             ):
                                 data = {"id_token": id_token}
+                                logger.info("missing_fields: ", missing_fields)
                                 return Response(
                                     data, template_name="oidc/oidc_user_data_entry.html"
                                 )
                             else:
                                 missing_fields = ", ".join(missing_fields)
+                                logger.error(f"missing fields: {missing_fields}")
                                 return Response(
                                     {
                                         "error": _(
@@ -343,6 +347,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                                     "id_token": id_token,
                                     "error": f"{field.capitalize()} field is already in use.",
                                 }
+                                logger.info(data)
                                 return Response(
                                     data, template_name="oidc/oidc_user_data_entry.html"
                                 )
@@ -356,6 +361,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
                         user = self.create_login_user(create_data)
                 except ValueError as e:
+                    stack_trace = traceback.format_exc()
+                    logger.info("ValueError")
+                    logger.info(stack_trace)
                     return Response(
                         {"error": str(e), "id_token": id_token},
                         status=status.HTTP_400_BAD_REQUEST,
