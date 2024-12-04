@@ -754,10 +754,12 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         """
         # Mock two ID Tokens
         view = UserModelOpenIDConnectViewset.as_view({"get": "callback"})
-        request = self.factory.get("/oidc/default/callback")
-        response = view(request, auth_server="default")
+        request = self.factory.get("/oidc/default/callback", format="html")
+        response = view(request, auth_server="default", format="html")
         self.assertEqual(response.status_code, 400)
-        self.assertEqual(
-            response.content.decode("utf-8"),
-            "Unable to process OpenID connect authentication request.",
+        response.render()
+        content = response.content.decode("utf-8")
+        self.assertTrue(
+            "Unable to process OpenID connect authentication request." in content
         )
+        self.assertTrue("Something went wrong, please try again later" in content)

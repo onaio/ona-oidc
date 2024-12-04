@@ -7,6 +7,9 @@
 <div class="content">
     <div class="content-body">
         <p class="error-message">{{ error }}</a></p>
+        {% if login_url %}
+        <p>Something went wrong, please try again later - <a href="{{ login_url }}">login</a>.</p>
+        {% endif %}
     </div>
 </div>
 {% endblock %}

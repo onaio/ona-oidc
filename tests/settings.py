@@ -1,6 +1,7 @@
 """
 Test Settings
 """
+
 import os
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -48,3 +49,14 @@ OPENID_CONNECT_AUTH_SERVERS = {
 
 ROOT_URLCONF = "oidc.urls"
 SECRET_KEY = "secret"
+
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [
+            os.path.join(BASE_DIR, "oidc/templates"),
+            os.path.join(BASE_DIR, "tests/templates"),
+        ],
+        "APP_DIRS": True,
+    }
+]

@@ -25,6 +25,7 @@ from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.renderers import JSONRenderer, TemplateHTMLRenderer
 from rest_framework.response import Response
+from rest_framework.reverse import reverse
 
 import oidc.settings as default
 from oidc.client import (
@@ -111,7 +112,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
     @action(methods=["GET"], detail=False)
     def login(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
-        client = self._get_client(**kwargs)
+        client = self._get_client(auth_server=kwargs.get("auth_server"))
         if client:
             return client.login(redirect_after=request.query_params.get("next"))
         return HttpResponseBadRequest(
@@ -120,7 +121,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
     @action(methods=["GET"], detail=False)
     def logout(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
-        client = self._get_client(**kwargs)
+        client = self._get_client(auth_server=kwargs.get("auth_server"))
         if client:
             response = client.logout()
 
@@ -265,7 +266,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
     @action(methods=["POST"], detail=False)
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
-        client = self._get_client(**kwargs)
+        client = self._get_client(auth_server=kwargs.get("auth_server"))
         user = None
         redirect_after = None
         if client:
@@ -396,8 +397,20 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         return self.generate_successful_response(
                             request, user, redirect_after=redirect_after
                         )
-        return HttpResponseBadRequest(
-            _("Unable to process OpenID connect authentication request."),
+        auth_servers = list(settings.OPENID_CONNECT_AUTH_SERVERS.keys())
+        default_auth_server = auth_servers[0] if auth_servers else "default"
+        return Response(
+            {
+                "error": _("Unable to process OpenID connect authentication request."),
+                "error_title": _(
+                    "Unable to process OpenID connect authentication request."
+                ),
+                "login_url": reverse(
+                    "openid_connect_login", kwargs={"auth_server": default_auth_server}
+                ),
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+            template_name="oidc/oidc_unrecoverable_error.html",
         )
 
     def create_login_user(self, user_data: dict):

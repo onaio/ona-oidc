@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Test title</title>
+    <meta name="description" content="">
+    <meta name="author" content="">
+
+
+    <!-- Le styles -->
+    {% block styles %}
+
+    {% endblock %}
+
+    <!-- spot to insert stuff for google maps -->
+    {% block additional-headers %}{% endblock %}
+
+
+  </head>
+
+  {% block body %}
+
+    <body>
+    <div class="container">
+      {% block message %}
+        {% if message or messages or message_list %}
+          {% include "message.html" %}
+        {% endif %}
+      {% endblock %}
+      {% block content %}
+        {% if template %}{% include template %}{% endif %}
+        {{ content|safe }}
+      {% endblock %}
+    </div>
+
+
+    {% block javascript %}
+
+    <!-- Le javascript -->
+
+    {% endblock %}
+
+    {% block additional-javascript %}{% endblock %}
+
+
+  </body>
+  {% endblock %}
+</html>
+
