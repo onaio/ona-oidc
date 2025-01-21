@@ -114,7 +114,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     def login(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         client = self._get_client(auth_server=kwargs.get("auth_server"))
         if client:
-            return client.login(redirect_after=request.query_params.get("next"))
+            response = client.login(redirect_after=request.query_params.get("next"))
+            # Add Clear-Site-Data headers
+            response["Clear-Site-Data"] = '"cache", "cookies"'
+            return response
         return HttpResponseBadRequest(
             _("Unable to process OpenID connect login request."),
         )
