@@ -11,7 +11,7 @@ from django.test.utils import override_settings
 from mock import MagicMock, patch
 from rest_framework.test import APIRequestFactory
 
-from oidc.viewsets import UserModelOpenIDConnectViewset
+from oidc.viewsets import UserModelOpenIDConnectViewset, BaseOpenIDConnectViewset
 
 User = get_user_model()
 
@@ -591,6 +591,15 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         # Redirects to the redirect url on successful user creation
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, "http://localhost:3000")
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_base_open_id_connect_viewset(self):
+        viewset_class = BaseOpenIDConnectViewset
+        view = viewset_class.as_view({"get": "login"})
+        request = self.factory.get("/")
+        response = view(request, auth_server="default")
+        self.assertEqual(response.headers["Clear-Site-Data"], '"cache", "cookies"')
 
     @patch(
         "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
