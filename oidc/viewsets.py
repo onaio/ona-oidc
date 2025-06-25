@@ -397,6 +397,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     )
                 else:
                     if user:
+                        user.last_login = timezone.now()
+                        user.save(update_fields=["last_login"])
                         return self.generate_successful_response(
                             request, user, redirect_after=redirect_after
                         )
