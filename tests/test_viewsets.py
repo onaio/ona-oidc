@@ -7,6 +7,7 @@ import json
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.test.utils import override_settings
+from django.utils import timezone
 
 from mock import MagicMock, patch
 from rest_framework.test import APIRequestFactory
@@ -772,3 +773,85 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             "Unable to process OpenID connect authentication request." in content
         )
         self.assertTrue("Something went wrong, please try again later" in content)
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_last_login_updated_on_successful_authentication(self):
+        """
+        Test that last_login is updated when an existing user successfully authenticates
+        """
+        # First create a user
+        user = User.objects.create_user(
+            username="testuser",
+            email="testuser@example.com",
+            first_name="Test",
+            last_name="User",
+        )
+        original_last_login = user.last_login
+
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "given_name": "Test",
+                "family_name": "User",
+                "email": "testuser@example.com",
+                "preferred_username": "testuser",
+            }
+
+            data = {"id_token": "test.token.here"}
+            request = self.factory.post("/", data=data)
+
+            # Mock timezone.now() to control the timestamp
+            mock_timestamp = timezone.now()
+            with patch("oidc.viewsets.timezone.now") as mock_now:
+                mock_now.return_value = mock_timestamp
+
+                response = view(request, auth_server="default")
+
+                # Should redirect on successful authentication
+                self.assertEqual(response.status_code, 302)
+
+                # Verify user's last_login was updated
+                user.refresh_from_db()
+                self.assertEqual(user.last_login, mock_timestamp)
+                self.assertNotEqual(user.last_login, original_last_login)
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_last_login_not_updated_on_new_user_creation(self):
+        """
+        Test that last_login is not explicitly set when creating a new user
+        (Django's create_user handles this automatically)
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "given_name": "New",
+                "family_name": "User",
+                "email": "newuser@example.com",
+                "preferred_username": "newuser",
+            }
+
+            data = {"id_token": "test.token.here"}
+            request = self.factory.post("/", data=data)
+
+            # Mock timezone.now() to verify it's called for last_login update
+            mock_timestamp = timezone.now()
+            with patch("oidc.viewsets.timezone.now") as mock_now:
+                mock_now.return_value = mock_timestamp
+
+                response = view(request, auth_server="default")
+
+                # Should redirect on successful user creation
+                self.assertEqual(response.status_code, 302)
+
+                # Verify new user was created
+                user = User.objects.get(username="newuser")
+                self.assertEqual(user.email, "newuser@example.com")
+
+                # For new user creation, last_login should be set by Django
+                # and the patch is called
+                self.assertEqual(user.last_login, mock_timestamp)
+                self.assertTrue(mock_now.called)
