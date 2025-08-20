@@ -12,7 +12,7 @@ from django.utils import timezone
 from mock import MagicMock, patch
 from rest_framework.test import APIRequestFactory
 
-from oidc.viewsets import UserModelOpenIDConnectViewset, BaseOpenIDConnectViewset
+from oidc.viewsets import BaseOpenIDConnectViewset, UserModelOpenIDConnectViewset
 
 User = get_user_model()
 
@@ -855,3 +855,87 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 # and the patch is called
                 self.assertEqual(user.last_login, mock_timestamp)
                 self.assertTrue(mock_now.called)
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_case_insensitive_email_matching_single_email(self):
+        """
+        Test that email matching is case-insensitive for single email lookup
+        """
+        user = User.objects.create_user(
+            username="testuser",
+            email="testuser@example.com",
+            first_name="Test",
+            last_name="User",
+        )
+
+        self.assertEqual(
+            User.objects.filter(email__iexact="testuser@example.com").count(), 1
+        )
+
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "given_name": "Test",
+                "family_name": "User",
+                "email": "TESTUSER@EXAMPLE.COM",
+                "preferred_username": "testuser",
+            }
+
+            data = {"id_token": "test.token.here"}
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+
+            # Should successfully find existing user despite case difference
+            self.assertEqual(response.status_code, 302)
+
+            user.refresh_from_db()
+            self.assertIsNotNone(user.last_login)
+
+            self.assertEqual(
+                User.objects.filter(email__iexact="testuser@example.com").count(), 1
+            )
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_case_insensitive_email_matching_multiple_emails(self):
+        """
+        Test that email matching is case-insensitive when multiple emails are provided
+        """
+        user = User.objects.create_user(
+            username="testuser2",
+            email="testuser2@example.com",
+            first_name="Test",
+            last_name="User2",
+        )
+
+        self.assertEqual(
+            User.objects.filter(email__iexact="testuser2@example.com").count(), 1
+        )
+
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "given_name": "Test",
+                "family_name": "User2",
+                "emails": [
+                    "NONEXISTENT@EXAMPLE.COM",
+                    "TESTUSER2@EXAMPLE.COM",
+                ],  # mixed case emails
+                "preferred_username": "testuser2",
+            }
+
+            data = {"id_token": "test.token.here"}
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+
+            self.assertEqual(response.status_code, 302)
+
+            user.refresh_from_db()
+            self.assertIsNotNone(user.last_login)
+
+            self.assertEqual(
+                User.objects.filter(email__iexact="testuser2@example.com").count(), 1
+            )

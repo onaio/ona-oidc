@@ -6,11 +6,12 @@ import importlib
 import logging
 import re
 import traceback
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from django.conf import settings
 from django.contrib.auth import get_user_model, login
 from django.contrib.auth import logout as logout_backend
+from django.db.models import Q
 from django.http import (
     HttpRequest,
     HttpResponse,
@@ -306,18 +307,26 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     if provided_username:
                         user_data.update({"username": provided_username})
                     filter_kwargs = None
+                    q_objects = Q()
 
                     if "email" in user_data:
-                        filter_kwargs = {"email": user_data.get("email")}
-                    elif "emails" in user_data:
-                        user_data["email"] = user_data.get("emails")[0]
-                        filter_kwargs = {"email__in": user_data.get("emails")}
+                        filter_kwargs = {"email__iexact": user_data.get("email")}
+                    elif "emails" in user_data and user_data["emails"]:
+                        emails: List[str] = user_data["emails"]
+                        for email in emails:
+                            q_objects |= Q(email__iexact=email)
+                        user_data["email"] = user_data["emails"][0]
 
                     if (
                         filter_kwargs
-                        and self.user_model.objects.filter(**filter_kwargs).count() > 0
+                        and self.user_model.objects.filter(**filter_kwargs).exists()
                     ):
                         user = self.user_model.objects.get(**filter_kwargs)
+
+                    elif (
+                        q_objects and self.user_model.objects.filter(q_objects).exists()
+                    ):
+                        user = self.user_model.objects.get(q_objects)
 
                     if not user:
                         user_data, missing_fields = self._clean_user_data(user_data)
