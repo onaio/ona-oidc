@@ -196,18 +196,18 @@ class OpenIDClient:
         if self.use_pkce:
             code_verifier = self._generate_pkce_code_verifier()
             code_challenge = self._generate_pkce_code_challenge(code_verifier)
-            challenge_key = f"pkce_{code_challenge}"
+            code_verifier_key = f"pkce_{code_challenge}"
             cache.set(
-                challenge_key,
+                code_verifier_key,
                 code_verifier,
                 self.pkce_code_challenge_timeout,
             )
             url += (
                 f"&code_challenge={code_challenge}"
                 f"&code_challenge_method={self.pkce_code_challenge_method}"
-                f"&state={challenge_key}"
+                f"&state={code_verifier_key}"
             )
-            
+
         if self.cache_nonces or redirect_after:
             nonce = secrets.randbits(16)
             cache.set(
