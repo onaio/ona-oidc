@@ -2,10 +2,10 @@
 Client module for the oidc app
 """
 
-import json
-import hashlib
-import secrets
 import base64
+import hashlib
+import json
+import secrets
 from typing import Optional
 
 from django.conf import settings
