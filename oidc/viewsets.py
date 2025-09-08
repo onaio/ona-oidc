@@ -335,7 +335,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
             elif not id_token and code:
                 id_token = self._retrieve_token_using_auth_code(client, code)
-                   
+            
             if id_token:
                 try:
                     decoded_token = client.verify_and_decode_id_token(id_token)
