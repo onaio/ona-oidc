@@ -3,7 +3,9 @@ Client module for the oidc app
 """
 
 import json
+import hashlib
 import secrets
+import base64
 from typing import Optional
 
 from django.conf import settings
@@ -65,6 +67,22 @@ class OpenIDClient:
             config[auth_server].get("NONCE_CACHE_TIMEOUT")
             or default_config["NONCE_CACHE_TIMEOUT"]
         )
+        self.use_pkce = str_to_bool(
+            config[auth_server].get("USE_PKCE")
+            or default_config.get("USE_PKCE", False)
+        )
+        self.pkce_code_challenge_timeout = int(
+            config[auth_server].get("PKCE_CODE_CHALLENGE_TIMEOUT")
+            or default_config.get("PKCE_CODE_CHALLENGE_TIMEOUT", 600)
+        )
+        self.pkce_code_challenge_method =(
+            config[auth_server].get("PKCE_CODE_CHALLENGE_METHOD")
+            or default_config.get("PKCE_CODE_CHALLENGE_METHOD", "S256")
+        )
+        self.pkce_code_verifier_length = int(
+            config[auth_server].get("PKCE_CODE_VERIFIER_LENGTH")
+            or default_config.get("PKCE_CODE_VERIFIER_LENGTH", 64)
+        )
 
     def _retrieve_jwks_related_to_kid(self, kid: str) -> Optional[str]:
         """
@@ -117,9 +135,14 @@ class OpenIDClient:
             decoded_token[REDIRECT_AFTER_AUTH] = cached_data.get("redirect_after")
         return decoded_token
 
-    def retrieve_token_using_auth_code(self, code: str) -> Optional[str]:
+    def retrieve_token_using_auth_code(self, code: str, code_verfier: Optional[str] = None) -> Optional[str]:
         """
         Obtain an ID Token using the Authorization Code flow
+
+        :param code: Authorization code returned by the auth server
+        :param code_verifier: Code verifier used in PKCE flow
+        :return: ID Token as a string
+        :raises TokenVerificationFailed: If the token retrieval fails
         """
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
         params = {
@@ -130,6 +153,9 @@ class OpenIDClient:
             "redirect_uri": self.redirect_uri,
         }
 
+        if code_verfier is not None:
+            params["code_verifier"] = code_verfier
+
         response = requests.post(self.token_endpoint, params=params, headers=headers)
         if not response.status_code == 200:
             raise TokenVerificationFailed(
@@ -138,6 +164,24 @@ class OpenIDClient:
 
         id_token = response.json().get("id_token")
         return id_token
+
+    def _generate_pkce_code_verifier(self) -> str:
+        """
+        Generates a code verifier for PKCE
+
+        https://datatracker.ietf.org/doc/html/rfc7636#section-4.1
+        """
+        length = self.pkce_code_verifier_length
+        return secrets.token_urlsafe(length)[:length]
+    
+    def _generate_pkce_code_challenge(self, code_verifier: str) -> str:
+        """
+        Generates a code challenge for PKCE
+
+        https://datatracker.ietf.org/doc/html/rfc7636#section-4.2
+        """
+        digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+        return base64.urlsafe_b64encode(digest).rstrip(b'=').decode("ascii")
 
     def login(self, redirect_after: Optional[str] = None) -> str:
         """
@@ -148,6 +192,22 @@ class OpenIDClient:
             f"scope={self.scope}&response_type={self.response_type}&"
             f"response_mode={self.response_mode}"
         )
+
+        if self.use_pkce:
+            code_verifier = self._generate_pkce_code_verifier()
+            code_challenge = self._generate_pkce_code_challenge(code_verifier)
+            challenge_key = f"pkce_{code_challenge}"
+            cache.set(
+                challenge_key,
+                code_verifier,
+                self.pkce_code_challenge_timeout,
+            )
+            url += (
+                f"&code_challenge={code_challenge}"
+                f"&code_challenge_method={self.pkce_code_challenge_method}"
+                f"&state={challenge_key}" 
+            )
+
         if self.cache_nonces or redirect_after:
             nonce = secrets.randbits(16)
             cache.set(

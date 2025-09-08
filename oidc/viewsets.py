@@ -8,6 +8,7 @@ import re
 import traceback
 from typing import List, Optional, Tuple
 
+from django.core.cache import cache
 from django.conf import settings
 from django.contrib.auth import get_user_model, login
 from django.contrib.auth import logout as logout_backend
@@ -267,27 +268,60 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         missing_fields.remove("username")
 
         return user_data, missing_fields
+    
+    def _retrieve_token_using_auth_code(self, client: OpenIDClient, code: str, code_verifier: Optional[str] = None) -> Optional[str]:
+        """
+        Helper function to retrieve ID Token using Authorization Code flow
 
-    @action(methods=["POST"], detail=False)
+        :param client: OpenIDClient instance
+        :param code: Authorization code returned by the auth server
+        :param code_verifier: Code verifier used in PKCE flow
+        :return: ID Token as a string
+        :raises TokenVerificationFailed: If the token retrieval fails
+        """
+        try:
+            id_token = client.retrieve_token_using_auth_code(code, code_verifier=code_verifier)
+            return id_token
+        except TokenVerificationFailed as e:
+            return Response(
+                {
+                    "error": _(
+                        f"Unable to retrieve ID Token; {e}. Kindly retry authentication process."
+                    ),
+                    "error_title": _("Authentication request verification failed"),
+                },
+                status=status.HTTP_401_UNAUTHORIZED,
+                template_name="oidc/oidc_unrecoverable_error.html", 
+            )
+
+    @action(methods=["POST", "GET"], detail=False)
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
         client = self._get_client(auth_server=kwargs.get("auth_server"))
-        user = None
-        redirect_after = None
-        if client:
-            user_data = request.POST.dict()
-            id_token = user_data.get("id_token")
-            provided_username = user_data.get("username")
+        user = redirect_after = id_token = code = provided_username = state = None
+        user_data = {}
 
-            if not id_token and user_data.get("code"):
-                try:
-                    id_token = client.retrieve_token_using_auth_code(
-                        user_data.get("code")
-                    )
-                except TokenVerificationFailed as e:
+        if client:
+            if client.response_mode == "form_post":
+                user_data = request.POST.dict()
+                id_token = user_data.get("id_token")
+                provided_username = user_data.get("username")
+                code = user_data.get("code")
+            
+            elif client.response_mode == "query":
+                code = request.query_params.get("code")
+                state = request.query_params.get("state")  
+
+            if state and code:
+                original_code_verifier = cache.get(state)
+
+                if original_code_verifier is None:
+                    # Original code verifier is required for PKCE flow
+                    logger.error("PKCE code verifier not found in cache")
+
                     return Response(
                         {
                             "error": _(
-                                f"Unable to retrieve ID Token; {e}. Kindly retry authentication process."
+                                "Unable to validate authentication request; Kindly retry authentication process."
                             ),
                             "error_title": _(
                                 "Authentication request verification failed"
@@ -297,6 +331,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         template_name="oidc/oidc_unrecoverable_error.html",
                     )
 
+                id_token = self._retrieve_token_using_auth_code(client, code, code_verifier=original_code_verifier)
+            
+            elif not id_token and code:
+                id_token = self._retrieve_token_using_auth_code(client, code)
+           
             if id_token:
                 try:
                     decoded_token = client.verify_and_decode_id_token(id_token)

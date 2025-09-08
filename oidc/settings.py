@@ -33,5 +33,9 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "RESPONSE_MODE": "form_post",
         "USE_NONCES": True,
         "NONCE_CACHE_TIMEOUT": 1800,
+        "USE_PKCE": False,
+        "PKCE_CODE_CHALLENGE_METHOD": "S256",
+        "PKCE_CODE_CHALLENGE_TIMEOUT": 600,
+        "PKCE_CODE_VERIFIER_LENGTH": 64,
     }
 }
