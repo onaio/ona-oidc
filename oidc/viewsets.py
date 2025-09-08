@@ -291,9 +291,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     "error_title": _("Authentication request verification failed"),
                 },
                 status=status.HTTP_401_UNAUTHORIZED,
-                template_name="oidc/oidc_unrecoverable_error.html", 
+                template_name="oidc/oidc_unrecoverable_error.html",
             )
-    
+
     @action(methods=["POST", "GET"], detail=False)
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
         client = self._get_client(auth_server=kwargs.get("auth_server"))
@@ -309,7 +309,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
             elif client.response_mode == "query":
                 code = request.query_params.get("code")
-                state = request.query_params.get("state")  
+                state = request.query_params.get("state")
 
             if state and code:
                 original_code_verifier = cache.get(state)
@@ -335,7 +335,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
             elif not id_token and code:
                 id_token = self._retrieve_token_using_auth_code(client, code)
-                
+                   
             if id_token:
                 try:
                     decoded_token = client.verify_and_decode_id_token(id_token)

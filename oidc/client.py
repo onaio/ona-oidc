@@ -205,9 +205,9 @@ class OpenIDClient:
             url += (
                 f"&code_challenge={code_challenge}"
                 f"&code_challenge_method={self.pkce_code_challenge_method}"
-                f"&state={challenge_key}" 
+                f"&state={challenge_key}"
             )
-            
+              
         if self.cache_nonces or redirect_after:
             nonce = secrets.randbits(16)
             cache.set(
