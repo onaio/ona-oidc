@@ -68,17 +68,15 @@ class OpenIDClient:
             or default_config["NONCE_CACHE_TIMEOUT"]
         )
         self.use_pkce = str_to_bool(
-            config[auth_server].get("USE_PKCE")
-            or default_config.get("USE_PKCE", False)
+            config[auth_server].get("USE_PKCE") or default_config.get("USE_PKCE", False)
         )
         self.pkce_code_challenge_timeout = int(
             config[auth_server].get("PKCE_CODE_CHALLENGE_TIMEOUT")
             or default_config.get("PKCE_CODE_CHALLENGE_TIMEOUT", 600)
         )
-        self.pkce_code_challenge_method = (
-            config[auth_server].get("PKCE_CODE_CHALLENGE_METHOD")
-            or default_config.get("PKCE_CODE_CHALLENGE_METHOD", "S256")
-        )
+        self.pkce_code_challenge_method = config[auth_server].get(
+            "PKCE_CODE_CHALLENGE_METHOD"
+        ) or default_config.get("PKCE_CODE_CHALLENGE_METHOD", "S256")
         self.pkce_code_verifier_length = int(
             config[auth_server].get("PKCE_CODE_VERIFIER_LENGTH")
             or default_config.get("PKCE_CODE_VERIFIER_LENGTH", 64)
@@ -135,7 +133,9 @@ class OpenIDClient:
             decoded_token[REDIRECT_AFTER_AUTH] = cached_data.get("redirect_after")
         return decoded_token
 
-    def retrieve_token_using_auth_code(self, code: str, code_verfier: Optional[str] = None) -> Optional[str]:
+    def retrieve_token_using_auth_code(
+        self, code: str, code_verfier: Optional[str] = None
+    ) -> Optional[str]:
         """
         Obtain an ID Token using the Authorization Code flow
 
@@ -181,7 +181,7 @@ class OpenIDClient:
         https://datatracker.ietf.org/doc/html/rfc7636#section-4.2
         """
         digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
-        return base64.urlsafe_b64encode(digest).rstrip(b'=').decode("ascii")
+        return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
     def login(self, redirect_after: Optional[str] = None) -> str:
         """

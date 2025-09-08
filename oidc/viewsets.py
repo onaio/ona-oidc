@@ -269,7 +269,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
         return user_data, missing_fields
 
-    def _retrieve_token_using_auth_code(self, client: OpenIDClient, code: str, code_verifier: Optional[str] = None) -> Optional[str]:
+    def _retrieve_token_using_auth_code(
+        self, client: OpenIDClient, code: str, code_verifier: Optional[str] = None
+    ) -> Optional[str]:
         """
         Helper function to retrieve ID Token using Authorization Code flow
 
@@ -280,7 +282,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         :raises TokenVerificationFailed: If the token retrieval fails
         """
         try:
-            id_token = client.retrieve_token_using_auth_code(code, code_verifier=code_verifier)
+            id_token = client.retrieve_token_using_auth_code(
+                code, code_verifier=code_verifier
+            )
             return id_token
         except TokenVerificationFailed as e:
             return Response(
@@ -331,7 +335,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         template_name="oidc/oidc_unrecoverable_error.html",
                     )
 
-                id_token = self._retrieve_token_using_auth_code(client, code, code_verifier=original_code_verifier)
+                id_token = self._retrieve_token_using_auth_code(
+                    client, code, code_verifier=original_code_verifier
+                )
 
             elif not id_token and code:
                 id_token = self._retrieve_token_using_auth_code(client, code)
