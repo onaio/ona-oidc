@@ -207,7 +207,7 @@ class OpenIDClient:
                 f"&code_challenge_method={self.pkce_code_challenge_method}"
                 f"&state={code_verifier_key}"
             )
-        
+
         if self.cache_nonces or redirect_after:
             nonce = secrets.randbits(16)
             cache.set(
