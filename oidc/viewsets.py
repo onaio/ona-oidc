@@ -268,7 +268,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         missing_fields.remove("username")
 
         return user_data, missing_fields
-    
+
     def _retrieve_token_using_auth_code(self, client: OpenIDClient, code: str, code_verifier: Optional[str] = None) -> Optional[str]:
         """
         Helper function to retrieve ID Token using Authorization Code flow
@@ -293,7 +293,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 status=status.HTTP_401_UNAUTHORIZED,
                 template_name="oidc/oidc_unrecoverable_error.html", 
             )
-
+    
     @action(methods=["POST", "GET"], detail=False)
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
         client = self._get_client(auth_server=kwargs.get("auth_server"))
@@ -306,7 +306,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 id_token = user_data.get("id_token")
                 provided_username = user_data.get("username")
                 code = user_data.get("code")
-            
+
             elif client.response_mode == "query":
                 code = request.query_params.get("code")
                 state = request.query_params.get("state")  
@@ -332,10 +332,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     )
 
                 id_token = self._retrieve_token_using_auth_code(client, code, code_verifier=original_code_verifier)
-            
+
             elif not id_token and code:
                 id_token = self._retrieve_token_using_auth_code(client, code)
-           
+                
             if id_token:
                 try:
                     decoded_token = client.verify_and_decode_id_token(id_token)

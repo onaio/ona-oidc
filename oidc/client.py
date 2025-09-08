@@ -75,7 +75,7 @@ class OpenIDClient:
             config[auth_server].get("PKCE_CODE_CHALLENGE_TIMEOUT")
             or default_config.get("PKCE_CODE_CHALLENGE_TIMEOUT", 600)
         )
-        self.pkce_code_challenge_method =(
+        self.pkce_code_challenge_method = (
             config[auth_server].get("PKCE_CODE_CHALLENGE_METHOD")
             or default_config.get("PKCE_CODE_CHALLENGE_METHOD", "S256")
         )
@@ -173,7 +173,7 @@ class OpenIDClient:
         """
         length = self.pkce_code_verifier_length
         return secrets.token_urlsafe(length)[:length]
-    
+
     def _generate_pkce_code_challenge(self, code_verifier: str) -> str:
         """
         Generates a code challenge for PKCE
@@ -207,7 +207,7 @@ class OpenIDClient:
                 f"&code_challenge_method={self.pkce_code_challenge_method}"
                 f"&state={challenge_key}" 
             )
-
+            
         if self.cache_nonces or redirect_after:
             nonce = secrets.randbits(16)
             cache.set(
