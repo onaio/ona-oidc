@@ -1,4 +1,6 @@
 """Tests for module oidc.client"""
+import base64
+import hashlib
 import secrets
 from unittest.mock import patch
 
@@ -20,9 +22,25 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "REDIRECT_URI": "http://localhost:8000/oidc/msft/callback",
         "RESPONSE_TYPE": "code",
         "RESPONSE_MODE": "form_post",
-        "USE_NONCES": False,
+        "USE_NONCES": True,
         "NONCE_CACHE_TIMEOUT": 600,
-    }
+    },
+    "pkce": {
+        "AUTHORIZATION_ENDPOINT": "example.com/oauth2/v2.0/authorize",
+        "CLIENT_ID": "client",
+        "JWKS_ENDPOINT": "example.com/discovery/v2.0/keys",
+        "SCOPE": "openid profile",
+        "TOKEN_ENDPOINT": "example.com/oauth2/v2.0/token",
+        "END_SESSION_ENDPOINT": "http://localhost:3000",
+        "REDIRECT_URI": "http://localhost:8000/oidc/msft/callback",
+        "RESPONSE_TYPE": "code",
+        "USE_NONCES": False,
+        "RESPONSE_MODE": "query",
+        "USE_PKCE": True,
+        "PKCE_CODE_CHALLENGE_METHOD": "S256",
+        "PKCE_CODE_CHALLENGE_TIMEOUT": 600,
+        "PKCE_CODE_VERIFIER_LENGTH": 128,
+    },
 }
 
 
@@ -33,6 +51,7 @@ class OpenIDClientTestCase(TestCase):
         super().setUp()
 
         self.maxDiff = None
+        cache.clear()
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch.object(cache, "set")
@@ -73,8 +92,16 @@ class OpenIDClientTestCase(TestCase):
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
             "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "NONCE_CACHE_TIMEOUT": None,
+                "AUTHORIZATION_ENDPOINT": "example.com/oauth2/v2.0/authorize",
+                "CLIENT_ID": "client",
+                "JWKS_ENDPOINT": "example.com/discovery/v2.0/keys",
+                "SCOPE": "openid profile",
+                "TOKEN_ENDPOINT": "example.com/oauth2/v2.0/token",
+                "END_SESSION_ENDPOINT": "http://localhost:3000",
+                "REDIRECT_URI": "http://localhost:8000/oidc/msft/callback",
+                "RESPONSE_TYPE": "code",
+                "RESPONSE_MODE": "form_post",
+                "USE_NONCES": True,
             }
         }
     )
@@ -99,5 +126,180 @@ class OpenIDClientTestCase(TestCase):
             {"auth_server": "default", "redirect_after": None},
             1800,
         )
+        self.assertIsInstance(result, HttpResponseRedirect)
+        self.assertEqual(result.url, expected_url)
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch.object(cache, "set")
+    @patch.object(secrets, "token_urlsafe")
+    def test_login_pkce(self, mock_token_urlsafe, mock_cache_set):
+        """Returns correct redirect URL for PKCE flow"""
+        code_verifier = "123"
+        mock_token_urlsafe.return_value = code_verifier
+        code_verifier_hash = hashlib.sha256(code_verifier.encode("ascii")).digest()
+        expected_challenge = (
+            base64.urlsafe_b64encode(code_verifier_hash).rstrip(b"=").decode("ascii")
+        )
+        expected_url = (
+            "example.com/oauth2/v2.0/authorize?"
+            "client_id=client&"
+            "redirect_uri=http://localhost:8000/oidc/msft/callback&"
+            "scope=openid%20profile&"
+            "response_type=code&"
+            "response_mode=query&"
+            f"code_challenge={expected_challenge}&"
+            "code_challenge_method=S256&"
+            f"state=pkce_{expected_challenge}"
+        )
+        client = OpenIDClient("pkce")
+        result = client.login()
+        self.assertIsInstance(result, HttpResponseRedirect)
+        self.assertEqual(result.url, expected_url)
+        mock_cache_set.assert_called_once_with(
+            f"pkce_{expected_challenge}",
+            code_verifier,
+            600,
+        )
+        mock_token_urlsafe.assert_called_once_with(128)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "pkce": {
+                "AUTHORIZATION_ENDPOINT": "example.com/oauth2/v2.0/authorize",
+                "CLIENT_ID": "client",
+                "JWKS_ENDPOINT": "example.com/discovery/v2.0/keys",
+                "SCOPE": "openid profile",
+                "TOKEN_ENDPOINT": "example.com/oauth2/v2.0/token",
+                "END_SESSION_ENDPOINT": "http://localhost:3000",
+                "REDIRECT_URI": "http://localhost:8000/oidc/msft/callback",
+                "RESPONSE_TYPE": "code",
+                "USE_NONCES": False,
+                "RESPONSE_MODE": "query",
+                "USE_PKCE": True,
+                "PKCE_CODE_CHALLENGE_METHOD": "S256",
+                "PKCE_CODE_CHALLENGE_TIMEOUT": 600,
+            }
+        }
+    )
+    @patch.object(secrets, "token_urlsafe")
+    def test_login_pkce_default_code_verifier_length(self, mock_token_urlsafe):
+        """Uses default PKCE code verifier length on login if length not set"""
+        code_verifier = "123"
+        mock_token_urlsafe.return_value = code_verifier
+        code_verifier_hash = hashlib.sha256(code_verifier.encode("ascii")).digest()
+        expected_challenge = (
+            base64.urlsafe_b64encode(code_verifier_hash).rstrip(b"=").decode("ascii")
+        )
+        expected_url = (
+            "example.com/oauth2/v2.0/authorize?"
+            "client_id=client&"
+            "redirect_uri=http://localhost:8000/oidc/msft/callback&"
+            "scope=openid%20profile&"
+            "response_type=code&"
+            "response_mode=query&"
+            f"code_challenge={expected_challenge}&"
+            "code_challenge_method=S256&"
+            f"state=pkce_{expected_challenge}"
+        )
+        client = OpenIDClient("pkce")
+        result = client.login()
+        self.assertIsInstance(result, HttpResponseRedirect)
+        self.assertEqual(result.url, expected_url)
+        # Default code verifier length is 64
+        mock_token_urlsafe.assert_called_once_with(64)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "pkce": {
+                "AUTHORIZATION_ENDPOINT": "example.com/oauth2/v2.0/authorize",
+                "CLIENT_ID": "client",
+                "JWKS_ENDPOINT": "example.com/discovery/v2.0/keys",
+                "SCOPE": "openid profile",
+                "TOKEN_ENDPOINT": "example.com/oauth2/v2.0/token",
+                "END_SESSION_ENDPOINT": "http://localhost:3000",
+                "REDIRECT_URI": "http://localhost:8000/oidc/msft/callback",
+                "RESPONSE_TYPE": "code",
+                "USE_NONCES": False,
+                "RESPONSE_MODE": "query",
+                "USE_PKCE": True,
+                "PKCE_CODE_CHALLENGE_METHOD": "S256",
+                "PKCE_CODE_VERIFIER_LENGTH": 128,
+            }
+        }
+    )
+    @patch.object(cache, "set")
+    @patch.object(secrets, "token_urlsafe")
+    def test_login_default_pkce_code_challenge_timeout(
+        self, mock_token_urlsafe, mock_cache_set
+    ):
+        """Uses default PKCE code challenge timeout on login if timeout not set"""
+        code_verifier = "123"
+        mock_token_urlsafe.return_value = code_verifier
+        code_verifier_hash = hashlib.sha256(code_verifier.encode("ascii")).digest()
+        expected_challenge = (
+            base64.urlsafe_b64encode(code_verifier_hash).rstrip(b"=").decode("ascii")
+        )
+        expected_url = (
+            "example.com/oauth2/v2.0/authorize?"
+            "client_id=client&"
+            "redirect_uri=http://localhost:8000/oidc/msft/callback&"
+            "scope=openid%20profile&"
+            "response_type=code&"
+            "response_mode=query&"
+            f"code_challenge={expected_challenge}&"
+            "code_challenge_method=S256&"
+            f"state=pkce_{expected_challenge}"
+        )
+        client = OpenIDClient("pkce")
+        result = client.login()
+        self.assertIsInstance(result, HttpResponseRedirect)
+        self.assertEqual(result.url, expected_url)
+        mock_cache_set.assert_called_once_with(
+            f"pkce_{expected_challenge}",
+            code_verifier,
+            600,  # Default code challenge timeout is 600
+        )
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "pkce": {
+                "AUTHORIZATION_ENDPOINT": "example.com/oauth2/v2.0/authorize",
+                "CLIENT_ID": "client",
+                "JWKS_ENDPOINT": "example.com/discovery/v2.0/keys",
+                "SCOPE": "openid profile",
+                "TOKEN_ENDPOINT": "example.com/oauth2/v2.0/token",
+                "END_SESSION_ENDPOINT": "http://localhost:3000",
+                "REDIRECT_URI": "http://localhost:8000/oidc/msft/callback",
+                "RESPONSE_TYPE": "code",
+                "USE_NONCES": False,
+                "RESPONSE_MODE": "query",
+                "USE_PKCE": True,
+                "PKCE_CODE_CHALLENGE_TIMEOUT": 600,
+                "PKCE_CODE_VERIFIER_LENGTH": 128,
+            }
+        }
+    )
+    @patch.object(secrets, "token_urlsafe")
+    def test_login_pkce_default_pkce_code_challenge_method(self, mock_token_urlsafe):
+        """Uses default PKCE code challenge method on login if method not set"""
+        code_verifier = "123"
+        mock_token_urlsafe.return_value = code_verifier
+        code_verifier_hash = hashlib.sha256(code_verifier.encode("ascii")).digest()
+        expected_challenge = (
+            base64.urlsafe_b64encode(code_verifier_hash).rstrip(b"=").decode("ascii")
+        )
+        expected_url = (
+            "example.com/oauth2/v2.0/authorize?"
+            "client_id=client&"
+            "redirect_uri=http://localhost:8000/oidc/msft/callback&"
+            "scope=openid%20profile&"
+            "response_type=code&"
+            "response_mode=query&"
+            f"code_challenge={expected_challenge}&"
+            "code_challenge_method=S256&"  # Default code challenge method is S256
+            f"state=pkce_{expected_challenge}"
+        )
+        client = OpenIDClient("pkce")
+        result = client.login()
         self.assertIsInstance(result, HttpResponseRedirect)
         self.assertEqual(result.url, expected_url)

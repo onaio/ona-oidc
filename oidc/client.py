@@ -54,32 +54,36 @@ class OpenIDClient:
         self.token_endpoint = config[auth_server].get("TOKEN_ENDPOINT")
         self.end_session_endpoint = config[auth_server].get("END_SESSION_ENDPOINT")
         self.redirect_uri = config[auth_server].get("REDIRECT_URI")
-        self.response_type = (
-            config[auth_server].get("RESPONSE_TYPE") or default_config["RESPONSE_TYPE"]
+        self.response_type = config[auth_server].get(
+            "RESPONSE_TYPE", default_config["RESPONSE_TYPE"]
         )
-        self.response_mode = (
-            config[auth_server].get("RESPONSE_MODE") or default_config["RESPONSE_MODE"]
+        self.response_mode = config[auth_server].get(
+            "RESPONSE_MODE", default_config["RESPONSE_MODE"]
         )
         self.cache_nonces = str_to_bool(
-            config[auth_server].get("USE_NONCES") or default_config["USE_NONCES"]
+            config[auth_server].get("USE_NONCES", default_config["USE_NONCES"])
         )
         self.nonce_cache_timeout = int(
-            config[auth_server].get("NONCE_CACHE_TIMEOUT")
-            or default_config["NONCE_CACHE_TIMEOUT"]
+            config[auth_server].get(
+                "NONCE_CACHE_TIMEOUT", default_config["NONCE_CACHE_TIMEOUT"]
+            )
         )
         self.use_pkce = str_to_bool(
-            config[auth_server].get("USE_PKCE") or default_config.get("USE_PKCE", False)
+            config[auth_server].get("USE_PKCE", default_config["USE_PKCE"])
         )
         self.pkce_code_challenge_timeout = int(
-            config[auth_server].get("PKCE_CODE_CHALLENGE_TIMEOUT")
-            or default_config.get("PKCE_CODE_CHALLENGE_TIMEOUT", 600)
+            config[auth_server].get(
+                "PKCE_CODE_CHALLENGE_TIMEOUT",
+                default_config["PKCE_CODE_CHALLENGE_TIMEOUT"],
+            )
         )
         self.pkce_code_challenge_method = config[auth_server].get(
-            "PKCE_CODE_CHALLENGE_METHOD"
-        ) or default_config.get("PKCE_CODE_CHALLENGE_METHOD", "S256")
+            "PKCE_CODE_CHALLENGE_METHOD", default_config["PKCE_CODE_CHALLENGE_METHOD"]
+        )
         self.pkce_code_verifier_length = int(
-            config[auth_server].get("PKCE_CODE_VERIFIER_LENGTH")
-            or default_config.get("PKCE_CODE_VERIFIER_LENGTH", 64)
+            config[auth_server].get(
+                "PKCE_CODE_VERIFIER_LENGTH", default_config["PKCE_CODE_VERIFIER_LENGTH"]
+            )
         )
 
     def _retrieve_jwks_related_to_kid(self, kid: str) -> Optional[str]:
