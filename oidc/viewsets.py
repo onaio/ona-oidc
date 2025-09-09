@@ -310,6 +310,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 id_token = user_data.get("id_token")
                 provided_username = user_data.get("username")
                 code = user_data.get("code")
+                state = user_data.get("state")
 
             elif client.response_mode == "query":
                 code = request.query_params.get("code")

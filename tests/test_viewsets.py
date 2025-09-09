@@ -41,7 +41,7 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "REDIRECT_URI": "http://localhost:8000/oidc/msft/callback",
         "RESPONSE_TYPE": "code",
         "USE_NONCES": False,
-        "RESPONSE_MODE": "query",
+        "RESPONSE_MODE": "form_post",
         "USE_PKCE": True,
         "PKCE_CODE_CHALLENGE_METHOD": "S256",
         "PKCE_CODE_CHALLENGE_TIMEOUT": 600,
@@ -966,10 +966,51 @@ class TestUserModelOpenIDConnectViewset(TestCase):
     )
     @patch.object(OpenIDClient, "retrieve_token_using_auth_code")
     @patch.object(OpenIDClient, "verify_and_decode_id_token")
-    def test_pkce_flow(
+    def test_pkce_flow_mode_form_post(
         self, mock_verify_and_decode_id_token, mock_retrieve_token_using_auth_code
     ):
-        """PKCE flow works as expected"""
+        """PKCE flow works as expected with form_post response mode"""
+        mock_verify_and_decode_id_token.return_value = {
+            "given_name": "john",
+            "family_name": "doe",
+            "email": "john@example.com",
+            "preferred_username": "john",
+        }
+        mock_retrieve_token_using_auth_code.return_value = "id_token"
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        # Simulate the code verifier being in the cache
+        cache.set("pkce_123", "123")
+
+        data = {"state": "pkce_123", "code": "auth_code"}
+        request = self.factory.post("/", data=data)
+        response = view(request, auth_server="pkce")
+
+        self.assertEqual(response.status_code, 302)
+
+        user = User.objects.get(username="john")
+        self.assertEqual(user.email, "john@example.com")
+        self.assertEqual(user.first_name, "john")
+        self.assertEqual(user.last_name, "doe")
+        mock_retrieve_token_using_auth_code.assert_called_once_with(
+            "auth_code", code_verifier="123"
+        )
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "pkce": {
+                **OPENID_CONNECT_AUTH_SERVERS["pkce"],
+                "RESPONSE_MODE": "query",
+            },
+        },
+    )
+    @patch.object(OpenIDClient, "retrieve_token_using_auth_code")
+    @patch.object(OpenIDClient, "verify_and_decode_id_token")
+    def test_pkce_flow_mode_query(
+        self, mock_verify_and_decode_id_token, mock_retrieve_token_using_auth_code
+    ):
+        """PKCE flow works as expected with query response mode"""
         mock_verify_and_decode_id_token.return_value = {
             "given_name": "john",
             "family_name": "doe",
@@ -984,7 +1025,6 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         data = {"state": "pkce_123", "code": "auth_code"}
         request = self.factory.get("/", data=data)
         response = view(request, auth_server="pkce")
-
         self.assertEqual(response.status_code, 302)
 
         user = User.objects.get(username="john")
@@ -1001,9 +1041,9 @@ class TestUserModelOpenIDConnectViewset(TestCase):
     )
     def test_pkce_flow_cb_code_verifier_not_found(self):
         """Error returned if code verifier is not in the cache"""
-        view = UserModelOpenIDConnectViewset.as_view({"get": "callback"})
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         data = {"state": "pkce_123", "code": "auth_code"}
-        request = self.factory.get("/", data=data)
+        request = self.factory.post("/", data=data)
         response = view(request, auth_server="pkce")
         self.assertEqual(response.status_code, 401)
         self.assertEqual(
