@@ -138,7 +138,7 @@ class OpenIDClient:
         return decoded_token
 
     def retrieve_token_using_auth_code(
-        self, code: str, code_verfier: Optional[str] = None
+        self, code: str, code_verifier: Optional[str] = None
     ) -> Optional[str]:
         """
         Obtain an ID Token using the Authorization Code flow
@@ -157,8 +157,8 @@ class OpenIDClient:
             "redirect_uri": self.redirect_uri,
         }
 
-        if code_verfier is not None:
-            params["code_verifier"] = code_verfier
+        if code_verifier is not None:
+            params["code_verifier"] = code_verifier
 
         response = requests.post(self.token_endpoint, params=params, headers=headers)
         if not response.status_code == 200:
