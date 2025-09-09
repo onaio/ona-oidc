@@ -149,7 +149,7 @@ class OpenIDClient:
         :raises TokenVerificationFailed: If the token retrieval fails
         """
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
-        params = {
+        data = {
             "grant_type": "authorization_code",
             "code": code,
             "client_id": self.client_id,
@@ -158,9 +158,9 @@ class OpenIDClient:
         }
 
         if code_verifier is not None:
-            params["code_verifier"] = code_verifier
+            data["code_verifier"] = code_verifier
 
-        response = requests.post(self.token_endpoint, params=params, headers=headers)
+        response = requests.post(self.token_endpoint, data=data, headers=headers)
         if not response.status_code == 200:
             raise TokenVerificationFailed(
                 f"Failed to retrieve ID Token: {response.json()}"
