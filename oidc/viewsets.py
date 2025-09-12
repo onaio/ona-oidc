@@ -278,6 +278,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         if client:
             if client.response_mode == "form_post":
                 response_data = request.POST.dict()
+                # Custom username provided by the user in case
+                # a user with the same preferred username already exists
                 provided_username = response_data.get("username")
 
             elif client.response_mode == "query":
