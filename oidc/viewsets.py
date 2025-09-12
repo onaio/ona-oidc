@@ -269,39 +269,12 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
         return user_data, missing_fields
 
-    def _retrieve_token_using_auth_code(
-        self, client: OpenIDClient, code: str, code_verifier: Optional[str] = None
-    ) -> Optional[str]:
-        """
-        Helper function to retrieve ID Token using Authorization Code flow
-
-        :param client: OpenIDClient instance
-        :param code: Authorization code returned by the auth server
-        :param code_verifier: Code verifier used in PKCE flow
-        :return: ID Token as a string
-        :raises TokenVerificationFailed: If the token retrieval fails
-        """
-        try:
-            id_token = client.retrieve_token_using_auth_code(
-                code, code_verifier=code_verifier
-            )
-            return id_token
-        except TokenVerificationFailed as e:
-            return Response(
-                {
-                    "error": _(
-                        f"Unable to retrieve ID Token; {e}. Kindly retry authentication process."
-                    ),
-                    "error_title": _("Authentication request verification failed"),
-                },
-                status=status.HTTP_401_UNAUTHORIZED,
-                template_name="oidc/oidc_unrecoverable_error.html",
-            )
-
     @action(methods=["POST", "GET"], detail=False)
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
         client = self._get_client(auth_server=kwargs.get("auth_server"))
-        user = redirect_after = id_token = code = provided_username = state = None
+        user = (
+            redirect_after
+        ) = id_token = code = provided_username = state = code_verifier = None
         user_data = {}
 
         if client:
@@ -316,11 +289,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 code = request.query_params.get("code")
                 state = request.query_params.get("state")
 
-            if state and code:
-                original_code_verifier = cache.get(state)
+            if state:
+                # Get the original code verifier for PKCE flow
+                code_verifier = cache.get(state)
 
-                if original_code_verifier is None:
-                    # Original code verifier is required for PKCE flow
+                if code_verifier is None:
                     logger.error("PKCE code verifier not found in cache")
 
                     return Response(
@@ -336,12 +309,24 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         template_name="oidc/oidc_unrecoverable_error.html",
                     )
 
-                id_token = self._retrieve_token_using_auth_code(
-                    client, code, code_verifier=original_code_verifier
-                )
-
-            elif not id_token and code:
-                id_token = self._retrieve_token_using_auth_code(client, code)
+            if not id_token and code:
+                try:
+                    id_token = client.retrieve_token_using_auth_code(
+                        code, code_verifier=code_verifier
+                    )
+                except TokenVerificationFailed as e:
+                    return Response(
+                        {
+                            "error": _(
+                                f"Unable to retrieve ID Token; {e}. Kindly retry authentication process."
+                            ),
+                            "error_title": _(
+                                "Authentication request verification failed"
+                            ),
+                        },
+                        status=status.HTTP_401_UNAUTHORIZED,
+                        template_name="oidc/oidc_unrecoverable_error.html",
+                    )
 
             if id_token:
                 try:
