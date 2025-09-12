@@ -272,22 +272,19 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     @action(methods=["POST", "GET"], detail=False)
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
         client = self._get_client(auth_server=kwargs.get("auth_server"))
-        user = redirect_after = code_verifier = provided_username = None
-        response_data = {}
+        user = redirect_after = code_verifier = None
+        server_response = {}
 
         if client:
             if client.response_mode == "form_post":
-                response_data = request.POST.dict()
-                # Custom username provided by the user in case
-                # a user with the same preferred username already exists
-                provided_username = response_data.get("username")
+                server_response = request.data
 
             elif client.response_mode == "query":
-                response_data = request.query_params
+                server_response = request.query_params
 
-            if client.use_pkce and response_data.get("state"):
+            if client.use_pkce and server_response.get("state"):
                 # Get the original code verifier for PKCE flow
-                code_verifier = cache.get(response_data.get("state"))
+                code_verifier = cache.get(server_response.get("state"))
 
                 if code_verifier is None:
                     logger.error("PKCE code verifier not found in cache")
@@ -305,12 +302,12 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         template_name="oidc/oidc_unrecoverable_error.html",
                     )
 
-            id_token = response_data.get("id_token")
+            id_token = server_response.get("id_token")
 
-            if not id_token and response_data.get("code"):
+            if not id_token and server_response.get("code"):
                 try:
                     id_token = client.retrieve_token_using_auth_code(
-                        response_data.get("code"), code_verifier=code_verifier
+                        server_response.get("code"), code_verifier=code_verifier
                     )
                 except TokenVerificationFailed as e:
                     return Response(
@@ -332,6 +329,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     if decoded_token.get(REDIRECT_AFTER_AUTH):
                         redirect_after = decoded_token.pop(REDIRECT_AFTER_AUTH)
                     user_data = self.map_claims_to_model_field(decoded_token)
+                    # Custom username provided by the user in case
+                    # a user with the same preferred username already exists
+                    form_data = request.POST.dict()
+                    provided_username = form_data.get("username")
                     if provided_username:
                         user_data.update({"username": provided_username})
                     filter_kwargs = None
