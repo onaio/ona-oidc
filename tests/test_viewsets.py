@@ -969,7 +969,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
     def test_pkce_flow_mode_form_post(
         self, mock_verify_and_decode_id_token, mock_retrieve_token_using_auth_code
     ):
-        """PKCE flow works as expected with form_post response mode"""
+        """Auth code + PKCE flow works as expected with form_post response mode"""
         mock_verify_and_decode_id_token.return_value = {
             "given_name": "john",
             "family_name": "doe",
@@ -1010,7 +1010,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
     def test_pkce_flow_mode_query(
         self, mock_verify_and_decode_id_token, mock_retrieve_token_using_auth_code
     ):
-        """PKCE flow works as expected with query response mode"""
+        """Auth code + PKCE flow works as expected with query response mode"""
         mock_verify_and_decode_id_token.return_value = {
             "given_name": "john",
             "family_name": "doe",
@@ -1039,8 +1039,8 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
         OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
     )
-    def test_pkce_flow_cb_code_verifier_not_found(self):
-        """Error returned if code verifier is not in the cache"""
+    def test_pkce_flow_code_verifier_not_found(self):
+        """Missing code verifier in the cache should raise an error"""
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         data = {"state": "pkce_123", "code": "auth_code"}
         request = self.factory.post("/", data=data)
