@@ -311,8 +311,10 @@ class OpenIDClientTestCase(TestCase):
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch.object(requests, "post")
-    def test_retrieve_token_using_auth_code_pkce_flow(self, mock_requests_post):
-        """Retrieves an ID Token using the Authorization Code + PKCE flow"""
+    def test_retrieve_token_using_auth_code_pkce_flow_form_post(
+        self, mock_requests_post
+    ):
+        """Retrieves an ID Token using the Authorization Code + PKCE flow with form_post"""
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"id_token": "id_token"}
@@ -322,6 +324,7 @@ class OpenIDClientTestCase(TestCase):
         result = client.retrieve_token_using_auth_code("auth_code", "123")
 
         self.assertEqual(result, "id_token")
+        # Data is sent in the request body
         mock_requests_post.assert_called_once_with(
             "https://example.com/oauth2/v2.0/token",
             data={
@@ -345,10 +348,8 @@ class OpenIDClientTestCase(TestCase):
         }
     )
     @patch.object(requests, "post")
-    def test_retrieve_token_using_auth_code_pkce_flow_w_params(
-        self, mock_requests_post
-    ):
-        """Retrieves an ID Token using the Authorization Code + PKCE flow with params"""
+    def test_retrieve_token_using_auth_code_pkce_flow_query(self, mock_requests_post):
+        """Retrieves an ID Token using the Authorization Code + PKCE flow with query"""
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"id_token": "id_token"}
@@ -358,6 +359,7 @@ class OpenIDClientTestCase(TestCase):
         result = client.retrieve_token_using_auth_code("auth_code", "123")
 
         self.assertEqual(result, "id_token")
+        # Data is sent in the query string
         mock_requests_post.assert_called_once_with(
             "https://example.com/oauth2/v2.0/token",
             data=None,

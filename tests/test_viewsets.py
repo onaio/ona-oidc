@@ -966,7 +966,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
     )
     @patch.object(OpenIDClient, "retrieve_token_using_auth_code")
     @patch.object(OpenIDClient, "verify_and_decode_id_token")
-    def test_pkce_flow_mode_form_post(
+    def test_auth_code_pkce_flow_mode_form_post(
         self, mock_verify_and_decode_id_token, mock_retrieve_token_using_auth_code
     ):
         """Auth code + PKCE flow works as expected with form_post response mode"""
@@ -1007,7 +1007,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
     )
     @patch.object(OpenIDClient, "retrieve_token_using_auth_code")
     @patch.object(OpenIDClient, "verify_and_decode_id_token")
-    def test_pkce_flow_mode_query(
+    def test_auth_code_pkce_flow_mode_query(
         self, mock_verify_and_decode_id_token, mock_retrieve_token_using_auth_code
     ):
         """Auth code + PKCE flow works as expected with query response mode"""
