@@ -10,6 +10,7 @@ from django.test import TestCase
 from django.test.utils import override_settings
 from django.utils import timezone
 
+import jwt
 from mock import MagicMock, patch
 from rest_framework.test import APIRequestFactory
 
@@ -74,6 +75,8 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
             "help_text": "Username should only contain word characters & numbers and should have 3 or more characters",
         },
     },
+    "SSO_COOKIE_DOMAIN": ".example.com",
+    "SSO_COOKIE_MAX_AGE": 60 * 60 * 24 * 30,
 }
 
 
@@ -1053,3 +1056,34 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 "Kindly retry authentication process."
             ),
         )
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    @patch.object(jwt, "encode")
+    @patch.object(OpenIDClient, "retrieve_token_using_auth_code")
+    @patch.object(OpenIDClient, "verify_and_decode_id_token")
+    def test_cookie_set(
+        self,
+        mock_verify_and_decode_id_token,
+        mock_retrieve_token_using_auth_code,
+        mock_encode,
+    ):
+        """Cookie set for SSO"""
+        mock_retrieve_token_using_auth_code.return_value = "id_token"
+        mock_verify_and_decode_id_token.return_value = {
+            "given_name": "john",
+            "family_name": "doe",
+            "email": "john@example.com",
+            "preferred_username": "john",
+        }
+        mock_encode.return_value = "jwt.token.here"
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        data = {"id_token": "test.token.here"}
+        request = self.factory.post("/", data=data)
+        response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.cookies.get("SSO"))
+        self.assertEqual(response.cookies.get("SSO").value, "jwt.token.here")
+        self.assertEqual(response.cookies.get("SSO")["httponly"], True)
+        self.assertEqual(response.cookies.get("SSO")["secure"], True)
+        self.assertEqual(response.cookies.get("SSO")["max-age"], 60 * 60 * 24 * 30)
+        self.assertEqual(response.cookies.get("SSO")["domain"], ".example.com")
