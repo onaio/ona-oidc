@@ -181,6 +181,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 value=sso_cookie,
                 max_age=self.cookie_max_age,
                 domain=self.cookie_domain,
+                httponly=True,
+                secure=False if settings.DEBUG else True,
             )
 
         return response
