@@ -5,6 +5,7 @@ Client module for the oidc app
 import base64
 import hashlib
 import json
+import logging
 import secrets
 from typing import Optional
 
@@ -20,6 +21,8 @@ import oidc.settings as default
 from oidc.utils import str_to_bool
 
 REDIRECT_AFTER_AUTH = "redirect_after_auth"
+
+logger = logging.getLogger(__name__)
 
 
 class NonceVerificationFailed(Exception):
@@ -170,8 +173,23 @@ class OpenIDClient:
             headers=headers,
         )
         if not response.status_code == 200:
+            # Try parsing JSON but fall back to text
+            try:
+                error_details = response.json()
+            except ValueError:  # JSONDecodeError subclasses ValueError
+                error_details = response.text
+
+            logger.error(
+                "Failed to retrieve ID Token",
+                extra={
+                    "status_code": response.status_code,
+                    "url": response.url,
+                    "response": error_details,
+                },
+            )
+
             raise TokenVerificationFailed(
-                f"Failed to retrieve ID Token: {response.json()}"
+                f"Failed to retrieve ID Token: {error_details}"
             )
 
         id_token = response.json().get("id_token")
