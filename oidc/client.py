@@ -85,6 +85,9 @@ class OpenIDClient:
                 "PKCE_CODE_VERIFIER_LENGTH", default_config["PKCE_CODE_VERIFIER_LENGTH"]
             )
         )
+        self.request_type = config[auth_server].get(
+            "REQUEST_TYPE", default_config["REQUEST_TYPE"]
+        )
 
     def _retrieve_jwks_related_to_kid(self, kid: str) -> Optional[str]:
         """
@@ -160,7 +163,12 @@ class OpenIDClient:
         if code_verifier is not None:
             data["code_verifier"] = code_verifier
 
-        response = requests.post(self.token_endpoint, data=data, headers=headers)
+        response = requests.post(
+            self.token_endpoint,
+            data=data if self.request_type == "form_post" else None,
+            params=data if self.request_type == "query" else None,
+            headers=headers,
+        )
         if not response.status_code == 200:
             raise TokenVerificationFailed(
                 f"Failed to retrieve ID Token: {response.json()}"

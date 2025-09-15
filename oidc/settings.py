@@ -31,6 +31,7 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "SCOPE": "openid",
         "RESPONSE_TYPE": "id_token",
         "RESPONSE_MODE": "form_post",
+        "REQUEST_TYPE": "query",
         "USE_NONCES": True,
         "NONCE_CACHE_TIMEOUT": 1800,
         "USE_PKCE": False,

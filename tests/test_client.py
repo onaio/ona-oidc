@@ -39,7 +39,8 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "REDIRECT_URI": "http://localhost:8000/oidc/msft/callback",
         "RESPONSE_TYPE": "code",
         "USE_NONCES": False,
-        "RESPONSE_MODE": "query",
+        "RESPONSE_MODE": "form_post",
+        "REQUEST_TYPE": "form_post",
         "USE_PKCE": True,
         "PKCE_CODE_CHALLENGE_METHOD": "S256",
         "PKCE_CODE_CHALLENGE_TIMEOUT": 600,
@@ -150,7 +151,7 @@ class OpenIDClientTestCase(TestCase):
             "redirect_uri=http://localhost:8000/oidc/msft/callback&"
             "scope=openid%20profile&"
             "response_type=code&"
-            "response_mode=query&"
+            "response_mode=form_post&"
             f"code_challenge={expected_challenge}&"
             "code_challenge_method=S256&"
             f"state=pkce_{expected_challenge}"
@@ -178,7 +179,7 @@ class OpenIDClientTestCase(TestCase):
                 "REDIRECT_URI": "http://localhost:8000/oidc/msft/callback",
                 "RESPONSE_TYPE": "code",
                 "USE_NONCES": False,
-                "RESPONSE_MODE": "query",
+                "RESPONSE_MODE": "form_post",
                 "USE_PKCE": True,
                 "PKCE_CODE_CHALLENGE_METHOD": "S256",
                 "PKCE_CODE_CHALLENGE_TIMEOUT": 600,
@@ -200,7 +201,7 @@ class OpenIDClientTestCase(TestCase):
             "redirect_uri=http://localhost:8000/oidc/msft/callback&"
             "scope=openid%20profile&"
             "response_type=code&"
-            "response_mode=query&"
+            "response_mode=form_post&"
             f"code_challenge={expected_challenge}&"
             "code_challenge_method=S256&"
             f"state=pkce_{expected_challenge}"
@@ -224,7 +225,7 @@ class OpenIDClientTestCase(TestCase):
                 "REDIRECT_URI": "http://localhost:8000/oidc/msft/callback",
                 "RESPONSE_TYPE": "code",
                 "USE_NONCES": False,
-                "RESPONSE_MODE": "query",
+                "RESPONSE_MODE": "form_post",
                 "USE_PKCE": True,
                 "PKCE_CODE_CHALLENGE_METHOD": "S256",
                 "PKCE_CODE_VERIFIER_LENGTH": 128,
@@ -249,7 +250,7 @@ class OpenIDClientTestCase(TestCase):
             "redirect_uri=http://localhost:8000/oidc/msft/callback&"
             "scope=openid%20profile&"
             "response_type=code&"
-            "response_mode=query&"
+            "response_mode=form_post&"
             f"code_challenge={expected_challenge}&"
             "code_challenge_method=S256&"
             f"state=pkce_{expected_challenge}"
@@ -276,7 +277,7 @@ class OpenIDClientTestCase(TestCase):
                 "REDIRECT_URI": "http://localhost:8000/oidc/msft/callback",
                 "RESPONSE_TYPE": "code",
                 "USE_NONCES": False,
-                "RESPONSE_MODE": "query",
+                "RESPONSE_MODE": "form_post",
                 "USE_PKCE": True,
                 "PKCE_CODE_CHALLENGE_TIMEOUT": 600,
                 "PKCE_CODE_VERIFIER_LENGTH": 128,
@@ -298,7 +299,7 @@ class OpenIDClientTestCase(TestCase):
             "redirect_uri=http://localhost:8000/oidc/msft/callback&"
             "scope=openid%20profile&"
             "response_type=code&"
-            "response_mode=query&"
+            "response_mode=form_post&"
             f"code_challenge={expected_challenge}&"
             "code_challenge_method=S256&"  # Default code challenge method is S256
             f"state=pkce_{expected_challenge}"
@@ -310,8 +311,8 @@ class OpenIDClientTestCase(TestCase):
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch.object(requests, "post")
-    def test_retrieve_token_using_auth_code(self, mock_requests_post):
-        """Retrieves an ID Token using the Authorization Code flow"""
+    def test_retrieve_token_using_auth_code_pkce_flow(self, mock_requests_post):
+        """Retrieves an ID Token using the Authorization Code + PKCE flow"""
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"id_token": "id_token"}
@@ -324,6 +325,43 @@ class OpenIDClientTestCase(TestCase):
         mock_requests_post.assert_called_once_with(
             "https://example.com/oauth2/v2.0/token",
             data={
+                "grant_type": "authorization_code",
+                "code": "auth_code",
+                "client_id": "client",
+                "client_secret": "client_secret",
+                "redirect_uri": "http://localhost:8000/oidc/msft/callback",
+                "code_verifier": "123",
+            },
+            params=None,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "pkce": {
+                **OPENID_CONNECT_AUTH_SERVERS["pkce"],
+                "REQUEST_TYPE": "query",
+            }
+        }
+    )
+    @patch.object(requests, "post")
+    def test_retrieve_token_using_auth_code_pkce_flow_w_params(
+        self, mock_requests_post
+    ):
+        """Retrieves an ID Token using the Authorization Code + PKCE flow with params"""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"id_token": "id_token"}
+        mock_requests_post.return_value = mock_response
+
+        client = OpenIDClient("pkce")
+        result = client.retrieve_token_using_auth_code("auth_code", "123")
+
+        self.assertEqual(result, "id_token")
+        mock_requests_post.assert_called_once_with(
+            "https://example.com/oauth2/v2.0/token",
+            data=None,
+            params={
                 "grant_type": "authorization_code",
                 "code": "auth_code",
                 "client_id": "client",
