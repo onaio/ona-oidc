@@ -5,30 +5,49 @@ Tests for the OpenID Client
 import json
 
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.test import TestCase
 from django.test.utils import override_settings
 from django.utils import timezone
 
+import jwt
 from mock import MagicMock, patch
 from rest_framework.test import APIRequestFactory
 
+from oidc.client import OpenIDClient
 from oidc.viewsets import BaseOpenIDConnectViewset, UserModelOpenIDConnectViewset
 
 User = get_user_model()
 
 OPENID_CONNECT_AUTH_SERVERS = {
     "default": {
-        "AUTHORIZATION_ENDPOINT": "example.com/oauth2/v2.0/authorize",
+        "AUTHORIZATION_ENDPOINT": "https://example.com/oauth2/v2.0/authorize",
         "CLIENT_ID": "client",
-        "JWKS_ENDPOINT": "example.com/discovery/v2.0/keys",
+        "JWKS_ENDPOINT": "https://example.com/discovery/v2.0/keys",
         "SCOPE": "openid profile",
-        "TOKEN_ENDPOINT": "example.com/oauth2/v2.0/token",
+        "TOKEN_ENDPOINT": "https://example.com/oauth2/v2.0/token",
         "END_SESSION_ENDPOINT": "http://localhost:3000",
         "REDIRECT_URI": "http://localhost:8000/oidc/msft/callback",
         "RESPONSE_TYPE": "code",
         "RESPONSE_MODE": "form_post",
         "USE_NONCES": False,
-    }
+    },
+    "pkce": {
+        "AUTHORIZATION_ENDPOINT": "https://example.com/oauth2/v2.0/authorize",
+        "CLIENT_ID": "client",
+        "JWKS_ENDPOINT": "https://example.com/discovery/v2.0/keys",
+        "SCOPE": "openid profile",
+        "TOKEN_ENDPOINT": "https://example.com/oauth2/v2.0/token",
+        "END_SESSION_ENDPOINT": "http://localhost:3000",
+        "REDIRECT_URI": "http://localhost:8000/oidc/msft/callback",
+        "RESPONSE_TYPE": "code",
+        "USE_NONCES": False,
+        "RESPONSE_MODE": "form_post",
+        "USE_PKCE": True,
+        "PKCE_CODE_CHALLENGE_METHOD": "S256",
+        "PKCE_CODE_CHALLENGE_TIMEOUT": 600,
+        "PKCE_CODE_VERIFIER_LENGTH": 128,
+    },
 }
 OPENID_CONNECT_VIEWSET_CONFIG = {
     "REQUIRED_USER_CREATION_FIELDS": ["email", "first_name", "username"],
@@ -56,6 +75,8 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
             "help_text": "Username should only contain word characters & numbers and should have 3 or more characters",
         },
     },
+    "SSO_COOKIE_DOMAIN": ".example.com",
+    "SSO_COOKIE_MAX_AGE": 60 * 60 * 24 * 30,
 }
 
 
@@ -67,6 +88,8 @@ class TestUserModelOpenIDConnectViewset(TestCase):
     def setUp(self):
         TestCase().setUp()
         self.factory = APIRequestFactory()
+        # Clear the cache
+        cache.clear()
 
     def test_returns_data_entry_template_on_missing_username_claim(self):
         """
@@ -939,3 +962,160 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(
                 User.objects.filter(email__iexact="testuser2@example.com").count(), 1
             )
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
+    )
+    @patch.object(OpenIDClient, "retrieve_token_using_auth_code")
+    @patch.object(OpenIDClient, "verify_and_decode_id_token")
+    def test_auth_code_pkce_flow_mode_form_post(
+        self, mock_verify_and_decode_id_token, mock_retrieve_token_using_auth_code
+    ):
+        """Auth code + PKCE flow works as expected with form_post response mode"""
+        mock_verify_and_decode_id_token.return_value = {
+            "given_name": "john",
+            "family_name": "doe",
+            "email": "john@example.com",
+            "preferred_username": "john",
+        }
+        mock_retrieve_token_using_auth_code.return_value = "id_token"
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        # Simulate the code verifier being in the cache
+        cache.set("pkce_123", "123")
+
+        data = {"state": "pkce_123", "code": "auth_code"}
+        request = self.factory.post("/", data=data)
+        response = view(request, auth_server="pkce")
+
+        self.assertEqual(response.status_code, 302)
+
+        user = User.objects.get(username="john")
+        self.assertEqual(user.email, "john@example.com")
+        self.assertEqual(user.first_name, "john")
+        self.assertEqual(user.last_name, "doe")
+        mock_retrieve_token_using_auth_code.assert_called_once_with(
+            "auth_code", code_verifier="123"
+        )
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "pkce": {
+                **OPENID_CONNECT_AUTH_SERVERS["pkce"],
+                "RESPONSE_MODE": "query",
+            },
+        },
+    )
+    @patch.object(OpenIDClient, "retrieve_token_using_auth_code")
+    @patch.object(OpenIDClient, "verify_and_decode_id_token")
+    def test_auth_code_pkce_flow_mode_query(
+        self, mock_verify_and_decode_id_token, mock_retrieve_token_using_auth_code
+    ):
+        """Auth code + PKCE flow works as expected with query response mode"""
+        mock_verify_and_decode_id_token.return_value = {
+            "given_name": "john",
+            "family_name": "doe",
+            "email": "john@example.com",
+            "preferred_username": "john",
+        }
+        mock_retrieve_token_using_auth_code.return_value = "id_token"
+        view = UserModelOpenIDConnectViewset.as_view({"get": "callback"})
+        # Simulate the code verifier being in the cache
+        cache.set("pkce_123", "123")
+
+        data = {"state": "pkce_123", "code": "auth_code"}
+        request = self.factory.get("/", data=data)
+        response = view(request, auth_server="pkce")
+        self.assertEqual(response.status_code, 302)
+
+        user = User.objects.get(username="john")
+        self.assertEqual(user.email, "john@example.com")
+        self.assertEqual(user.first_name, "john")
+        self.assertEqual(user.last_name, "doe")
+        mock_retrieve_token_using_auth_code.assert_called_once_with(
+            "auth_code", code_verifier="123"
+        )
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
+    )
+    def test_pkce_flow_code_verifier_not_found(self):
+        """Missing code verifier in the cache should raise an error"""
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        data = {"state": "pkce_123", "code": "auth_code"}
+        request = self.factory.post("/", data=data)
+        response = view(request, auth_server="pkce")
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(
+            response.data["error"],
+            (
+                "Unable to validate authentication request; "
+                "Kindly retry authentication process."
+            ),
+        )
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    @patch.object(jwt, "encode")
+    @patch.object(OpenIDClient, "retrieve_token_using_auth_code")
+    @patch.object(OpenIDClient, "verify_and_decode_id_token")
+    def test_cookie_set(
+        self,
+        mock_verify_and_decode_id_token,
+        mock_retrieve_token_using_auth_code,
+        mock_encode,
+    ):
+        """Cookie set for SSO"""
+        mock_retrieve_token_using_auth_code.return_value = "id_token"
+        mock_verify_and_decode_id_token.return_value = {
+            "given_name": "john",
+            "family_name": "doe",
+            "email": "john@example.com",
+            "preferred_username": "john",
+        }
+        mock_encode.return_value = "jwt.token.here"
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        data = {"id_token": "test.token.here"}
+        request = self.factory.post("/", data=data)
+        response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(response.cookies.get("SSO"))
+        self.assertEqual(response.cookies.get("SSO").value, "jwt.token.here")
+        self.assertEqual(response.cookies.get("SSO")["httponly"], True)
+        self.assertEqual(response.cookies.get("SSO")["secure"], True)
+        self.assertEqual(response.cookies.get("SSO")["max-age"], 60 * 60 * 24 * 30)
+        self.assertEqual(response.cookies.get("SSO")["domain"], ".example.com")
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "AUTO_CREATE_USER": False,
+        }
+    )
+    @patch.object(OpenIDClient, "retrieve_token_using_auth_code")
+    @patch.object(OpenIDClient, "verify_and_decode_id_token")
+    def test_auto_create_user_disabled(
+        self,
+        mock_verify_and_decode_id_token,
+        mock_retrieve_token_using_auth_code,
+    ):
+        """New user is not created if auto create user is disabled"""
+        mock_retrieve_token_using_auth_code.return_value = "id_token"
+        mock_verify_and_decode_id_token.return_value = {
+            "given_name": "john",
+            "family_name": "doe",
+            "email": "john@example.com",
+            "preferred_username": "john",
+        }
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        data = {"id_token": "test.token.here"}
+        request = self.factory.post("/", data=data)
+        response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.data["error_title"], "Request not authorized")
+        self.assertEqual(
+            response.data["error"],
+            "The request is not authorized. Please contact the administrator.",
+        )

@@ -24,6 +24,7 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     },
     "REPLACE_USERNAME_CHARACTERS": "-.",
     "USERNAME_REPLACEMENT_CHARACTER": "_",
+    "AUTO_CREATE_USER": True,
 }
 
 OPENID_CONNECT_AUTH_SERVERS = {
@@ -31,7 +32,12 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "SCOPE": "openid",
         "RESPONSE_TYPE": "id_token",
         "RESPONSE_MODE": "form_post",
+        "REQUEST_MODE": "query",
         "USE_NONCES": True,
         "NONCE_CACHE_TIMEOUT": 1800,
+        "USE_PKCE": False,
+        "PKCE_CODE_CHALLENGE_METHOD": "S256",
+        "PKCE_CODE_CHALLENGE_TIMEOUT": 600,
+        "PKCE_CODE_VERIFIER_LENGTH": 64,
     }
 }

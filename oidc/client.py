@@ -2,7 +2,10 @@
 Client module for the oidc app
 """
 
+import base64
+import hashlib
 import json
+import logging
 import secrets
 from typing import Optional
 
@@ -18,6 +21,8 @@ import oidc.settings as default
 from oidc.utils import str_to_bool
 
 REDIRECT_AFTER_AUTH = "redirect_after_auth"
+
+logger = logging.getLogger(__name__)
 
 
 class NonceVerificationFailed(Exception):
@@ -52,18 +57,39 @@ class OpenIDClient:
         self.token_endpoint = config[auth_server].get("TOKEN_ENDPOINT")
         self.end_session_endpoint = config[auth_server].get("END_SESSION_ENDPOINT")
         self.redirect_uri = config[auth_server].get("REDIRECT_URI")
-        self.response_type = (
-            config[auth_server].get("RESPONSE_TYPE") or default_config["RESPONSE_TYPE"]
+        self.response_type = config[auth_server].get(
+            "RESPONSE_TYPE", default_config["RESPONSE_TYPE"]
         )
-        self.response_mode = (
-            config[auth_server].get("RESPONSE_MODE") or default_config["RESPONSE_MODE"]
+        self.response_mode = config[auth_server].get(
+            "RESPONSE_MODE", default_config["RESPONSE_MODE"]
         )
         self.cache_nonces = str_to_bool(
-            config[auth_server].get("USE_NONCES") or default_config["USE_NONCES"]
+            config[auth_server].get("USE_NONCES", default_config["USE_NONCES"])
         )
         self.nonce_cache_timeout = int(
-            config[auth_server].get("NONCE_CACHE_TIMEOUT")
-            or default_config["NONCE_CACHE_TIMEOUT"]
+            config[auth_server].get(
+                "NONCE_CACHE_TIMEOUT", default_config["NONCE_CACHE_TIMEOUT"]
+            )
+        )
+        self.use_pkce = str_to_bool(
+            config[auth_server].get("USE_PKCE", default_config["USE_PKCE"])
+        )
+        self.pkce_code_challenge_timeout = int(
+            config[auth_server].get(
+                "PKCE_CODE_CHALLENGE_TIMEOUT",
+                default_config["PKCE_CODE_CHALLENGE_TIMEOUT"],
+            )
+        )
+        self.pkce_code_challenge_method = config[auth_server].get(
+            "PKCE_CODE_CHALLENGE_METHOD", default_config["PKCE_CODE_CHALLENGE_METHOD"]
+        )
+        self.pkce_code_verifier_length = int(
+            config[auth_server].get(
+                "PKCE_CODE_VERIFIER_LENGTH", default_config["PKCE_CODE_VERIFIER_LENGTH"]
+            )
+        )
+        self.request_mode = config[auth_server].get(
+            "REQUEST_MODE", default_config["REQUEST_MODE"]
         )
 
     def _retrieve_jwks_related_to_kid(self, kid: str) -> Optional[str]:
@@ -117,12 +143,19 @@ class OpenIDClient:
             decoded_token[REDIRECT_AFTER_AUTH] = cached_data.get("redirect_after")
         return decoded_token
 
-    def retrieve_token_using_auth_code(self, code: str) -> Optional[str]:
+    def retrieve_token_using_auth_code(
+        self, code: str, code_verifier: Optional[str] = None
+    ) -> Optional[str]:
         """
         Obtain an ID Token using the Authorization Code flow
+
+        :param code: Authorization code returned by the auth server
+        :param code_verifier: Code verifier used in PKCE flow
+        :return: ID Token as a string
+        :raises TokenVerificationFailed: If the token retrieval fails
         """
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
-        params = {
+        data = {
             "grant_type": "authorization_code",
             "code": code,
             "client_id": self.client_id,
@@ -130,14 +163,43 @@ class OpenIDClient:
             "redirect_uri": self.redirect_uri,
         }
 
-        response = requests.post(self.token_endpoint, params=params, headers=headers)
-        if not response.status_code == 200:
-            raise TokenVerificationFailed(
-                f"Failed to retrieve ID Token: {response.json()}"
+        if code_verifier is not None:
+            data["code_verifier"] = code_verifier
+        try:
+            response = requests.post(
+                self.token_endpoint,
+                data=data if self.request_mode == "form_post" else None,
+                params=data if self.request_mode == "query" else None,
+                headers=headers,
             )
+            response.raise_for_status()
 
-        id_token = response.json().get("id_token")
-        return id_token
+        except requests.RequestException as exc:
+            logger.exception(exc)
+
+            raise TokenVerificationFailed(
+                f"Failed to retrieve ID Token: {exc}"
+            ) from exc
+
+        return response.json().get("id_token")
+
+    def _generate_pkce_code_verifier(self) -> str:
+        """
+        Generates a code verifier for PKCE
+
+        https://datatracker.ietf.org/doc/html/rfc7636#section-4.1
+        """
+        length = self.pkce_code_verifier_length
+        return secrets.token_urlsafe(length)[:length]
+
+    def _generate_pkce_code_challenge(self, code_verifier: str) -> str:
+        """
+        Generates a code challenge for PKCE
+
+        https://datatracker.ietf.org/doc/html/rfc7636#section-4.2
+        """
+        digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
+        return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
     def login(self, redirect_after: Optional[str] = None) -> str:
         """
@@ -148,6 +210,22 @@ class OpenIDClient:
             f"scope={self.scope}&response_type={self.response_type}&"
             f"response_mode={self.response_mode}"
         )
+
+        if self.use_pkce:
+            code_verifier = self._generate_pkce_code_verifier()
+            code_challenge = self._generate_pkce_code_challenge(code_verifier)
+            code_verifier_key = f"pkce_{code_challenge}"
+            cache.set(
+                code_verifier_key,
+                code_verifier,
+                self.pkce_code_challenge_timeout,
+            )
+            url += (
+                f"&code_challenge={code_challenge}"
+                f"&code_challenge_method={self.pkce_code_challenge_method}"
+                f"&state={code_verifier_key}"
+            )
+
         if self.cache_nonces or redirect_after:
             nonce = secrets.randbits(16)
             cache.set(
