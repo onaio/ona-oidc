@@ -1087,3 +1087,39 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(response.cookies.get("SSO")["secure"], True)
         self.assertEqual(response.cookies.get("SSO")["max-age"], 60 * 60 * 24 * 30)
         self.assertEqual(response.cookies.get("SSO")["domain"], ".example.com")
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "AUTO_CREATE_USER": False,
+        }
+    )
+    @patch.object(OpenIDClient, "retrieve_token_using_auth_code")
+    @patch.object(OpenIDClient, "verify_and_decode_id_token")
+    def test_auto_create_user_disabled(
+        self,
+        mock_verify_and_decode_id_token,
+        mock_retrieve_token_using_auth_code,
+    ):
+        """New user is not created if auto create user is disabled"""
+        mock_retrieve_token_using_auth_code.return_value = "id_token"
+        mock_verify_and_decode_id_token.return_value = {
+            "given_name": "john",
+            "family_name": "doe",
+            "email": "john@example.com",
+            "preferred_username": "john",
+        }
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        data = {"id_token": "test.token.here"}
+        request = self.factory.post("/", data=data)
+        response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(
+            response.data["error"],
+            "The request is not authorized. Please contact the administrator.",
+        )
+        self.assertEqual(response.data["error_title"], "Request not authorized")
+        self.assertEqual(
+            response.data["error"],
+            "The request is not authorized. Please contact the administrator.",
+        )

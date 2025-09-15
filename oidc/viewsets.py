@@ -59,26 +59,26 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         super().__init__(*args, **kwargs)
         config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
         self.jwt = config.get("JWT_SECRET_KEY", "")
-        self.required_fields = (
-            config.get("REQUIRED_USER_CREATION_FIELDS")
-            or default_config["REQUIRED_USER_CREATION_FIELDS"]
+        self.required_fields = config.get(
+            "REQUIRED_USER_CREATION_FIELDS",
+            default_config["REQUIRED_USER_CREATION_FIELDS"],
         )
-        self.user_creation_fields = (
-            config.get("USER_CREATION_FIELDS") or default_config["USER_CREATION_FIELDS"]
+        self.user_creation_fields = config.get(
+            "USER_CREATION_FIELDS", default_config["USER_CREATION_FIELDS"]
         )
-        self.user_default_fields = config.get("USER_DEFAULTS") or {}
-        self.map_claim_to_model = (
-            config.get("MAP_CLAIM_TO_MODEL") or default_config["MAP_CLAIM_TO_MODEL"]
+        self.user_default_fields = config.get("USER_DEFAULTS", {})
+        self.map_claim_to_model = config.get(
+            "MAP_CLAIM_TO_MODEL", default_config["MAP_CLAIM_TO_MODEL"]
         )
         self.use_sso = str_to_bool(config.get("USE_SSO_COOKIE", True))
-        self.sso_cookie = (
-            config.get("SSO_COOKIE_DATA") or default_config["SSO_COOKIE_DATA"]
+        self.sso_cookie = config.get(
+            "SSO_COOKIE_DATA", default_config["SSO_COOKIE_DATA"]
         )
-        self.jwt_algorithm = (
-            config.get("JWT_ALGORITHM") or default_config["JWT_ALGORITHM"]
+        self.jwt_algorithm = config.get(
+            "JWT_ALGORITHM", default_config["JWT_ALGORITHM"]
         )
-        self.split_name_claim = (
-            config.get("SPLIT_NAME_CLAIM") or default_config["SPLIT_NAME_CLAIM"]
+        self.split_name_claim = config.get(
+            "SPLIT_NAME_CLAIM", default_config["SPLIT_NAME_CLAIM"]
         )
         self.use_email_as_username = config.get(
             "USE_EMAIL_USERNAME", default_config["USE_EMAIL_USERNAME"]
@@ -89,9 +89,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         self.auth_backend = config.get(
             "AUTH_BACKEND", "django.contrib.auth.backends.ModelBackend"
         )
-        self.unique_user_filter_fields = (
-            config.get("USER_UNIQUE_FILTER_FIELDS")
-            or default_config["USER_UNIQUE_FILTER_FIELDS"]
+        self.unique_user_filter_fields = config.get(
+            "USER_UNIQUE_FILTER_FIELDS", default_config["USER_UNIQUE_FILTER_FIELDS"]
         )
         self.replaceable_username_characters = config.get(
             "REPLACE_USERNAME_CHARACTERS", default_config["REPLACE_USERNAME_CHARACTERS"]
@@ -100,9 +99,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             "USERNAME_REPLACEMENT_CHARACTER",
             default_config["USERNAME_REPLACEMENT_CHARACTER"],
         )
-        self.field_validation_regex = (
-            config.get("FIELD_VALIDATION_REGEX")
-            or default_config["FIELD_VALIDATION_REGEX"]
+        self.field_validation_regex = config.get(
+            "FIELD_VALIDATION_REGEX", default_config["FIELD_VALIDATION_REGEX"]
+        )
+        self.auto_create_user = str_to_bool(
+            config.get("AUTO_CREATE_USER", default_config["AUTO_CREATE_USER"])
         )
 
     def _get_client(self, auth_server: str) -> Optional[OpenIDClient]:
@@ -358,6 +359,18 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         q_objects and self.user_model.objects.filter(q_objects).exists()
                     ):
                         user = self.user_model.objects.get(q_objects)
+
+                    if not user and not self.auto_create_user:
+                        return Response(
+                            {
+                                "error": _(
+                                    "The request is not authorized. Please contact the administrator."
+                                ),
+                                "error_title": _("Request not authorized"),
+                            },
+                            status=status.HTTP_401_UNAUTHORIZED,
+                            template_name="oidc/oidc_unrecoverable_error.html",
+                        )
 
                     if not user:
                         user_data, missing_fields = self._clean_user_data(user_data)
