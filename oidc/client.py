@@ -88,8 +88,8 @@ class OpenIDClient:
                 "PKCE_CODE_VERIFIER_LENGTH", default_config["PKCE_CODE_VERIFIER_LENGTH"]
             )
         )
-        self.request_type = config[auth_server].get(
-            "REQUEST_TYPE", default_config["REQUEST_TYPE"]
+        self.request_mode = config[auth_server].get(
+            "REQUEST_MODE", default_config["REQUEST_MODE"]
         )
 
     def _retrieve_jwks_related_to_kid(self, kid: str) -> Optional[str]:
@@ -168,8 +168,8 @@ class OpenIDClient:
         try:
             response = requests.post(
                 self.token_endpoint,
-                data=data if self.request_type == "form_post" else None,
-                params=data if self.request_type == "query" else None,
+                data=data if self.request_mode == "form_post" else None,
+                params=data if self.request_mode == "query" else None,
                 headers=headers,
             )
             response.raise_for_status()

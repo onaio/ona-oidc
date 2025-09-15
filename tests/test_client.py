@@ -40,7 +40,7 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "RESPONSE_TYPE": "code",
         "USE_NONCES": False,
         "RESPONSE_MODE": "form_post",
-        "REQUEST_TYPE": "form_post",
+        "REQUEST_MODE": "form_post",
         "USE_PKCE": True,
         "PKCE_CODE_CHALLENGE_METHOD": "S256",
         "PKCE_CODE_CHALLENGE_TIMEOUT": 600,
@@ -343,7 +343,7 @@ class OpenIDClientTestCase(TestCase):
         OPENID_CONNECT_AUTH_SERVERS={
             "pkce": {
                 **OPENID_CONNECT_AUTH_SERVERS["pkce"],
-                "REQUEST_TYPE": "query",
+                "REQUEST_MODE": "query",
             }
         }
     )
