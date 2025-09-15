@@ -165,35 +165,23 @@ class OpenIDClient:
 
         if code_verifier is not None:
             data["code_verifier"] = code_verifier
-
-        response = requests.post(
-            self.token_endpoint,
-            data=data if self.request_type == "form_post" else None,
-            params=data if self.request_type == "query" else None,
-            headers=headers,
-        )
-        if not response.status_code == 200:
-            # Try parsing JSON but fall back to text
-            try:
-                error_details = response.json()
-            except ValueError:  # JSONDecodeError subclasses ValueError
-                error_details = response.text
-
-            logger.error(
-                "Failed to retrieve ID Token",
-                extra={
-                    "status_code": response.status_code,
-                    "url": response.url,
-                    "response": error_details,
-                },
+        try:
+            response = requests.post(
+                self.token_endpoint,
+                data=data if self.request_type == "form_post" else None,
+                params=data if self.request_type == "query" else None,
+                headers=headers,
             )
+            response.raise_for_status()
+
+        except requests.RequestException as exc:
+            logger.exception(exc)
 
             raise TokenVerificationFailed(
-                f"Failed to retrieve ID Token: {error_details}"
-            )
+                f"Failed to retrieve ID Token: {exc}"
+            ) from exc
 
-        id_token = response.json().get("id_token")
-        return id_token
+        return response.json().get("id_token")
 
     def _generate_pkce_code_verifier(self) -> str:
         """
