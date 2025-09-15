@@ -1114,10 +1114,6 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         request = self.factory.post("/", data=data)
         response = view(request, auth_server="default")
         self.assertEqual(response.status_code, 401)
-        self.assertEqual(
-            response.data["error"],
-            "The request is not authorized. Please contact the administrator.",
-        )
         self.assertEqual(response.data["error_title"], "Request not authorized")
         self.assertEqual(
             response.data["error"],
