@@ -982,9 +982,10 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         mock_retrieve_token_using_auth_code.return_value = "id_token"
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         # Simulate the code verifier being in the cache
-        cache.set("pkce_123", "123")
+        code_verifier_cache_key = "pkce_123"
+        cache.set(code_verifier_cache_key, "123")
 
-        data = {"state": "pkce_123", "code": "auth_code"}
+        data = {"state": code_verifier_cache_key, "code": "auth_code"}
         request = self.factory.post("/", data=data)
         response = view(request, auth_server="pkce")
 
@@ -997,6 +998,8 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         mock_retrieve_token_using_auth_code.assert_called_once_with(
             "auth_code", code_verifier="123"
         )
+        # Code verifier is removed from cache
+        self.assertIsNone(cache.get(code_verifier_cache_key))
 
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
@@ -1023,9 +1026,10 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         mock_retrieve_token_using_auth_code.return_value = "id_token"
         view = UserModelOpenIDConnectViewset.as_view({"get": "callback"})
         # Simulate the code verifier being in the cache
-        cache.set("pkce_123", "123")
+        code_verifier_cache_key = "pkce_123"
+        cache.set(code_verifier_cache_key, "123")
 
-        data = {"state": "pkce_123", "code": "auth_code"}
+        data = {"state": code_verifier_cache_key, "code": "auth_code"}
         request = self.factory.get("/", data=data)
         response = view(request, auth_server="pkce")
         self.assertEqual(response.status_code, 302)
@@ -1037,6 +1041,8 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         mock_retrieve_token_using_auth_code.assert_called_once_with(
             "auth_code", code_verifier="123"
         )
+        # Code verifier is removed from cache
+        self.assertIsNone(cache.get(code_verifier_cache_key))
 
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
@@ -1059,16 +1065,13 @@ class TestUserModelOpenIDConnectViewset(TestCase):
 
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
     @patch.object(jwt, "encode")
-    @patch.object(OpenIDClient, "retrieve_token_using_auth_code")
     @patch.object(OpenIDClient, "verify_and_decode_id_token")
     def test_cookie_set(
         self,
         mock_verify_and_decode_id_token,
-        mock_retrieve_token_using_auth_code,
         mock_encode,
     ):
-        """Cookie set for SSO"""
-        mock_retrieve_token_using_auth_code.return_value = "id_token"
+        """Cookie is set correctly for SSO"""
         mock_verify_and_decode_id_token.return_value = {
             "given_name": "john",
             "family_name": "doe",
@@ -1094,15 +1097,9 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             "AUTO_CREATE_USER": False,
         }
     )
-    @patch.object(OpenIDClient, "retrieve_token_using_auth_code")
     @patch.object(OpenIDClient, "verify_and_decode_id_token")
-    def test_auto_create_user_disabled(
-        self,
-        mock_verify_and_decode_id_token,
-        mock_retrieve_token_using_auth_code,
-    ):
+    def test_auto_create_user_disabled(self, mock_verify_and_decode_id_token):
         """New user is not created if auto create user is disabled"""
-        mock_retrieve_token_using_auth_code.return_value = "id_token"
         mock_verify_and_decode_id_token.return_value = {
             "given_name": "john",
             "family_name": "doe",
@@ -1119,3 +1116,41 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             response.data["error"],
             "The request is not authorized. Please contact the administrator.",
         )
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "AUTO_CREATE_USER": False,
+        },
+        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
+    )
+    @patch.object(OpenIDClient, "retrieve_token_using_auth_code")
+    @patch.object(OpenIDClient, "verify_and_decode_id_token")
+    def test_auto_create_user_disabled_state_cleared(
+        self, mock_verify_and_decode_id_token, mock_retrieve_token_using_auth_code
+    ):
+        """Cached login state is cleared if auto create is false"""
+        mock_verify_and_decode_id_token.return_value = {
+            "given_name": "john",
+            "family_name": "doe",
+            "email": "john@example.com",
+            "preferred_username": "john",
+        }
+        mock_retrieve_token_using_auth_code.return_value = "id_token"
+
+        # Simulate the cached code verifier
+        state_key = "pkce_123"
+        cache.set(state_key, "123")
+
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        data = {"state": state_key, "code": "auth_code"}
+        request = self.factory.post("/", data=data)
+        response = view(request, auth_server="pkce")
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.data["error_title"], "Request not authorized")
+        self.assertEqual(
+            response.data["error"],
+            "The request is not authorized. Please contact the administrator.",
+        )
+        self.assertIsNone(cache.get(state_key))

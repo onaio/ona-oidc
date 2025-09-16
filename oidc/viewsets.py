@@ -272,6 +272,14 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
         return user_data, missing_fields
 
+    def _clear_login_states(self, server_response: dict) -> None:
+        """Clear cached login states
+
+        :param server_response: Response from authorization server
+        """
+        if server_response.get("state"):
+            cache.delete(server_response.get("state"))
+
     @action(methods=["POST", "GET"], detail=False)
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
         client = self._get_client(auth_server=kwargs.get("auth_server"))
@@ -361,6 +369,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         user = self.user_model.objects.get(q_objects)
 
                     if not user and not self.auto_create_user:
+                        self._clear_login_states(server_response)
                         return Response(
                             {
                                 "error": _(
@@ -452,6 +461,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     if user:
                         user.last_login = timezone.now()
                         user.save(update_fields=["last_login"])
+                        self._clear_login_states(server_response)
                         return self.generate_successful_response(
                             request, user, redirect_after=redirect_after
                         )
