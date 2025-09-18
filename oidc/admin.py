@@ -167,7 +167,7 @@ class ImportUserAdmin(BaseUserAdmin):
         ql = q.lower()
 
         def matches(u: dict) -> bool:
-            return any(
+            return (
                 (u.get("given_name", "") or "").lower().find(ql) >= 0
                 or (u.get("family_name", "") or "").lower().find(ql) >= 0
                 or (u.get("preferred_username", "") or "").lower().find(ql) >= 0
