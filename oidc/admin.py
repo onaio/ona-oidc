@@ -29,7 +29,7 @@ def get_import_conf() -> dict:
 
 
 class ImportUserAdmin(BaseUserAdmin):
-    add_form_template = "admin/auth/user/import_user.html"
+    add_form_template = "admin/auth/user/import_form.html"
     add_form = ImportUserForm
     add_fieldsets = (
         (
