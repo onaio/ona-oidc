@@ -1,9 +1,11 @@
 import logging
+from typing import Any
 
 from django.conf import settings
 from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
+from django.core.cache import cache
 from django.http import JsonResponse
 from django.urls import path
 
@@ -54,33 +56,58 @@ class ImportUserAdmin(BaseUserAdmin):
         # Insert before the default urls so {% url 'admin:auth_user_search' %} resolves
         return custom + urls
 
-    def _get_access_token(self):
-        """Get access token required for importing users"""
+    def _request_access_token(self) -> dict[str, Any]:
+        """Request for a new access token."""
         config = get_import_conf()
+        response = requests.post(
+            config["TOKEN_ENDPOINT"],
+            data={
+                "grant_type": "client_credentials",
+                "scope": config["SCOPE"],
+                "client_id": config["CLIENT_ID"],
+                "client_secret": config["CLIENT_SECRET"],
+            },
+        )
+        response.raise_for_status()
 
-        try:
-            response = requests.post(
-                config["TOKEN_ENDPOINT"],
-                data={
-                    "grant_type": "client_credentials",
-                    "scope": config["SCOPE"],
-                    "client_id": config["CLIENT_ID"],
-                    "client_secret": config["CLIENT_SECRET"],
-                },
-            )
-            response.raise_for_status()
-            return response.json()
-        except (requests.RequestException, ValueError) as exc:
-            logger.exception(exc)
+    def _get_access_token(self, force_refresh: bool = False) -> str:
+        """Returns access token.
 
-            raise
+        Uses cached access token unless force_refresh=True
+
+        :param force_refresh: Force refresh of cached access token
+        :returns: Cached access token if present, otherwise request one
+        :rtype: string
+        """
+        cache_key = "oidc:import_user:token"
+
+        if not force_refresh:
+            cached = cache.get(cache_key)
+
+            if cached:
+                return cached
+
+        data = self._request_access_token()
+        token = data.get("access_token")
+
+        if not token:
+            # Defensive: malformed response
+            raise requests.RequestException("Token response missing 'access_token'")
+
+        # Respect expires_in if provided
+        expires_in = int(data.get("expires_in", 3600))
+        # Subtract 60s to avoid setting the extact expires_in
+        timeout = max(expires_in - 60, 60)
+        cache.set(cache_key, token, timeout=timeout)
+
+        return token
 
     def _search_user(self, token, query):
         """Search user to import
 
         :param token: Access token
         :param query: Search query
-        :returns: List of users to import
+        :returns: List of user(s) matching search query
         :rtype: list
         """
         config = get_import_conf()
@@ -88,27 +115,36 @@ class ImportUserAdmin(BaseUserAdmin):
             config["QUERY_PARAM"]: query,
         }
         headers = {"Authorization": f"Bearer {token}"}
+        response = requests.get(
+            config["SEARCH_ENDPOINT"], params=params, headers=headers
+        )
 
-        try:
+        if response.status_code == 401:
+            # Token likely expired/invalid: force refresh and retry once
+            new_token = self._get_access_token(force_refresh=True)
+            headers["Authorization"] = f"Bearer {new_token}"
             response = requests.get(
                 config["SEARCH_ENDPOINT"], params=params, headers=headers
             )
-            response.raise_for_status()
-            return response.json()
-        except (requests.RequestException, ValueError) as exc:
-            logger.exception(exc)
 
-            raise
+        response.raise_for_status()
+        return response.json()
 
-    def _parse_search_suggestions(self, users):
+    def _parse_search_results(self, results) -> list:
+        """Format search results
+
+        :param results: Search results
+        :returns: Suggestions formatted appropriately
+        :rtype: list
+        """
         config = get_import_conf()
 
         return list(
             map(
                 lambda user: {
-                    v: user[k] for k, v in config["EXTERNAL_TO_MODEL"].items()
+                    v: user[k] for k, v in config["MAP_CLAIM_TO_MODEL"].items()
                 },
-                users,
+                results,
             )
         )
 
@@ -120,65 +156,16 @@ class ImportUserAdmin(BaseUserAdmin):
         if not config or not query:
             return JsonResponse([], safe=False, status=200)
 
-        suggestions = self._parse_search_suggestions(self._dummy_search(query))
-
-        return JsonResponse(suggestions, safe=False, status=200)
-
-        # Get access token
         try:
-            token = self._get_access_token()
-        except requests.RequestException:
+            results = self._search_user(self._get_access_token(), query)
+        except requests.RequestException as exc:
+            logger.exception(exc)
+
             return JsonResponse([], safe=False, status=200)
 
-        # Make API call to search user
-        try:
-            suggestions = self._search_user(token["access_token"], query)
-        except requests.RequestException:
-            return JsonResponse([], safe=False, status=200)
-
-        suggestions = self._parse_search_suggestions(suggestions)
+        suggestions = self._parse_search_results(results)
 
         return JsonResponse(suggestions, safe=False, status=200)
-
-    def _dummy_search(self, q: str) -> list[dict]:
-        """Return filtered dummy results (case-insensitive contains across a few fields)."""
-        cfg = get_import_conf()
-        raw = [
-            {
-                "id": 1,
-                "given_name": "Jane",
-                "family_name": "Doe",
-                "email": "jane@example.com",
-                "preferred_username": "jane",
-            },
-            {
-                "id": 2,
-                "given_name": "John",
-                "family_name": "Kamau",
-                "email": "john.kamau@example.com",
-                "preferred_username": "jkamau",
-            },
-            {
-                "id": 3,
-                "given_name": "Amina",
-                "family_name": "Ali",
-                "email": "amina.ali@example.org",
-                "preferred_username": "aali",
-            },
-        ]
-        ql = q.lower()
-
-        def matches(u: dict) -> bool:
-            return (
-                (u.get("given_name", "") or "").lower().find(ql) >= 0
-                or (u.get("family_name", "") or "").lower().find(ql) >= 0
-                or (u.get("preferred_username", "") or "").lower().find(ql) >= 0
-                or (u.get("email", "") or "").lower().find(ql) >= 0
-            )
-
-        filtered = [u for u in raw if matches(u)]
-        limit = int(cfg.get("LIMIT", 10) or 10)
-        return filtered[:limit]
 
 
 import_user_enabled = str_to_bool(get_import_conf().get("ENABLED"))
