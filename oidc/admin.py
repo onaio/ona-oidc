@@ -120,7 +120,7 @@ class ImportUserAdmin(BaseUserAdmin):
         if not config or not query:
             return JsonResponse([], safe=False, status=200)
 
-        return self._dummy_search(query)
+        return JsonResponse(self._dummy_search(query), safe=False, status=200)
 
         # Get access token
         try:
