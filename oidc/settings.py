@@ -43,7 +43,7 @@ OPENID_CONNECT_AUTH_SERVERS = {
 }
 
 OPENID_IMPORT_USER = {
-    "ENABLED": False,
+    "ENABLED": True,
     "QUERY_PARAM": "q",
     "EXTERNAL_TO_MODEL": {
         "given_name": "first_name",

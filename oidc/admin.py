@@ -1,5 +1,3 @@
-import oidc.settings as default
-import requests
 import logging
 
 from django.conf import settings
@@ -8,8 +6,12 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.http import JsonResponse
 from django.urls import path
-from oidc.utils import str_to_bool
+
+import requests
+
+import oidc.settings as default
 from oidc.forms import ImportUserForm
+from oidc.utils import str_to_bool
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +120,8 @@ class ImportUserAdmin(BaseUserAdmin):
         if not config or not query:
             return JsonResponse([], safe=False, status=200)
 
+        return self._dummy_search(query)
+
         # Get access token
         try:
             token = self._get_access_token()
@@ -133,6 +137,46 @@ class ImportUserAdmin(BaseUserAdmin):
         suggestions = self._parse_search_suggestions(suggestions)
 
         return JsonResponse(suggestions, safe=False, status=200)
+
+    def _dummy_search(self, q: str) -> list[dict]:
+        """Return filtered dummy results (case-insensitive contains across a few fields)."""
+        cfg = get_import_conf()
+        raw = [
+            {
+                "id": 1,
+                "given_name": "Jane",
+                "family_name": "Doe",
+                "email": "jane@example.com",
+                "preferred_username": "jane",
+            },
+            {
+                "id": 2,
+                "given_name": "John",
+                "family_name": "Kamau",
+                "email": "john.kamau@example.com",
+                "preferred_username": "jkamau",
+            },
+            {
+                "id": 3,
+                "given_name": "Amina",
+                "family_name": "Ali",
+                "email": "amina.ali@example.org",
+                "preferred_username": "aali",
+            },
+        ]
+        ql = q.lower()
+
+        def matches(u: dict) -> bool:
+            return any(
+                (u.get("given_name", "") or "").lower().find(ql) >= 0
+                or (u.get("family_name", "") or "").lower().find(ql) >= 0
+                or (u.get("preferred_username", "") or "").lower().find(ql) >= 0
+                or (u.get("email", "") or "").lower().find(ql) >= 0
+            )
+
+        filtered = [u for u in raw if matches(u)]
+        limit = int(cfg.get("LIMIT", 10) or 10)
+        return filtered[:limit]
 
 
 import_user_enabled = str_to_bool(get_import_conf().get("ENABLED"))
