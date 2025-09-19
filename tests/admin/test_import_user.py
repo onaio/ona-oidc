@@ -199,6 +199,14 @@ class ImportUserAdminTestCase(TestCase):
             "access_token": "tok",
             "expires_in": 3600,
         }
+        user_list = [
+            {
+                "email": "a@b.com",
+                "given_name": "A",
+                "family_name": "B",
+                "preferred_username": "ab",
+            }
+        ]
 
         # Works with zero nested path
         with override_settings(
@@ -208,16 +216,7 @@ class ImportUserAdminTestCase(TestCase):
             }
         ):
             mock_get.return_value = Mock(status_code=200)
-            mock_get.return_value.json = lambda: {
-                "data": [
-                    {
-                        "email": "a@b.com",
-                        "given_name": "A",
-                        "family_name": "B",
-                        "preferred_username": "ab",
-                    }
-                ]
-            }
+            mock_get.return_value.json = lambda: {"data": user_list}
 
             out = admin_obj._search_user(token="tok", query="ab")
             self.assertEqual(out[0]["email"], "a@b.com")
@@ -231,18 +230,7 @@ class ImportUserAdminTestCase(TestCase):
             }
         ):
             mock_get.return_value = Mock(status_code=200)
-            mock_get.return_value.json = lambda: {
-                "data": {
-                    "results": [
-                        {
-                            "email": "a@b.com",
-                            "given_name": "A",
-                            "family_name": "B",
-                            "preferred_username": "ab",
-                        }
-                    ]
-                }
-            }
+            mock_get.return_value.json = lambda: {"data": {"results": user_list}}
 
             out = admin_obj._search_user(token="tok", query="ab")
             self.assertEqual(out[0]["email"], "a@b.com")
