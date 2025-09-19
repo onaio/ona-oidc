@@ -106,3 +106,37 @@ urlpatterns = [
 ...
 
 ```
+
+## Import User (Optional)
+
+The `ona-oidc` package includes an optional import user feature that allows administrators to search and import users from an external OIDC provider through the Django admin interface. This feature is useful for organizations that want to create users based on data from their identity provider.
+
+### Configuration
+
+To enable the import user feature, add the `OPENID_IMPORT_USER` setting to your Django settings:
+
+```python
+OPENID_IMPORT_USER = {
+    "ENABLED": True,  # Set to False to disable the feature
+    "TOKEN_ENDPOINT": "https://idp.example.com/oauth/token",  # OAuth2 token endpoint
+    "SEARCH_ENDPOINT": "https://idp.example.com/users",  # User search API endpoint
+    "CLIENT_ID": "your_client_id",  # OAuth2 client ID
+    "CLIENT_SECRET": "your_client_secret",  # OAuth2 client secret
+    "SCOPE": "users.read",  # OAuth2 scope for user search
+    "QUERY_PARAM": "q",  # Query parameter name for search
+    "MAP_CLAIM_TO_MODEL": {  # Maps identity provider claims to user model fields
+        "email": "email",
+        "given_name": "first_name",
+        "family_name": "last_name",
+        "preferred_username": "username",
+    },
+    "SEARCH_RESULTS_PATH": "data.results",  # Optional: JSON path to user list in response
+}
+```
+
+### Usage
+
+1. **Access the Feature**: Navigate to Django Admin → Authentication and Authorization → Users → Add user
+2. **Search Users**: In the import form, start typing in the search box to find users from your identity provider
+3. **Select User**: Click on a suggestion to populate the form fields with data from the identity provider
+4. **Complete Import**: Fill in any additional required fields and save the user
