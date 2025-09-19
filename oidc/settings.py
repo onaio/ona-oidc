@@ -41,3 +41,14 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "PKCE_CODE_VERIFIER_LENGTH": 64,
     }
 }
+
+OPENID_IMPORT_USER = {
+    "ENABLED": True,
+    "QUERY_PARAM": "q",
+    "MAP_CLAIM_TO_MODEL": {
+        "given_name": "first_name",
+        "family_name": "last_name",
+        "email": "email",
+        "preferred_username": "username",
+    },
+}

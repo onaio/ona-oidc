@@ -1,0 +1,102 @@
+{% extends "admin/change_form.html" %} {% block content %}
+<div class="module aligned">
+  <label for="user-search"><strong>Search user to add</strong></label>
+  <input
+    id="user-search"
+    type="text"
+    autocomplete="off"
+    placeholder="Start typing to search..."
+  />
+  <div id="user-suggestions" class="suggestions" style="display: none"></div>
+</div>
+{{ block.super }} {% endblock %} {% block footer %} {{ block.super }}
+<script>
+  window.addEventListener("DOMContentLoaded", function () {
+    (function ($) {
+      const url = "{% url 'admin:auth_user_search' %}";
+      let timer;
+      const $box = $("#user-suggestions");
+      const $input = $("#user-search");
+
+      function hideBox() {
+        $box.hide().empty();
+      }
+
+      function makeLabel(item) {
+        const name = [item.first_name, item.last_name]
+          .filter(Boolean)
+          .join(" ")
+          .trim();
+        const base =
+          name || item.username || item.email || String(item.id ?? "");
+        return item.email ? `${base} (${item.email})` : base;
+      }
+
+      $input.on("input", function () {
+        const q = this.value.trim();
+        clearTimeout(timer);
+        if (!q) {
+          hideBox();
+          return;
+        }
+        timer = setTimeout(function () {
+          $.getJSON(url, { q }, function (data) {
+            $box.empty();
+            if (!data || !data.length) {
+              hideBox();
+              return;
+            }
+            data.forEach(function (item) {
+              $("<div/>")
+                .addClass("suggestion")
+                .attr("role", "option")
+                .text(makeLabel(item))
+                .data("p", item)
+                .appendTo($box);
+            });
+            $box.show();
+          });
+        }, 250);
+      });
+
+      $box.on("click", ".suggestion", function () {
+        const p = $(this).data("p") || {};
+        $("#id_first_name").val(p.first_name || "");
+        $("#id_last_name").val(p.last_name || "");
+        $("#id_email").val(p.email || "");
+        if ($("#id_username").length) $("#id_username").val(p.username || "");
+        hideBox();
+        $input.val(makeLabel(p));
+      });
+
+      // UX niceties: click outside / Escape to close
+      $(document).on("click", function (e) {
+        if (!$(e.target).closest("#user-search, #user-suggestions").length)
+          hideBox();
+      });
+      $(document).on("keydown", function (e) {
+        if (e.key === "Escape") hideBox();
+      });
+    })(django.jQuery);
+  });
+</script>
+<style>
+  .suggestions {
+    border: 1px solid #ddd;
+    max-width: 480px;
+    margin-top: 4px;
+    background: #fff;
+  }
+  .suggestion {
+    padding: 6px;
+    cursor: pointer;
+  }
+  .suggestion:hover {
+    background: #f6f6f6;
+  }
+  .module.aligned label {
+    display: block;
+    margin-bottom: 6px;
+  }
+</style>
+{% endblock %}
