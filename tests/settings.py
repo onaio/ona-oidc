@@ -7,6 +7,9 @@ import os
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 INSTALLED_APPS = (
+    "django.contrib.admin",
+    "django.contrib.messages",
+    "django.contrib.sessions",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.gis",
@@ -50,6 +53,16 @@ OPENID_CONNECT_AUTH_SERVERS = {
 ROOT_URLCONF = "oidc.urls"
 SECRET_KEY = "secret"
 
+MIDDLEWARE = [
+    "django.middleware.security.SecurityMiddleware",
+    "django.contrib.sessions.middleware.SessionMiddleware",
+    "django.middleware.common.CommonMiddleware",
+    "django.middleware.csrf.CsrfViewMiddleware",
+    "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "django.contrib.messages.middleware.MessageMiddleware",
+    "django.middleware.clickjacking.XFrameOptionsMiddleware",
+]
+
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
@@ -58,5 +71,29 @@ TEMPLATES = [
             os.path.join(BASE_DIR, "tests/templates"),
         ],
         "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.debug",
+                "django.template.context_processors.request",
+                "django.contrib.auth.context_processors.auth",
+                "django.contrib.messages.context_processors.messages",
+            ],
+        },
     }
 ]
+
+OPENID_IMPORT_USER = {
+    "ENABLED": "true",
+    "TOKEN_ENDPOINT": "https://idp.example.com/oauth/token",
+    "SEARCH_ENDPOINT": "https://idp.example.com/users",
+    "CLIENT_ID": "cid",
+    "CLIENT_SECRET": "secret",
+    "SCOPE": "users.read",
+    "QUERY_PARAM": "q",
+    "MAP_CLAIM_TO_MODEL": {
+        "email": "email",
+        "given_name": "first_name",
+        "family_name": "last_name",
+        "preferred_username": "username",
+    },
+}

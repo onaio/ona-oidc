@@ -69,6 +69,7 @@ class ImportUserAdmin(BaseUserAdmin):
             },
         )
         response.raise_for_status()
+        return response.json()
 
     def _get_access_token(self, force_refresh: bool = False) -> str:
         """Returns access token.
