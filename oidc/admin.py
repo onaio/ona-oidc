@@ -103,7 +103,7 @@ class ImportUserAdmin(BaseUserAdmin):
 
         return token
 
-    def _search_user(self, token, query):
+    def _search_user(self, token, query) -> list:
         """Search user to import
 
         :param token: Access token
@@ -129,7 +129,23 @@ class ImportUserAdmin(BaseUserAdmin):
             )
 
         response.raise_for_status()
-        return response.json()
+        results = response.json()
+
+        # If an explicit path is provided, follow it.
+        path = config.get("SEARCH_RESULTS_PATH")
+
+        if path:
+            keys = path.split(".")
+            cur = results
+
+            for k in keys:
+                if isinstance(cur, dict) and k in cur:
+                    cur = cur[k]
+                else:
+                    return []
+            return cur if isinstance(cur, list) else []
+
+        return results
 
     def _parse_search_results(self, results) -> list:
         """Format search results

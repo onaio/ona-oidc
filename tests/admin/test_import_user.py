@@ -9,8 +9,26 @@ from django.urls import reverse
 
 from oidc.admin import ImportUserAdmin
 
+OPENID_IMPORT_USER = {
+    "ENABLED": True,
+    "TOKEN_ENDPOINT": "https://idp.example.com/oauth/token",
+    "SEARCH_ENDPOINT": "https://idp.example.com/users",
+    "CLIENT_ID": "cid",
+    "CLIENT_SECRET": "secret",
+    "SCOPE": "users.read",
+    "QUERY_PARAM": "q",
+    "MAP_CLAIM_TO_MODEL": {
+        "email": "email",
+        "given_name": "first_name",
+        "family_name": "last_name",
+        "preferred_username": "username",
+    },
+}
 
-@override_settings(ROOT_URLCONF="tests.admin.urls")
+
+@override_settings(
+    ROOT_URLCONF="tests.admin.urls", OPENID_IMPORT_USER=OPENID_IMPORT_USER
+)
 class ImportUserAdminTestCase(TestCase):
     @classmethod
     def setUpTestData(cls):
@@ -169,3 +187,62 @@ class ImportUserAdminTestCase(TestCase):
         r = self.client.get(url, {"q": ""})
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json(), [])
+
+    @patch("oidc.admin.requests.get")
+    @patch("oidc.admin.requests.post")
+    def test_search_results_path(self, mock_post, mock_get):
+        """Search results path works if specified"""
+        admin_obj = ImportUserAdmin(model=get_user_model(), admin_site=admin.site)
+
+        mock_post.return_value = Mock(status_code=200)
+        mock_post.return_value.json = lambda: {
+            "access_token": "tok",
+            "expires_in": 3600,
+        }
+
+        # Works with zero nested path
+        with override_settings(
+            OPENID_IMPORT_USER={
+                **OPENID_IMPORT_USER,
+                "SEARCH_RESULTS_PATH": "data",
+            }
+        ):
+            mock_get.return_value = Mock(status_code=200)
+            mock_get.return_value.json = lambda: {
+                "data": [
+                    {
+                        "email": "a@b.com",
+                        "given_name": "A",
+                        "family_name": "B",
+                        "preferred_username": "ab",
+                    }
+                ]
+            }
+
+            out = admin_obj._search_user(token="tok", query="ab")
+            self.assertEqual(out[0]["email"], "a@b.com")
+
+        # Works with nested path
+        mock_get.reset_mock()
+        with override_settings(
+            OPENID_IMPORT_USER={
+                **OPENID_IMPORT_USER,
+                "SEARCH_RESULTS_PATH": "data.results",
+            }
+        ):
+            mock_get.return_value = Mock(status_code=200)
+            mock_get.return_value.json = lambda: {
+                "data": {
+                    "results": [
+                        {
+                            "email": "a@b.com",
+                            "given_name": "A",
+                            "family_name": "B",
+                            "preferred_username": "ab",
+                        }
+                    ]
+                }
+            }
+
+            out = admin_obj._search_user(token="tok", query="ab")
+            self.assertEqual(out[0]["email"], "a@b.com")

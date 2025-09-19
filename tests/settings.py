@@ -81,19 +81,3 @@ TEMPLATES = [
         },
     }
 ]
-
-OPENID_IMPORT_USER = {
-    "ENABLED": "true",
-    "TOKEN_ENDPOINT": "https://idp.example.com/oauth/token",
-    "SEARCH_ENDPOINT": "https://idp.example.com/users",
-    "CLIENT_ID": "cid",
-    "CLIENT_SECRET": "secret",
-    "SCOPE": "users.read",
-    "QUERY_PARAM": "q",
-    "MAP_CLAIM_TO_MODEL": {
-        "email": "email",
-        "given_name": "first_name",
-        "family_name": "last_name",
-        "preferred_username": "username",
-    },
-}
