@@ -474,7 +474,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     "Unable to process OpenID connect authentication request."
                 ),
                 "login_url": reverse(
-                    "openid_connect_login", kwargs={"auth_server": default_auth_server}
+                    "oidc:openid_connect_login",
+                    kwargs={"auth_server": default_auth_server},
                 ),
             },
             status=status.HTTP_400_BAD_REQUEST,
