@@ -616,6 +616,19 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, "http://localhost:3000")
 
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_base_open_id_connect_viewset(self):
+        viewset_class = BaseOpenIDConnectViewset
+        view = viewset_class.as_view({"get": "login"})
+        request = self.factory.get("/")
+        response = view(request, auth_server="default")
+        # Verify that specific cookies are deleted for the current domain
+        self.assertIn('sessionid', response.cookies)
+        self.assertIn('csrftoken', response.cookies)
+        self.assertEqual(response.cookies['sessionid']['max-age'], 0)
+        self.assertEqual(response.cookies['csrftoken']['max-age'], 0)
+
     @patch(
         "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
         MagicMock(
