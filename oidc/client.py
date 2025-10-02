@@ -91,6 +91,9 @@ class OpenIDClient:
         self.request_mode = config[auth_server].get(
             "REQUEST_MODE", default_config["REQUEST_MODE"]
         )
+        self.id_token_key = config[auth_server].get(
+            "ID_TOKEN_KEY", default_config["ID_TOKEN_KEY"]
+        )
 
     def _retrieve_jwks_related_to_kid(self, kid: str) -> Optional[str]:
         """
@@ -181,7 +184,7 @@ class OpenIDClient:
                 f"Failed to retrieve ID Token: {exc}"
             ) from exc
 
-        return response.json().get("id_token")
+        return response.json().get(self.id_token_key)
 
     def _generate_pkce_code_verifier(self) -> str:
         """
