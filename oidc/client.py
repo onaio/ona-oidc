@@ -53,6 +53,7 @@ class OpenIDClient:
         self.client_id = config[auth_server].get("CLIENT_ID")
         self.client_secret = config[auth_server].get("CLIENT_SECRET")
         self.jwks_endpoint = config[auth_server].get("JWKS_ENDPOINT")
+        self.user_info_endpoint = config[auth_server].get("USER_INFO_ENDPOINT")
         self.scope = config[auth_server].get("SCOPE") or default_config["SCOPE"]
         self.token_endpoint = config[auth_server].get("TOKEN_ENDPOINT")
         self.end_session_endpoint = config[auth_server].get("END_SESSION_ENDPOINT")
@@ -105,6 +106,15 @@ class OpenIDClient:
                     return jwk
         return None
 
+    def retrieve_user_info(self, access_token: str) -> dict:
+        """
+        Given an access_token, retrieve user profile claims
+        """
+        response = requests.get(
+            self.user_info_endpoint, headers={"Authorization": f"Bearer {access_token}"}
+        )
+        return response.json()
+
     def verify_and_decode_id_token(self, id_token: str) -> Optional[dict]:
         """
         Verifies that the received ID Token was signed and sent by the
@@ -145,7 +155,7 @@ class OpenIDClient:
 
     def retrieve_token_using_auth_code(
         self, code: str, code_verifier: Optional[str] = None
-    ) -> Optional[str]:
+    ) -> dict:
         """
         Obtain an ID Token using the Authorization Code flow
 
@@ -181,7 +191,7 @@ class OpenIDClient:
                 f"Failed to retrieve ID Token: {exc}"
             ) from exc
 
-        return response.json().get("id_token")
+        return response.json()
 
     def _generate_pkce_code_verifier(self) -> str:
         """
