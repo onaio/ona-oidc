@@ -373,3 +373,27 @@ class OpenIDClientTestCase(TestCase):
             },
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ID_TOKEN_KEY": "access_token",
+            }
+        }
+    )
+    @patch.object(requests, "post")
+    def test_retrieve_token_id_token_key_override(self, mock_requests_post):
+        """The key to get id token from can be overridden"""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "id_token": "id_token",
+            "access_token": "access_token",
+        }
+        mock_requests_post.return_value = mock_response
+
+        client = OpenIDClient("default")
+        result = client.retrieve_token_using_auth_code("auth_code")
+
+        self.assertEqual(result, "access_token")

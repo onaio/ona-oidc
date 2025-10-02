@@ -47,6 +47,7 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "RESPONSE_MODE": "form_post",
         "USE_NONCES": False,
         "USE_EMAIL_USERNAME": True,
+        "ID_TOKEN_KEY": "id_token",
     }
 }
 
