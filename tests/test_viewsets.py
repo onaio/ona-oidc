@@ -623,11 +623,9 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         view = viewset_class.as_view({"get": "login"})
         request = self.factory.get("/")
         response = view(request, auth_server="default")
-        # Verify that specific cookies are deleted for the current domain
-        self.assertIn('sessionid', response.cookies)
-        self.assertIn('csrftoken', response.cookies)
-        self.assertEqual(response.cookies['sessionid']['max-age'], 0)
-        self.assertEqual(response.cookies['csrftoken']['max-age'], 0)
+        # Verify that csrftoken cookie is deleted for the current domain
+        self.assertIn("csrftoken", response.cookies)
+        self.assertEqual(response.cookies["csrftoken"]["max-age"], 0)
 
     @patch(
         "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",

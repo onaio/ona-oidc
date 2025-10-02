@@ -118,9 +118,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         client = self._get_client(auth_server=kwargs.get("auth_server"))
         if client:
             response = client.login(redirect_after=request.query_params.get("next"))
-            # Delete specific cookies for the current domain
-            response.delete_cookie('sessionid', domain=request.get_host().split(':')[0])
-            response.delete_cookie('csrftoken', domain=request.get_host().split(':')[0])
+            # Delete only csrftoken for the current domain
+            response.delete_cookie("csrftoken", domain=request.get_host().split(":")[0])
             return response
         return HttpResponseBadRequest(
             _("Unable to process OpenID connect login request."),

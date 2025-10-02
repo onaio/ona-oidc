@@ -1,6 +1,7 @@
 """
 ona-oidc manage.py file, used for testing
 """
+
 import os
 
 from django.core import management
