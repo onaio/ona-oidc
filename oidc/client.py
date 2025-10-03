@@ -7,7 +7,7 @@ import hashlib
 import json
 import logging
 import secrets
-from typing import Optional, Callable
+from typing import Callable, Optional
 
 from django.conf import settings
 from django.core.cache import cache
@@ -174,6 +174,12 @@ class OpenIDClient:
         self, decoded_id_token: dict, id_token: str, access_token: str
     ) -> dict:
         # TODO: need to use a setting for this
+        if (
+            "emails" in decoded_id_token
+            and decoded_id_token["emails"]
+            and decoded_id_token["emails"][0]
+        ):
+            return decoded_id_token
         if "email" in decoded_id_token:
             return decoded_id_token
         elif access_token and self.validate_access_token(

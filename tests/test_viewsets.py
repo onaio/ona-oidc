@@ -595,11 +595,13 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         ),
     )
     @patch("oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code")
-    def test_auth_code_flow(self, mock_retrieve_auth_code):
+    def test_auth_code_flow(self, mock_retrieve_tokens_using_auth_code):
         """
         Test that the authorization code flow works as expected
         """
-        mock_retrieve_auth_code.return_value = "ssad9012.fdfdfdswg4gdfs.sadadsods"
+        mock_retrieve_tokens_using_auth_code.return_value = {
+            "id_token": "ssad9012.fdfdfdswg4gdfs.sadadsods"
+        }
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         data = {"code": "SplxlOBeZQQYbYS6WxSbIA"}
         user_count = User.objects.filter(username="john").count()
@@ -608,8 +610,10 @@ class TestUserModelOpenIDConnectViewset(TestCase):
 
         # Assert that the retrieve_tokens_using_auth_code function was called
         # and the code token was passed
-        self.assertTrue(mock_retrieve_auth_code, True)
-        self.assertEqual(mock_retrieve_auth_code.call_args[0][0], data["code"])
+        self.assertTrue(mock_retrieve_tokens_using_auth_code, True)
+        self.assertEqual(
+            mock_retrieve_tokens_using_auth_code.call_args[0][0], data["code"]
+        )
 
         self.assertEqual(user_count + 1, User.objects.filter(username="john").count())
         # Redirects to the redirect url on successful user creation
@@ -981,7 +985,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             "email": "john@example.com",
             "preferred_username": "john",
         }
-        mock_retrieve_tokens_using_auth_code.return_value = "id_token"
+        mock_retrieve_tokens_using_auth_code.return_value = {"id_token": "id_token"}
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         # Simulate the code verifier being in the cache
         code_verifier_cache_key = "pkce_123"
@@ -1025,7 +1029,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             "email": "john@example.com",
             "preferred_username": "john",
         }
-        mock_retrieve_tokens_using_auth_code.return_value = "id_token"
+        mock_retrieve_tokens_using_auth_code.return_value = {"id_token": "id_token"}
         view = UserModelOpenIDConnectViewset.as_view({"get": "callback"})
         # Simulate the code verifier being in the cache
         code_verifier_cache_key = "pkce_123"
@@ -1138,7 +1142,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             "email": "john@example.com",
             "preferred_username": "john",
         }
-        mock_retrieve_tokens_using_auth_code.return_value = "id_token"
+        mock_retrieve_tokens_using_auth_code.return_value = {"id_token": "id_token"}
 
         # Simulate the cached code verifier
         state_key = "pkce_123"

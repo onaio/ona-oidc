@@ -339,7 +339,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     id_token = id_token or user_tokens.get("id_token")
                     decoded_id_token = client.verify_and_decode_id_token(id_token)
                     user_claims = client.tokens_to_user_info(
-                        decoded_id_token, id_token, user_tokens.get("access_token")
+                        self.map_claims_to_model_field(decoded_id_token),
+                        id_token,
+                        user_tokens.get("access_token"),
                     )
                     if user_claims.get(REDIRECT_AFTER_AUTH):
                         redirect_after = user_claims.pop(REDIRECT_AFTER_AUTH)
