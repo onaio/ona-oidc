@@ -317,7 +317,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             user_tokens = {}
             if not id_token and server_response.get("code"):
                 try:
-                    user_tokens = client.retrieve_token_using_auth_code(
+                    user_tokens = client.retrieve_tokens_using_auth_code(
                         server_response.get("code"), code_verifier=code_verifier
                     )
                 except TokenVerificationFailed as e:

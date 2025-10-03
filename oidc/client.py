@@ -225,7 +225,7 @@ class OpenIDClient:
             decoded_token[REDIRECT_AFTER_AUTH] = cached_data.get("redirect_after")
         return decoded_token
 
-    def retrieve_token_using_auth_code(
+    def retrieve_tokens_using_auth_code(
         self, code: str, code_verifier: Optional[str] = None
     ) -> dict:
         """
