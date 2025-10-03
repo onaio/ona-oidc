@@ -67,6 +67,11 @@ class OpenIDClient:
         self.cache_nonces = str_to_bool(
             config[auth_server].get("USE_NONCES", default_config["USE_NONCES"])
         )
+        self.should_verify_access_token = str_to_bool(
+            config[auth_server].get(
+                "VERIFY_ACCESS_TOKEN", default_config["VERIFY_ACCESS_TOKEN"]
+            )
+        )
         self.nonce_cache_timeout = int(
             config[auth_server].get(
                 "NONCE_CACHE_TIMEOUT", default_config["NONCE_CACHE_TIMEOUT"]
@@ -139,13 +144,13 @@ class OpenIDClient:
         return algorithm_map.get(alg)
 
     def validate_access_token(
-        self, verifyied_id_token: dict, id_token: str, access_token: str
+        self, decoded_id_token: dict, id_token: str, access_token: str
     ) -> bool:
         """
         Validates an access token against the at_hash claim in an ID token.
 
         Args:
-            verified_id_token: A verified and decoded ID token
+            decoded_id_token: A verified and decoded ID token
             id_token: The ID token (JWT) as a string
             access_token: The access token to validate
 
@@ -153,7 +158,7 @@ class OpenIDClient:
             bool: True if valid, False otherwise
         """
 
-        if "at_hash" not in verifyied_id_token:
+        if "at_hash" not in decoded_id_token:
             return False
 
         id_token_header = jwt.get_unverified_header(id_token)
@@ -168,30 +173,33 @@ class OpenIDClient:
             base64.urlsafe_b64encode(left_half).decode("ascii").rstrip("=")
         )
 
-        return computed_at_hash == verifyied_id_token["at_hash"]
+        return computed_at_hash == decoded_id_token["at_hash"]
+
+    def should_retrieve_user_info(self, decoded_id_token: dict) -> bool:
+        return not (
+            "email" in decoded_id_token
+            or (
+                decoded_id_token
+                and "emails" in decoded_id_token
+                and decoded_id_token["emails"]
+                and decoded_id_token["emails"][0]
+            )
+        )
 
     def tokens_to_user_info(
-        self, decoded_id_token: dict, id_token: str, access_token: str
+        self,
+        decoded_id_token: dict,
+        id_token: Optional[str],
+        access_token: Optional[str],
     ) -> dict:
-        # TODO: need to use a setting for this
-        if (
-            "emails" in decoded_id_token
-            and decoded_id_token["emails"]
-            and decoded_id_token["emails"][0]
-        ):
+        if not self.should_retrieve_user_info(decoded_id_token):
             return decoded_id_token
-        if "email" in decoded_id_token:
-            return decoded_id_token
-        elif access_token and self.validate_access_token(
+        if self.should_verify_access_token and not self.validate_access_token(
             decoded_id_token, id_token, access_token
         ):
-            return self.retrieve_user_info(access_token)
-        elif access_token:
             raise TokenVerificationFailed("Failed to validate access token")
-        else:
-            raise TokenVerificationFailed(
-                "email was not provided in the ID token and no access token was provided by auth server"
-            )
+
+        return self.retrieve_user_info(access_token)
 
     def verify_and_decode_id_token(self, id_token: str) -> Optional[dict]:
         """
