@@ -314,10 +314,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     )
 
             id_token = server_response.get("id_token")
-
+            user_tokens = {}
             if not id_token and server_response.get("code"):
                 try:
-                    id_token = client.retrieve_token_using_auth_code(
+                    user_tokens = client.retrieve_token_using_auth_code(
                         server_response.get("code"), code_verifier=code_verifier
                     )
                 except TokenVerificationFailed as e:
@@ -334,12 +334,16 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         template_name="oidc/oidc_unrecoverable_error.html",
                     )
 
-            if id_token:
+            if user_tokens or id_token:
                 try:
-                    decoded_token = client.verify_and_decode_id_token(id_token)
-                    if decoded_token.get(REDIRECT_AFTER_AUTH):
-                        redirect_after = decoded_token.pop(REDIRECT_AFTER_AUTH)
-                    user_data = self.map_claims_to_model_field(decoded_token)
+                    id_token = id_token or user_tokens.get("id_token")
+                    decoded_id_token = client.verify_and_decode_id_token(id_token)
+                    user_claims = client.tokens_to_user_info(
+                        decoded_id_token, id_token, user_tokens.get("access_token")
+                    )
+                    if user_claims.get(REDIRECT_AFTER_AUTH):
+                        redirect_after = user_claims.pop(REDIRECT_AFTER_AUTH)
+                    user_data = self.map_claims_to_model_field(user_claims)
                     # Custom username provided by the user in case
                     # a user with the same preferred username already exists
                     form_data = request.POST.dict()
