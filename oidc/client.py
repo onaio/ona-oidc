@@ -7,7 +7,7 @@ import hashlib
 import json
 import logging
 import secrets
-from typing import Optional
+from typing import Optional, Callable
 
 from django.conf import settings
 from django.core.cache import cache
@@ -114,6 +114,78 @@ class OpenIDClient:
             self.user_info_endpoint, headers={"Authorization": f"Bearer {access_token}"}
         )
         return response.json()
+
+    def get_hash_algorithm(self, alg: str) -> Optional[Callable]:
+        """
+        Maps JWT algorithm to hash function.
+
+        Based on the spec: RS256/ES256/PS256 use SHA-256,
+        RS384/ES384/PS384 use SHA-384, RS512/ES512/PS512 use SHA-512
+        """
+        algorithm_map = {
+            "RS256": hashlib.sha256,
+            "RS384": hashlib.sha384,
+            "RS512": hashlib.sha512,
+            "ES256": hashlib.sha256,
+            "ES384": hashlib.sha384,
+            "ES512": hashlib.sha512,
+            "PS256": hashlib.sha256,
+            "PS384": hashlib.sha384,
+            "PS512": hashlib.sha512,
+            "HS256": hashlib.sha256,
+            "HS384": hashlib.sha384,
+            "HS512": hashlib.sha512,
+        }
+        return algorithm_map.get(alg)
+
+    def validate_access_token(
+        self, verifyied_id_token: dict, id_token: str, access_token: str
+    ) -> bool:
+        """
+        Validates an access token against the at_hash claim in an ID token.
+
+        Args:
+            verified_id_token: A verified and decoded ID token
+            id_token: The ID token (JWT) as a string
+            access_token: The access token to validate
+
+        Returns:
+            bool: True if valid, False otherwise
+        """
+
+        if "at_hash" not in verifyied_id_token:
+            return False
+
+        id_token_header = jwt.get_unverified_header(id_token)
+        alg_str = id_token_header.get("alg")
+        hash_algorithm = self.get_hash_algorithm(alg_str)
+        if not hash_algorithm:
+            raise ValueError(f"Unsupported algorithm: {alg_str}")
+
+        hash_digest = hash_algorithm(access_token.encode("ascii")).digest()
+        left_half = hash_digest[: len(hash_digest) // 2]
+        computed_at_hash = (
+            base64.urlsafe_b64encode(left_half).decode("ascii").rstrip("=")
+        )
+
+        return computed_at_hash == verifyied_id_token["at_hash"]
+
+    def tokens_to_user_info(
+        self, decoded_id_token: dict, id_token: str, access_token: str
+    ) -> dict:
+        # TODO: need to use a setting for this
+        if "email" in decoded_id_token:
+            return decoded_id_token
+        elif access_token and self.validate_access_token(
+            decoded_id_token, id_token, access_token
+        ):
+            return self.retrieve_user_info(access_token)
+        elif access_token:
+            raise TokenVerificationFailed("Failed to validate access token")
+        else:
+            raise TokenVerificationFailed(
+                "email was not provided in the ID token and no access token was provided by auth server"
+            )
 
     def verify_and_decode_id_token(self, id_token: str) -> Optional[dict]:
         """
