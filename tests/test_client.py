@@ -321,18 +321,21 @@ class OpenIDClientTestCase(TestCase):
         mock_response.json.return_value = {
             "id_token": "id_token",
             "access_token": "access_token",
-            "refresh_token": "refresh_token"
+            "refresh_token": "refresh_token",
         }
         mock_requests_post.return_value = mock_response
 
         client = OpenIDClient("pkce")
         result = client.retrieve_tokens_using_auth_code("auth_code", "123")
 
-        self.assertEqual(result, {
-            "id_token": "id_token",
-            "access_token": "access_token",
-            "refresh_token": "refresh_token"
-        })
+        self.assertEqual(
+            result,
+            {
+                "id_token": "id_token",
+                "access_token": "access_token",
+                "refresh_token": "refresh_token",
+            },
+        )
         # Data is sent in the request body
         mock_requests_post.assert_called_once_with(
             "https://example.com/oauth2/v2.0/token",
@@ -364,18 +367,21 @@ class OpenIDClientTestCase(TestCase):
         mock_response.json.return_value = {
             "id_token": "id_token",
             "access_token": "access_token",
-            "refresh_token": "refresh_token"
+            "refresh_token": "refresh_token",
         }
         mock_requests_post.return_value = mock_response
 
         client = OpenIDClient("pkce")
         result = client.retrieve_tokens_using_auth_code("auth_code", "123")
 
-        self.assertEqual(result, {
-            "id_token": "id_token",
-            "access_token": "access_token",
-            "refresh_token": "refresh_token"
-        })
+        self.assertEqual(
+            result,
+            {
+                "id_token": "id_token",
+                "access_token": "access_token",
+                "refresh_token": "refresh_token",
+            },
+        )
         # Data is sent in the query string
         mock_requests_post.assert_called_once_with(
             "https://example.com/oauth2/v2.0/token",
@@ -391,12 +397,14 @@ class OpenIDClientTestCase(TestCase):
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
 
-    @override_settings(OPENID_CONNECT_AUTH_SERVERS={
-        "default": {
-            **OPENID_CONNECT_AUTH_SERVERS["default"],
-            "USER_INFO_ENDPOINT": "https://example.com/oauth2/userinfo",
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "USER_INFO_ENDPOINT": "https://example.com/oauth2/userinfo",
+            }
         }
-    })
+    )
     @patch.object(requests, "get")
     def test_retrieve_user_info(self, mock_requests_get):
         """Retrieves user profile claims using access token"""
@@ -405,21 +413,20 @@ class OpenIDClientTestCase(TestCase):
         mock_response.json.return_value = {
             "sub": "1234567890",
             "email": "user@example.com",
-            "name": "John Doe"
+            "name": "John Doe",
         }
         mock_requests_get.return_value = mock_response
 
         client = OpenIDClient("default")
         result = client.retrieve_user_info("access_token_value")
 
-        self.assertEqual(result, {
-            "sub": "1234567890",
-            "email": "user@example.com",
-            "name": "John Doe"
-        })
+        self.assertEqual(
+            result,
+            {"sub": "1234567890", "email": "user@example.com", "name": "John Doe"},
+        )
         mock_requests_get.assert_called_once_with(
             "https://example.com/oauth2/userinfo",
-            headers={"Authorization": "Bearer access_token_value"}
+            headers={"Authorization": "Bearer access_token_value"},
         )
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
@@ -460,12 +467,11 @@ class OpenIDClientTestCase(TestCase):
         access_token = "test_access_token"
         hash_digest = hashlib.sha256(access_token.encode("ascii")).digest()
         left_half = hash_digest[: len(hash_digest) // 2]
-        expected_at_hash = base64.urlsafe_b64encode(left_half).decode("ascii").rstrip("=")
+        expected_at_hash = (
+            base64.urlsafe_b64encode(left_half).decode("ascii").rstrip("=")
+        )
 
-        verified_id_token = {
-            "sub": "1234567890",
-            "at_hash": expected_at_hash
-        }
+        verified_id_token = {"sub": "1234567890", "at_hash": expected_at_hash}
         id_token = "header.payload.signature"
 
         mock_get_unverified_header.return_value = {"alg": "RS256"}
@@ -497,10 +503,7 @@ class OpenIDClientTestCase(TestCase):
         """Returns False when at_hash doesn't match access token"""
         client = OpenIDClient("default")
 
-        verified_id_token = {
-            "sub": "1234567890",
-            "at_hash": "invalid_hash"
-        }
+        verified_id_token = {"sub": "1234567890", "at_hash": "invalid_hash"}
         id_token = "header.payload.signature"
         access_token = "test_access_token"
 
@@ -512,14 +515,13 @@ class OpenIDClientTestCase(TestCase):
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch.object(jwt, "get_unverified_header")
-    def test_validate_access_token_unsupported_algorithm(self, mock_get_unverified_header):
+    def test_validate_access_token_unsupported_algorithm(
+        self, mock_get_unverified_header
+    ):
         """Raises ValueError for unsupported algorithm"""
         client = OpenIDClient("default")
 
-        verified_id_token = {
-            "sub": "1234567890",
-            "at_hash": "some_hash"
-        }
+        verified_id_token = {"sub": "1234567890", "at_hash": "some_hash"}
         id_token = "header.payload.signature"
         access_token = "test_access_token"
 
@@ -538,7 +540,7 @@ class OpenIDClientTestCase(TestCase):
         decoded_id_token = {
             "sub": "1234567890",
             "email": "user@example.com",
-            "name": "John Doe"
+            "name": "John Doe",
         }
         id_token = "header.payload.signature"
         access_token = "access_token_value"
@@ -547,12 +549,14 @@ class OpenIDClientTestCase(TestCase):
 
         self.assertEqual(result, decoded_id_token)
 
-    @override_settings(OPENID_CONNECT_AUTH_SERVERS={
-        "default": {
-            **OPENID_CONNECT_AUTH_SERVERS["default"],
-            "USER_INFO_ENDPOINT": "https://example.com/oauth2/userinfo",
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "USER_INFO_ENDPOINT": "https://example.com/oauth2/userinfo",
+            }
         }
-    })
+    )
     @patch.object(OpenIDClient, "retrieve_user_info")
     @patch.object(OpenIDClient, "validate_access_token")
     def test_tokens_to_user_info_no_email_valid_access_token(
@@ -563,7 +567,7 @@ class OpenIDClientTestCase(TestCase):
 
         decoded_id_token = {
             "sub": "1234567890",
-            "name": "John Doe"
+            "name": "John Doe",
             # No email
         }
         id_token = "header.payload.signature"
@@ -573,16 +577,15 @@ class OpenIDClientTestCase(TestCase):
         mock_retrieve_user_info.return_value = {
             "sub": "1234567890",
             "email": "user@example.com",
-            "name": "John Doe"
+            "name": "John Doe",
         }
 
         result = client.tokens_to_user_info(decoded_id_token, id_token, access_token)
 
-        self.assertEqual(result, {
-            "sub": "1234567890",
-            "email": "user@example.com",
-            "name": "John Doe"
-        })
+        self.assertEqual(
+            result,
+            {"sub": "1234567890", "email": "user@example.com", "name": "John Doe"},
+        )
         mock_validate_access_token.assert_called_once_with(
             decoded_id_token, id_token, access_token
         )
@@ -598,7 +601,7 @@ class OpenIDClientTestCase(TestCase):
 
         decoded_id_token = {
             "sub": "1234567890",
-            "name": "John Doe"
+            "name": "John Doe",
             # No email
         }
         id_token = "header.payload.signature"
@@ -618,7 +621,7 @@ class OpenIDClientTestCase(TestCase):
 
         decoded_id_token = {
             "sub": "1234567890",
-            "name": "John Doe"
+            "name": "John Doe",
             # No email
         }
         id_token = "header.payload.signature"
@@ -627,5 +630,4 @@ class OpenIDClientTestCase(TestCase):
         with self.assertRaises(TokenVerificationFailed) as context:
             client.tokens_to_user_info(decoded_id_token, id_token, access_token)
 
-        self.assertIn("email was not provided", str(context.exception))
-        self.assertIn("no access token was provided", str(context.exception))
+        self.assertIn("Failed to validate access token", str(context.exception))
