@@ -594,7 +594,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             }
         ),
     )
-    @patch("oidc.viewsets.OpenIDClient.retrieve_token_using_auth_code")
+    @patch("oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code")
     def test_auth_code_flow(self, mock_retrieve_auth_code):
         """
         Test that the authorization code flow works as expected
@@ -606,7 +606,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         request = self.factory.post("/", data=data)
         response = view(request, auth_server="default")
 
-        # Assert that the retrieve_token_using_auth_code function was called
+        # Assert that the retrieve_tokens_using_auth_code function was called
         # and the code token was passed
         self.assertTrue(mock_retrieve_auth_code, True)
         self.assertEqual(mock_retrieve_auth_code.call_args[0][0], data["code"])
@@ -969,10 +969,10 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
         OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
     )
-    @patch.object(OpenIDClient, "retrieve_token_using_auth_code")
+    @patch.object(OpenIDClient, "retrieve_tokens_using_auth_code")
     @patch.object(OpenIDClient, "verify_and_decode_id_token")
     def test_auth_code_pkce_flow_mode_form_post(
-        self, mock_verify_and_decode_id_token, mock_retrieve_token_using_auth_code
+        self, mock_verify_and_decode_id_token, mock_retrieve_tokens_using_auth_code
     ):
         """Auth code + PKCE flow works as expected with form_post response mode"""
         mock_verify_and_decode_id_token.return_value = {
@@ -981,7 +981,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             "email": "john@example.com",
             "preferred_username": "john",
         }
-        mock_retrieve_token_using_auth_code.return_value = "id_token"
+        mock_retrieve_tokens_using_auth_code.return_value = "id_token"
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         # Simulate the code verifier being in the cache
         code_verifier_cache_key = "pkce_123"
@@ -997,7 +997,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(user.email, "john@example.com")
         self.assertEqual(user.first_name, "john")
         self.assertEqual(user.last_name, "doe")
-        mock_retrieve_token_using_auth_code.assert_called_once_with(
+        mock_retrieve_tokens_using_auth_code.assert_called_once_with(
             "auth_code", code_verifier="123"
         )
         # Code verifier is removed from cache
@@ -1013,10 +1013,10 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             },
         },
     )
-    @patch.object(OpenIDClient, "retrieve_token_using_auth_code")
+    @patch.object(OpenIDClient, "retrieve_tokens_using_auth_code")
     @patch.object(OpenIDClient, "verify_and_decode_id_token")
     def test_auth_code_pkce_flow_mode_query(
-        self, mock_verify_and_decode_id_token, mock_retrieve_token_using_auth_code
+        self, mock_verify_and_decode_id_token, mock_retrieve_tokens_using_auth_code
     ):
         """Auth code + PKCE flow works as expected with query response mode"""
         mock_verify_and_decode_id_token.return_value = {
@@ -1025,7 +1025,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             "email": "john@example.com",
             "preferred_username": "john",
         }
-        mock_retrieve_token_using_auth_code.return_value = "id_token"
+        mock_retrieve_tokens_using_auth_code.return_value = "id_token"
         view = UserModelOpenIDConnectViewset.as_view({"get": "callback"})
         # Simulate the code verifier being in the cache
         code_verifier_cache_key = "pkce_123"
@@ -1040,7 +1040,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(user.email, "john@example.com")
         self.assertEqual(user.first_name, "john")
         self.assertEqual(user.last_name, "doe")
-        mock_retrieve_token_using_auth_code.assert_called_once_with(
+        mock_retrieve_tokens_using_auth_code.assert_called_once_with(
             "auth_code", code_verifier="123"
         )
         # Code verifier is removed from cache
@@ -1126,10 +1126,10 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         },
         OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
     )
-    @patch.object(OpenIDClient, "retrieve_token_using_auth_code")
+    @patch.object(OpenIDClient, "retrieve_tokens_using_auth_code")
     @patch.object(OpenIDClient, "verify_and_decode_id_token")
     def test_auto_create_user_disabled_state_cleared(
-        self, mock_verify_and_decode_id_token, mock_retrieve_token_using_auth_code
+        self, mock_verify_and_decode_id_token, mock_retrieve_tokens_using_auth_code
     ):
         """Cached login state is cleared if auto create is false"""
         mock_verify_and_decode_id_token.return_value = {
@@ -1138,7 +1138,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             "email": "john@example.com",
             "preferred_username": "john",
         }
-        mock_retrieve_token_using_auth_code.return_value = "id_token"
+        mock_retrieve_tokens_using_auth_code.return_value = "id_token"
 
         # Simulate the cached code verifier
         state_key = "pkce_123"
