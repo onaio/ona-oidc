@@ -149,13 +149,15 @@ class OpenIDClient:
         """
         Validates an access token against the at_hash claim in an ID token.
 
-        Args:
-            decoded_id_token: A verified and decoded ID token
-            id_token: The ID token (JWT) as a string
-            access_token: The access token to validate
+        :param decoded_id_token: A verified and decoded ID token
+        :type decoded_id_token: dict
+        :param id_token: The ID token (JWT) as a string
+        :type id_token: string
+        :param access_token: The access token to validate
+        :type access_token: str
 
-        Returns:
-            bool: True if valid, False otherwise
+        :return bool: True if valid, False otherwise
+        :raises ValueError: if algorithm in id_token header isn't supported
         """
 
         if "at_hash" not in decoded_id_token:
