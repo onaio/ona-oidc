@@ -178,11 +178,13 @@ class OpenIDClient:
         return computed_at_hash == decoded_id_token["at_hash"]
 
     def should_retrieve_user_info(self, decoded_id_token: dict) -> bool:
+        if not decoded_id_token:
+            return False
+
         return not (
             "email" in decoded_id_token
             or (
-                decoded_id_token
-                and "emails" in decoded_id_token
+                "emails" in decoded_id_token
                 and decoded_id_token["emails"]
                 and decoded_id_token["emails"][0]
             )
