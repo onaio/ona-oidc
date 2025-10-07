@@ -7,7 +7,7 @@ import hashlib
 import json
 import logging
 import secrets
-from typing import Optional
+from typing import Callable, Optional
 
 from django.conf import settings
 from django.core.cache import cache
@@ -53,6 +53,7 @@ class OpenIDClient:
         self.client_id = config[auth_server].get("CLIENT_ID")
         self.client_secret = config[auth_server].get("CLIENT_SECRET")
         self.jwks_endpoint = config[auth_server].get("JWKS_ENDPOINT")
+        self.user_info_endpoint = config[auth_server].get("USER_INFO_ENDPOINT")
         self.scope = config[auth_server].get("SCOPE") or default_config["SCOPE"]
         self.token_endpoint = config[auth_server].get("TOKEN_ENDPOINT")
         self.end_session_endpoint = config[auth_server].get("END_SESSION_ENDPOINT")
@@ -65,6 +66,11 @@ class OpenIDClient:
         )
         self.cache_nonces = str_to_bool(
             config[auth_server].get("USE_NONCES", default_config["USE_NONCES"])
+        )
+        self.should_verify_access_token = str_to_bool(
+            config[auth_server].get(
+                "VERIFY_ACCESS_TOKEN", default_config["VERIFY_ACCESS_TOKEN"]
+            )
         )
         self.nonce_cache_timeout = int(
             config[auth_server].get(
@@ -105,6 +111,100 @@ class OpenIDClient:
                     return jwk
         return None
 
+    def retrieve_user_info(self, access_token: str) -> dict:
+        """
+        Given an access_token, retrieve user profile claims
+        """
+        response = requests.get(
+            self.user_info_endpoint, headers={"Authorization": f"Bearer {access_token}"}
+        )
+        return response.json()
+
+    def get_hash_algorithm(self, alg: str) -> Optional[Callable]:
+        """
+        Maps JWT algorithm to hash function.
+
+        Based on the spec: RS256/ES256/PS256 use SHA-256,
+        RS384/ES384/PS384 use SHA-384, RS512/ES512/PS512 use SHA-512
+        """
+        algorithm_map = {
+            "RS256": hashlib.sha256,
+            "RS384": hashlib.sha384,
+            "RS512": hashlib.sha512,
+            "ES256": hashlib.sha256,
+            "ES384": hashlib.sha384,
+            "ES512": hashlib.sha512,
+            "PS256": hashlib.sha256,
+            "PS384": hashlib.sha384,
+            "PS512": hashlib.sha512,
+            "HS256": hashlib.sha256,
+            "HS384": hashlib.sha384,
+            "HS512": hashlib.sha512,
+        }
+        return algorithm_map.get(alg)
+
+    def validate_access_token(
+        self, decoded_id_token: dict, id_token: str, access_token: str
+    ) -> bool:
+        """
+        Validates an access token against the at_hash claim in an ID token.
+
+        :param decoded_id_token: A verified and decoded ID token
+        :type decoded_id_token: dict
+        :param id_token: The ID token (JWT) as a string
+        :type id_token: string
+        :param access_token: The access token to validate
+        :type access_token: str
+
+        :return bool: True if valid, False otherwise
+        :raises ValueError: if algorithm in id_token header isn't supported
+        """
+
+        if "at_hash" not in decoded_id_token:
+            return False
+
+        id_token_header = jwt.get_unverified_header(id_token)
+        alg_str = id_token_header.get("alg")
+        hash_algorithm = self.get_hash_algorithm(alg_str)
+        if not hash_algorithm:
+            raise ValueError(f"Unsupported algorithm: {alg_str}")
+
+        hash_digest = hash_algorithm(access_token.encode("ascii")).digest()
+        left_half = hash_digest[: len(hash_digest) // 2]
+        computed_at_hash = (
+            base64.urlsafe_b64encode(left_half).decode("ascii").rstrip("=")
+        )
+
+        return computed_at_hash == decoded_id_token["at_hash"]
+
+    def should_retrieve_user_info(self, decoded_id_token: dict) -> bool:
+        if not decoded_id_token:
+            return False
+
+        return not (
+            "email" in decoded_id_token
+            or (
+                "emails" in decoded_id_token
+                and decoded_id_token["emails"]
+                and decoded_id_token["emails"][0]
+            )
+        )
+
+    def tokens_to_user_info(
+        self,
+        decoded_id_token: dict,
+        id_token: Optional[str],
+        access_token: Optional[str],
+    ) -> dict:
+        if not self.should_retrieve_user_info(decoded_id_token):
+            return decoded_id_token
+        if self.should_verify_access_token and not self.validate_access_token(
+            decoded_id_token, id_token, access_token
+        ):
+            raise TokenVerificationFailed("Failed to validate access token")
+
+        return self.retrieve_user_info(access_token)
+
     def verify_and_decode_id_token(self, id_token: str) -> Optional[dict]:
         """
         Verifies that the received ID Token was signed and sent by the
@@ -143,9 +243,9 @@ class OpenIDClient:
             decoded_token[REDIRECT_AFTER_AUTH] = cached_data.get("redirect_after")
         return decoded_token
 
-    def retrieve_token_using_auth_code(
+    def retrieve_tokens_using_auth_code(
         self, code: str, code_verifier: Optional[str] = None
-    ) -> Optional[str]:
+    ) -> dict:
         """
         Obtain an ID Token using the Authorization Code flow
 
@@ -181,7 +281,7 @@ class OpenIDClient:
                 f"Failed to retrieve ID Token: {exc}"
             ) from exc
 
-        return response.json().get("id_token")
+        return response.json()
 
     def _generate_pkce_code_verifier(self) -> str:
         """
