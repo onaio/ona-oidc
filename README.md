@@ -7,7 +7,7 @@ A pluggable django application that implements OpenID Connect client functionali
 1. Install package using pip:
 
 ```sh
-$ pip install -e git+https://github.com/onaio/ona-oidc.git#egg=ona-oidc
+pip install -e git+https://github.com/onaio/ona-oidc.git#egg=ona-oidc
 ```
 
 2. Add `oidc` to the list of `INSTALLED_APPS`
@@ -131,6 +131,9 @@ OPENID_IMPORT_USER = {
         "preferred_username": "username",
     },
     "SEARCH_RESULTS_PATH": "data.results",  # Optional: JSON path to user list in response
+    "USERNAME_IS_EMAIL": False, # Optional: set to true if username provided by search endpoint is an email
+    "REPLACE_USERNAME_CHARACTERS": "-.",  # A string of characters to replace if found within the captured username
+    "USERNAME_REPLACEMENT_CHARACTER": "_", # The character used to replace the characters within the `REPLACE_USERNAME_CHARACTERS` string
 }
 ```
 
