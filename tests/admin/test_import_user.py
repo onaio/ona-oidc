@@ -234,3 +234,183 @@ class ImportUserAdminTestCase(TestCase):
 
             out = admin_obj._search_user(token="tok", query="ab")
             self.assertEqual(out[0]["email"], "a@b.com")
+
+    def test_map_user_claim_basic(self):
+        """Map user claim to model fields correctly"""
+        admin_obj = ImportUserAdmin(model=get_user_model(), admin_site=admin.site)
+        user_claim = {
+            "email": "john.doe@example.com",
+            "given_name": "John",
+            "family_name": "Doe",
+            "preferred_username": "johndoe",
+        }
+
+        result = admin_obj._map_user_claim_to_model(user_claim)
+
+        self.assertEqual(
+            result,
+            {
+                "email": "john.doe@example.com",
+                "first_name": "John",
+                "last_name": "Doe",
+                "username": "johndoe",
+            },
+        )
+
+    @override_settings(
+        OPENID_IMPORT_USER={
+            **OPENID_IMPORT_USER,
+            "USERNAME_IS_EMAIL": True,
+        }
+    )
+    def test_map_user_claim_username_from_email(self):
+        """Username is extracted from email when USERNAME_IS_EMAIL is True"""
+        admin_obj = ImportUserAdmin(model=get_user_model(), admin_site=admin.site)
+        user_claim = {
+            "email": "jane.smith@example.com",
+            "given_name": "Jane",
+            "family_name": "Smith",
+            "preferred_username": "jane.smith@example.com",
+        }
+
+        result = admin_obj._map_user_claim_to_model(user_claim)
+
+        self.assertEqual(result["username"], "jane_smith")
+        self.assertEqual(result["email"], "jane.smith@example.com")
+        self.assertEqual(result["first_name"], "Jane")
+
+    @override_settings(
+        OPENID_IMPORT_USER={
+            **OPENID_IMPORT_USER,
+            "REPLACE_USERNAME_CHARACTERS": "-.",
+            "USERNAME_CHAR_REPLACEMENT": "_",
+        }
+    )
+    def test_map_user_claim_replace_characters(self):
+        """Username characters are replaced correctly"""
+        admin_obj = ImportUserAdmin(model=get_user_model(), admin_site=admin.site)
+        user_claim = {
+            "email": "test@example.com",
+            "given_name": "Test",
+            "family_name": "User",
+            "preferred_username": "test-user.name",
+        }
+
+        result = admin_obj._map_user_claim_to_model(user_claim)
+
+        self.assertEqual(result["username"], "test_user_name")
+        self.assertEqual(result["email"], "test@example.com")
+
+    @override_settings(
+        OPENID_IMPORT_USER={
+            **OPENID_IMPORT_USER,
+            "USERNAME_IS_EMAIL": True,
+            "REPLACE_USERNAME_CHARACTERS": ".",
+            "USERNAME_CHAR_REPLACEMENT": "_",
+        }
+    )
+    def test_map_user_claim_email_and_replace_combined(self):
+        """USERNAME_IS_EMAIL and character replacement work together"""
+        admin_obj = ImportUserAdmin(model=get_user_model(), admin_site=admin.site)
+        user_claim = {
+            "email": "john.doe@example.com",
+            "given_name": "John",
+            "family_name": "Doe",
+            "preferred_username": "john.doe@example.com",
+        }
+
+        result = admin_obj._map_user_claim_to_model(user_claim)
+
+        # First extracts "john.doe" from email, then replaces "." with "_"
+        self.assertEqual(result["username"], "john_doe")
+        self.assertEqual(result["email"], "john.doe@example.com")
+
+    @override_settings(
+        OPENID_IMPORT_USER={
+            **OPENID_IMPORT_USER,
+            "REPLACE_USERNAME_CHARACTERS": "-",
+            "USERNAME_CHAR_REPLACEMENT": "",
+        }
+    )
+    def test_map_user_claim_replace_with_empty_string(self):
+        """Characters can be replaced with empty string (removed)"""
+        admin_obj = ImportUserAdmin(model=get_user_model(), admin_site=admin.site)
+        user_claim = {
+            "email": "test@example.com",
+            "given_name": "Test",
+            "family_name": "User",
+            "preferred_username": "test-user-name",
+        }
+
+        result = admin_obj._map_user_claim_to_model(user_claim)
+
+        self.assertEqual(result["username"], "testusername")
+
+    @override_settings(
+        OPENID_IMPORT_USER={
+            **OPENID_IMPORT_USER,
+            "REPLACE_USERNAME_CHARACTERS": "",
+            "USERNAME_CHAR_REPLACEMENT": "_",
+        }
+    )
+    def test_map_user_claim_no_replacement_when_empty_chars(self):
+        """No replacement occurs when REPLACE_USERNAME_CHARACTERS is empty"""
+        admin_obj = ImportUserAdmin(model=get_user_model(), admin_site=admin.site)
+        user_claim = {
+            "email": "test@example.com",
+            "given_name": "Test",
+            "family_name": "User",
+            "preferred_username": "test-user.name",
+        }
+
+        result = admin_obj._map_user_claim_to_model(user_claim)
+
+        # Should remain unchanged
+        self.assertEqual(result["username"], "test-user.name")
+
+    @override_settings(
+        OPENID_IMPORT_USER={
+            **OPENID_IMPORT_USER,
+            "USERNAME_IS_EMAIL": True,
+            "REPLACE_USERNAME_CHARACTERS": ".-",
+            "USERNAME_CHAR_REPLACEMENT": "_",
+        }
+    )
+    @patch("oidc.admin.requests.get")
+    @patch("oidc.admin.requests.post")
+    def test_search_user_view_with_username_transformations(self, mock_post, mock_get):
+        """Search user view applies username transformations in end-to-end flow"""
+        mock_post.return_value = Mock(status_code=200)
+        mock_post.return_value.json = lambda: {
+            "access_token": "tok",
+            "expires_in": 3600,
+        }
+
+        resp_get = Mock(status_code=200)
+        resp_get.json = lambda: [
+            {
+                "email": "john.doe-smith@example.com",
+                "given_name": "John",
+                "family_name": "Doe-Smith",
+                "preferred_username": "john.doe-smith@example.com",
+            }
+        ]
+        mock_get.return_value = resp_get
+
+        url = reverse("admin:auth_user_search")
+        r = self.client.get(url, {"q": "john"})
+        self.assertEqual(r.status_code, 200)
+        data = json.loads(r.content.decode("utf-8"))
+
+        # Username should be extracted from email and characters replaced
+        self.assertEqual(
+            data,
+            [
+                {
+                    "email": "john.doe-smith@example.com",
+                    "first_name": "John",
+                    "last_name": "Doe-Smith",
+                    "username": "john_doe_smith",
+                }
+            ],
+        )

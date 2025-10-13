@@ -147,6 +147,24 @@ class ImportUserAdmin(BaseUserAdmin):
 
         return results
 
+    def _map_user_claim_to_model(self, user_claim):
+        config = get_import_conf()
+        mapped_claim = {
+            v: user_claim[k] for k, v in config["MAP_CLAIM_TO_MODEL"].items()
+        }
+        if config["USERNAME_IS_EMAIL"]:
+            username = mapped_claim["username"]
+            mapped_claim["username"] = username.split("@")[0]
+        if (
+            config["REPLACE_USERNAME_CHARACTERS"]
+            and config["USERNAME_CHAR_REPLACEMENT"] is not None
+        ):
+            username = mapped_claim["username"]
+            for char in list(config["REPLACE_USERNAME_CHARACTERS"]):
+                username = username.replace(char, config["USERNAME_CHAR_REPLACEMENT"])
+            mapped_claim["username"] = username
+        return mapped_claim
+
     def _parse_search_results(self, results) -> list:
         """Format search results
 
@@ -154,13 +172,10 @@ class ImportUserAdmin(BaseUserAdmin):
         :returns: Suggestions formatted appropriately
         :rtype: list
         """
-        config = get_import_conf()
 
         return list(
             map(
-                lambda user: {
-                    v: user[k] for k, v in config["MAP_CLAIM_TO_MODEL"].items()
-                },
+                self._map_user_claim_to_model,
                 results,
             )
         )
