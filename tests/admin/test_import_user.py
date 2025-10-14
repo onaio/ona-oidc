@@ -25,6 +25,11 @@ OPENID_IMPORT_USER = {
     },
 }
 
+OPENID_CONNECT_VIEWSET_CONFIG = {
+    "REPLACE_USERNAME_CHARACTERS": "-.",
+    "USERNAME_CHAR_REPLACEMENT": "_",
+}
+
 
 @override_settings(
     ROOT_URLCONF="tests.admin.urls", OPENID_IMPORT_USER=OPENID_IMPORT_USER
@@ -258,10 +263,8 @@ class ImportUserAdminTestCase(TestCase):
         )
 
     @override_settings(
-        OPENID_IMPORT_USER={
-            **OPENID_IMPORT_USER,
-            "USERNAME_IS_EMAIL": True,
-        }
+        OPENID_IMPORT_USER=OPENID_IMPORT_USER,
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
     )
     def test_map_user_claim_username_from_email(self):
         """Username is extracted from email when USERNAME_IS_EMAIL is True"""
@@ -280,11 +283,8 @@ class ImportUserAdminTestCase(TestCase):
         self.assertEqual(result["first_name"], "Jane")
 
     @override_settings(
-        OPENID_IMPORT_USER={
-            **OPENID_IMPORT_USER,
-            "REPLACE_USERNAME_CHARACTERS": "-.",
-            "USERNAME_CHAR_REPLACEMENT": "_",
-        }
+        OPENID_IMPORT_USER=OPENID_IMPORT_USER,
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
     )
     def test_map_user_claim_replace_characters(self):
         """Username characters are replaced correctly"""
@@ -302,12 +302,8 @@ class ImportUserAdminTestCase(TestCase):
         self.assertEqual(result["email"], "test@example.com")
 
     @override_settings(
-        OPENID_IMPORT_USER={
-            **OPENID_IMPORT_USER,
-            "USERNAME_IS_EMAIL": True,
-            "REPLACE_USERNAME_CHARACTERS": ".",
-            "USERNAME_CHAR_REPLACEMENT": "_",
-        }
+        OPENID_IMPORT_USER=OPENID_IMPORT_USER,
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
     )
     def test_map_user_claim_email_and_replace_combined(self):
         """USERNAME_IS_EMAIL and character replacement work together"""
@@ -326,11 +322,11 @@ class ImportUserAdminTestCase(TestCase):
         self.assertEqual(result["email"], "john.doe@example.com")
 
     @override_settings(
-        OPENID_IMPORT_USER={
-            **OPENID_IMPORT_USER,
-            "REPLACE_USERNAME_CHARACTERS": "-",
+        OPENID_IMPORT_USER=OPENID_IMPORT_USER,
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
             "USERNAME_CHAR_REPLACEMENT": "",
-        }
+        },
     )
     def test_map_user_claim_replace_with_empty_string(self):
         """Characters can be replaced with empty string (removed)"""
@@ -347,11 +343,11 @@ class ImportUserAdminTestCase(TestCase):
         self.assertEqual(result["username"], "testusername")
 
     @override_settings(
-        OPENID_IMPORT_USER={
-            **OPENID_IMPORT_USER,
+        OPENID_IMPORT_USER=OPENID_IMPORT_USER,
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
             "REPLACE_USERNAME_CHARACTERS": "",
-            "USERNAME_CHAR_REPLACEMENT": "_",
-        }
+        },
     )
     def test_map_user_claim_no_replacement_when_empty_chars(self):
         """No replacement occurs when REPLACE_USERNAME_CHARACTERS is empty"""
@@ -369,12 +365,8 @@ class ImportUserAdminTestCase(TestCase):
         self.assertEqual(result["username"], "test-user.name")
 
     @override_settings(
-        OPENID_IMPORT_USER={
-            **OPENID_IMPORT_USER,
-            "USERNAME_IS_EMAIL": True,
-            "REPLACE_USERNAME_CHARACTERS": ".-",
-            "USERNAME_CHAR_REPLACEMENT": "_",
-        }
+        OPENID_IMPORT_USER=OPENID_IMPORT_USER,
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
     )
     @patch("oidc.admin.requests.get")
     @patch("oidc.admin.requests.post")

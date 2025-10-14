@@ -52,7 +52,4 @@ OPENID_IMPORT_USER = {
         "email": "email",
         "preferred_username": "username",
     },
-    "USERNAME_IS_EMAIL": False,
-    "REPLACE_USERNAME_CHARACTERS": "-.",
-    "USERNAME_CHAR_REPLACEMENT": "_",
 }
