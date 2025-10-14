@@ -4,6 +4,8 @@ from django.contrib.auth import get_user_model
 import jwt
 from jwt.exceptions import InvalidSignatureError
 
+import oidc.settings as default
+
 
 def authenticate_sso(request, unique_user_field: str = "email"):
     config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
@@ -32,3 +34,21 @@ def str_to_bool(val):
     if isinstance(val, str):
         val = 0 if val == "False" else 1
     return val
+
+
+def email_usename_to_url_safe(email_username):
+    return email_username.split("@")[0]
+
+
+def replace_characters_in_username(
+    username, replace_username_characters, username_char_replacement
+):
+    if replace_username_characters and username_char_replacement is not None:
+        for char in list(replace_username_characters):
+            username = username.replace(char, username_char_replacement)
+    return username
+
+
+def get_viewset_config():
+    default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
+    return getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", default_config)

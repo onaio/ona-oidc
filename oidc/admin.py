@@ -13,7 +13,12 @@ import requests
 
 import oidc.settings as default
 from oidc.forms import ImportUserForm
-from oidc.utils import str_to_bool
+from oidc.utils import (
+    email_usename_to_url_safe,
+    get_viewset_config,
+    replace_characters_in_username,
+    str_to_bool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +29,15 @@ OPENID_IMPORT_USER_DEFAULTS = getattr(default, "OPENID_IMPORT_USER", {})
 
 
 def get_import_conf() -> dict:
+    viewset_config = get_viewset_config()
     conf = OPENID_IMPORT_USER_DEFAULTS.copy()
     conf.update(getattr(settings, "OPENID_IMPORT_USER", {}))
+    if "REPLACE_USERNAME_CHARACTERS" in viewset_config:
+        conf["REPLACE_USERNAME_CHARACTERS"] = viewset_config[
+            "REPLACE_USERNAME_CHARACTERS"
+        ]
+    if "USERNAME_CHAR_REPLACEMENT" in viewset_config:
+        conf["USERNAME_CHAR_REPLACEMENT"] = viewset_config["USERNAME_CHAR_REPLACEMENT"]
 
     return conf
 
@@ -147,6 +159,22 @@ class ImportUserAdmin(BaseUserAdmin):
 
         return results
 
+    def _map_user_claim_to_model(self, user_claim):
+        config = get_import_conf()
+        mapped_claim = {
+            v: user_claim[k] for k, v in config["MAP_CLAIM_TO_MODEL"].items()
+        }
+        if (
+            "REPLACE_USERNAME_CHARACTERS" in config
+            and "USERNAME_CHAR_REPLACEMENT" in config
+        ):
+            mapped_claim["username"] = replace_characters_in_username(
+                email_usename_to_url_safe(mapped_claim["username"]),
+                config["REPLACE_USERNAME_CHARACTERS"],
+                config["USERNAME_CHAR_REPLACEMENT"],
+            )
+        return mapped_claim
+
     def _parse_search_results(self, results) -> list:
         """Format search results
 
@@ -154,13 +182,10 @@ class ImportUserAdmin(BaseUserAdmin):
         :returns: Suggestions formatted appropriately
         :rtype: list
         """
-        config = get_import_conf()
 
         return list(
             map(
-                lambda user: {
-                    v: user[k] for k, v in config["MAP_CLAIM_TO_MODEL"].items()
-                },
+                self._map_user_claim_to_model,
                 results,
             )
         )

@@ -37,7 +37,12 @@ from oidc.client import (
     OpenIDClient,
     TokenVerificationFailed,
 )
-from oidc.utils import str_to_bool
+from oidc.utils import (
+    email_usename_to_url_safe,
+    get_viewset_config,
+    replace_characters_in_username,
+    str_to_bool,
+)
 
 default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 SSO_COOKIE_NAME = "SSO"
@@ -57,7 +62,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
+        config = get_viewset_config()
         self.jwt = config.get("JWT_SECRET_KEY", "")
         self.required_fields = config.get(
             "REQUIRED_USER_CREATION_FIELDS",
@@ -252,15 +257,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 "username" in missing_fields
                 or not username_regex.search(user_data["username"])
             ) and "email" in user_data:
-                username = user_data["email"].split("@")[0]
-                if (
-                    self.replaceable_username_characters
-                    and self.username_char_replacement
-                ):
-                    for char in list(self.replaceable_username_characters):
-                        username = username.replace(
-                            char, self.username_char_replacement
-                        )
+                username = replace_characters_in_username(
+                    email_usename_to_url_safe(user_data["email"]),
+                    self.replaceable_username_characters,
+                    self.username_char_replacement,
+                )
 
                 # Validate retrieved username matches regex
                 if "username" in self.field_validation_regex and username_regex.search(

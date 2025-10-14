@@ -7,7 +7,7 @@ A pluggable django application that implements OpenID Connect client functionali
 1. Install package using pip:
 
 ```sh
-$ pip install -e git+https://github.com/onaio/ona-oidc.git#egg=ona-oidc
+pip install -e git+https://github.com/onaio/ona-oidc.git#egg=ona-oidc
 ```
 
 2. Add `oidc` to the list of `INSTALLED_APPS`
