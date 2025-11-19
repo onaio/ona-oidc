@@ -36,8 +36,10 @@ def get_import_conf() -> dict:
         conf["REPLACE_USERNAME_CHARACTERS"] = viewset_config[
             "REPLACE_USERNAME_CHARACTERS"
         ]
-    if "USERNAME_CHAR_REPLACEMENT" in viewset_config:
-        conf["USERNAME_CHAR_REPLACEMENT"] = viewset_config["USERNAME_CHAR_REPLACEMENT"]
+    if "USERNAME_REPLACEMENT_CHARACTER" in viewset_config:
+        conf["USERNAME_REPLACEMENT_CHARACTER"] = viewset_config[
+            "USERNAME_REPLACEMENT_CHARACTER"
+        ]
 
     return conf
 
@@ -166,12 +168,12 @@ class ImportUserAdmin(BaseUserAdmin):
         }
         if (
             "REPLACE_USERNAME_CHARACTERS" in config
-            and "USERNAME_CHAR_REPLACEMENT" in config
+            and "USERNAME_REPLACEMENT_CHARACTER" in config
         ):
             mapped_claim["username"] = replace_characters_in_username(
                 email_usename_to_url_safe(mapped_claim["username"]),
                 config["REPLACE_USERNAME_CHARACTERS"],
-                config["USERNAME_CHAR_REPLACEMENT"],
+                config["USERNAME_REPLACEMENT_CHARACTER"],
             )
         return mapped_claim
 

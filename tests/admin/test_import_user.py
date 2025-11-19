@@ -27,7 +27,7 @@ OPENID_IMPORT_USER = {
 
 OPENID_CONNECT_VIEWSET_CONFIG = {
     "REPLACE_USERNAME_CHARACTERS": "-.",
-    "USERNAME_CHAR_REPLACEMENT": "_",
+    "USERNAME_REPLACEMENT_CHARACTER": "_",
 }
 
 
@@ -325,7 +325,7 @@ class ImportUserAdminTestCase(TestCase):
         OPENID_IMPORT_USER=OPENID_IMPORT_USER,
         OPENID_CONNECT_VIEWSET_CONFIG={
             **OPENID_CONNECT_VIEWSET_CONFIG,
-            "USERNAME_CHAR_REPLACEMENT": "",
+            "USERNAME_REPLACEMENT_CHARACTER": "",
         },
     )
     def test_map_user_claim_replace_with_empty_string(self):
