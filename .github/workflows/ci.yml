@@ -13,14 +13,28 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Django 3.2 LTS
           - python_version: "3.10"
             toxenv: "py310-django32"
-          - python_version: 3.11
+          - python_version: "3.11"
             toxenv: "py311-django32"
+          - python_version: "3.12"
+            toxenv: "py312-django32"
+          # Django 4.2 LTS
           - python_version: "3.10"
-            toxenv: "py310-django40"
-          - python_version: 3.11
-            toxenv: "py311-django40"
+            toxenv: "py310-django42"
+          - python_version: "3.11"
+            toxenv: "py311-django42"
+          - python_version: "3.12"
+            toxenv: "py312-django42"
+          # Django 5.x
+          - python_version: "3.10"
+            toxenv: "py310-django50"
+          - python_version: "3.11"
+            toxenv: "py311-django50"
+          - python_version: "3.12"
+            toxenv: "py312-django50"
+          # Linting
           - python_version: "3.10"
             toxenv: "lint"
     steps:
