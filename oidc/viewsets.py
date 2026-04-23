@@ -12,6 +12,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model, login
 from django.contrib.auth import logout as logout_backend
 from django.core.cache import cache
+from django.core.exceptions import ImproperlyConfigured
 from django.db.models import Q
 from django.http import (
     HttpRequest,
@@ -90,6 +91,35 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         )
         self.cookie_max_age = config.get("SSO_COOKIE_MAX_AGE")
         self.cookie_domain = config.get("SSO_COOKIE_DOMAIN", "localhost")
+        self.cookie_secure = config.get(
+            "SSO_COOKIE_SECURE",
+            default_config.get("SSO_COOKIE_SECURE"),
+        )
+        self.cookie_samesite = config.get(
+            "SSO_COOKIE_SAMESITE",
+            default_config.get("SSO_COOKIE_SAMESITE", "Lax"),
+        )
+        self.cookie_httponly = str_to_bool(
+            config.get(
+                "SSO_COOKIE_HTTPONLY",
+                default_config.get("SSO_COOKIE_HTTPONLY", True),
+            )
+        )
+        self.cookie_path = config.get(
+            "SSO_COOKIE_PATH",
+            default_config.get("SSO_COOKIE_PATH", "/"),
+        )
+        self.cookie_partitioned = str_to_bool(
+            config.get(
+                "SSO_COOKIE_PARTITIONED",
+                default_config.get("SSO_COOKIE_PARTITIONED", False),
+            )
+        )
+        if self.cookie_samesite == "None" and not self._resolve_cookie_secure():
+            raise ImproperlyConfigured(
+                "SSO_COOKIE_SAMESITE='None' requires Secure=True; "
+                "set SSO_COOKIE_SECURE=True or SESSION_COOKIE_SECURE=True."
+            )
         self.use_auth_backend = str_to_bool(config.get("USE_AUTH_BACKEND", False))
         self.auth_backend = config.get(
             "AUTH_BACKEND", "django.contrib.auth.backends.ModelBackend"
@@ -117,6 +147,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         if auth_server in auth_config:
             return OpenIDClient(auth_server)
         return None
+
+    def _resolve_cookie_secure(self) -> bool:
+        if self.cookie_secure is not None:
+            return bool(self.cookie_secure)
+        return bool(getattr(settings, "SESSION_COOKIE_SECURE", False))
 
     @action(methods=["GET"], detail=False)
     def login(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
