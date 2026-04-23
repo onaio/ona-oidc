@@ -109,12 +109,6 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             "SSO_COOKIE_PATH",
             default_config.get("SSO_COOKIE_PATH", "/"),
         )
-        self.cookie_partitioned = str_to_bool(
-            config.get(
-                "SSO_COOKIE_PARTITIONED",
-                default_config.get("SSO_COOKIE_PARTITIONED", False),
-            )
-        )
         if self.cookie_samesite == "None" and not self._resolve_cookie_secure():
             raise ImproperlyConfigured(
                 "SSO_COOKIE_SAMESITE='None' requires Secure=True; "
@@ -174,7 +168,12 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             if self.use_auth_backend:
                 logout_backend(request)
             if self.use_sso:
-                response.delete_cookie(SSO_COOKIE_NAME, domain=self.cookie_domain)
+                response.delete_cookie(
+                    SSO_COOKIE_NAME,
+                    domain=self.cookie_domain,
+                    path=self.cookie_path,
+                    samesite=self.cookie_samesite,
+                )
 
             return response
         return HttpResponseBadRequest(
@@ -222,8 +221,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 value=sso_cookie,
                 max_age=self.cookie_max_age,
                 domain=self.cookie_domain,
-                httponly=True,
-                secure=False if settings.DEBUG else True,
+                path=self.cookie_path,
+                httponly=self.cookie_httponly,
+                secure=self._resolve_cookie_secure(),
+                samesite=self.cookie_samesite,
             )
 
         return response
