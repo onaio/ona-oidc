@@ -6,6 +6,7 @@ import json
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 from django.test.utils import override_settings
 from django.utils import timezone
@@ -1069,7 +1070,10 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             ),
         )
 
-    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+        SESSION_COOKIE_SECURE=True,
+    )
     @patch.object(jwt, "encode")
     @patch.object(OpenIDClient, "verify_and_decode_id_token")
     def test_cookie_set(
@@ -1094,6 +1098,8 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(response.cookies.get("SSO").value, "jwt.token.here")
         self.assertEqual(response.cookies.get("SSO")["httponly"], True)
         self.assertEqual(response.cookies.get("SSO")["secure"], True)
+        self.assertEqual(response.cookies.get("SSO")["samesite"], "Lax")
+        self.assertEqual(response.cookies.get("SSO")["path"], "/")
         self.assertEqual(response.cookies.get("SSO")["max-age"], 60 * 60 * 24 * 30)
         self.assertEqual(response.cookies.get("SSO")["domain"], ".example.com")
 
@@ -1160,3 +1166,168 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             "The request is not authorized. Please contact the administrator.",
         )
         self.assertIsNone(cache.get(state_key))
+
+    def _callback_cookie(self, mock_verify, mock_encode):
+        mock_verify.return_value = {
+            "given_name": "john",
+            "family_name": "doe",
+            "email": "john@example.com",
+            "preferred_username": "john",
+        }
+        mock_encode.return_value = "jwt.token.here"
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        request = self.factory.post("/", data={"id_token": "test.token.here"})
+        response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 302)
+        return response.cookies.get("SSO")
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+        SESSION_COOKIE_SECURE=True,
+    )
+    @patch.object(jwt, "encode")
+    @patch.object(OpenIDClient, "verify_and_decode_id_token")
+    def test_cookie_secure_default_from_session_secure(self, mock_verify, mock_encode):
+        """Secure defaults to settings.SESSION_COOKIE_SECURE when unset."""
+        cookie = self._callback_cookie(mock_verify, mock_encode)
+        self.assertEqual(cookie["secure"], True)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    @patch.object(jwt, "encode")
+    @patch.object(OpenIDClient, "verify_and_decode_id_token")
+    def test_cookie_secure_default_falls_back_to_false(self, mock_verify, mock_encode):
+        """With SESSION_COOKIE_SECURE unset, Secure falls back to False."""
+        cookie = self._callback_cookie(mock_verify, mock_encode)
+        self.assertEqual(cookie["secure"], "")
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "SSO_COOKIE_SECURE": True,
+        },
+        SESSION_COOKIE_SECURE=False,
+    )
+    @patch.object(jwt, "encode")
+    @patch.object(OpenIDClient, "verify_and_decode_id_token")
+    def test_cookie_secure_override_wins_true(self, mock_verify, mock_encode):
+        """Explicit SSO_COOKIE_SECURE=True wins over SESSION_COOKIE_SECURE."""
+        cookie = self._callback_cookie(mock_verify, mock_encode)
+        self.assertEqual(cookie["secure"], True)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "SSO_COOKIE_SECURE": False,
+        },
+        SESSION_COOKIE_SECURE=True,
+    )
+    @patch.object(jwt, "encode")
+    @patch.object(OpenIDClient, "verify_and_decode_id_token")
+    def test_cookie_secure_override_wins_false(self, mock_verify, mock_encode):
+        """Explicit SSO_COOKIE_SECURE=False wins over SESSION_COOKIE_SECURE."""
+        cookie = self._callback_cookie(mock_verify, mock_encode)
+        self.assertEqual(cookie["secure"], "")
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "SSO_COOKIE_SAMESITE": "Strict",
+        },
+    )
+    @patch.object(jwt, "encode")
+    @patch.object(OpenIDClient, "verify_and_decode_id_token")
+    def test_cookie_samesite_strict(self, mock_verify, mock_encode):
+        cookie = self._callback_cookie(mock_verify, mock_encode)
+        self.assertEqual(cookie["samesite"], "Strict")
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "SSO_COOKIE_SAMESITE": "None",
+            "SSO_COOKIE_SECURE": True,
+        },
+    )
+    @patch.object(jwt, "encode")
+    @patch.object(OpenIDClient, "verify_and_decode_id_token")
+    def test_cookie_samesite_none_with_secure(self, mock_verify, mock_encode):
+        cookie = self._callback_cookie(mock_verify, mock_encode)
+        self.assertEqual(cookie["samesite"], "None")
+        self.assertEqual(cookie["secure"], True)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "SSO_COOKIE_SAMESITE": "None",
+            "SSO_COOKIE_SECURE": False,
+        },
+    )
+    def test_cookie_samesite_none_without_secure_raises(self):
+        """SameSite=None + Secure=False must raise at viewset construction."""
+        with self.assertRaises(ImproperlyConfigured):
+            UserModelOpenIDConnectViewset()
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "SSO_COOKIE_HTTPONLY": False,
+        },
+    )
+    @patch.object(jwt, "encode")
+    @patch.object(OpenIDClient, "verify_and_decode_id_token")
+    def test_cookie_httponly_false(self, mock_verify, mock_encode):
+        cookie = self._callback_cookie(mock_verify, mock_encode)
+        self.assertEqual(cookie["httponly"], "")
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "SSO_COOKIE_PATH": "/app",
+        },
+    )
+    @patch.object(jwt, "encode")
+    @patch.object(OpenIDClient, "verify_and_decode_id_token")
+    def test_cookie_path_custom(self, mock_verify, mock_encode):
+        cookie = self._callback_cookie(mock_verify, mock_encode)
+        self.assertEqual(cookie["path"], "/app")
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "USE_SSO_COOKIE": True,
+            "SSO_COOKIE_PATH": "/app",
+            "SSO_COOKIE_SAMESITE": "Strict",
+        },
+        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
+    )
+    def test_logout_delete_matches_set_attributes(self):
+        """Logout's delete_cookie must carry matching domain/path/samesite."""
+        view = UserModelOpenIDConnectViewset.as_view({"get": "logout"})
+        request = self.factory.get("/")
+        response = view(request, auth_server="default")
+        cookie = response.cookies.get("SSO")
+        self.assertIsNotNone(cookie)
+        self.assertEqual(cookie["domain"], ".example.com")
+        self.assertEqual(cookie["path"], "/app")
+        self.assertEqual(cookie["samesite"], "Strict")
+        self.assertEqual(cookie["max-age"], 0)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
+        CSRF_COOKIE_DOMAIN=".example.com",
+        CSRF_COOKIE_PATH="/admin",
+        CSRF_COOKIE_SAMESITE="Strict",
+    )
+    def test_login_csrf_delete_honours_csrf_cookie_settings(self):
+        """Login's csrftoken delete must carry matching CSRF_COOKIE_* attrs."""
+        view = UserModelOpenIDConnectViewset.as_view({"get": "login"})
+        request = self.factory.get("/")
+        response = view(request, auth_server="default")
+        cookie = response.cookies.get("csrftoken")
+        self.assertIsNotNone(cookie)
+        self.assertEqual(cookie["domain"], ".example.com")
+        self.assertEqual(cookie["path"], "/admin")
+        self.assertEqual(cookie["samesite"], "Strict")
+        self.assertEqual(cookie["max-age"], 0)
