@@ -1,4 +1,4 @@
-# Ona OpenID Connect Client [![Build Status](https://travis-ci.org/onaio/ona-oidc.svg?branch=master)](https://travis-ci.org/onaio/ona-oidc)
+# Ona OpenID Connect Client [![CI](https://github.com/onaio/ona-oidc/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/onaio/ona-oidc/actions/workflows/ci.yml)
 
 A pluggable django application that implements OpenID Connect client functionalities.
 
