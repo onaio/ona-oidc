@@ -45,6 +45,10 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     "SSO_COOKIE_DATA": "email",
     "SSO_COOKIE_MAX_AGE": None,
     "SSO_COOKIE_DOMAIN": "localhost",
+    "SSO_COOKIE_PATH": "/",
+    "SSO_COOKIE_SECURE": None,  # None => fall back to settings.SESSION_COOKIE_SECURE
+    "SSO_COOKIE_SAMESITE": "Lax",  # "Strict" | "Lax" | "None"
+    "SSO_COOKIE_HTTPONLY": True,
     "USE_AUTH_BACKEND": False,
     "AUTH_BACKEND": "",  # Defaults to django.contrib.auth.backends.ModelBackend
     "REDIRECT_AFTER_AUTH": "http://localhost:3000",
@@ -89,6 +93,29 @@ OPENID_CONNECT_AUTH_SERVERS = {
 ...
 
 ```
+
+### SSO cookie security
+
+The `SSO` cookie emitted on successful authentication honours these keys:
+
+- **`SSO_COOKIE_SECURE`** (`bool | None`, default `None`). When `None`, the
+  Secure flag falls back to `settings.SESSION_COOKIE_SECURE`. Set this to
+  `True` to force Secure on regardless of the Django session setting, or
+  `False` to force it off. Production deployments should either set
+  `SESSION_COOKIE_SECURE=True` (recommended — applies across session/CSRF/SSO
+  cookies) or set `SSO_COOKIE_SECURE=True` explicitly.
+- **`SSO_COOKIE_SAMESITE`** (`str`, default `"Lax"`). One of `"Strict"`,
+  `"Lax"`, or `"None"`. `"Lax"` is the right default for the standard
+  redirect-callback flow. Federated or iframe-embedded OIDC deployments must
+  use `"None"` + `Secure=True` — the viewset refuses to start with
+  `SameSite="None"` while Secure is falsy (Django/browsers reject such
+  cookies anyway).
+- **`SSO_COOKIE_HTTPONLY`** (`bool`, default `True`). Leave on unless you
+  have a specific reason to expose the cookie to JavaScript.
+- **`SSO_COOKIE_PATH`** (`str`, default `"/"`).
+
+Future work: once `Secure=True` is enforced cohort-wide, the cookie name
+can migrate to `__Secure-SSO` for browser-enforced guarantees.
 
 4. (Optional) If you'd like to use the default OpenID Connect Viewset register the urls located in `oidc.urls`.
 
