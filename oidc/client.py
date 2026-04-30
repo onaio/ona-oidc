@@ -7,7 +7,8 @@ import hashlib
 import json
 import logging
 import secrets
-from typing import Callable, Optional
+from typing import Callable, Mapping, Optional
+from urllib.parse import urlencode
 
 from django.conf import settings
 from django.core.cache import cache
@@ -21,6 +22,24 @@ import oidc.settings as default
 from oidc.utils import str_to_bool
 
 REDIRECT_AFTER_AUTH = "redirect_after_auth"
+
+# Authorization-endpoint query params that ona-oidc constructs itself.
+# Callers must not be allowed to override these via passthrough, since
+# doing so would let an attacker swap out the redirect URI, the PKCE
+# challenge, or the nonce that the callback handler validates against.
+RESERVED_AUTHORIZE_PARAMS = frozenset(
+    {
+        "client_id",
+        "redirect_uri",
+        "scope",
+        "response_type",
+        "response_mode",
+        "state",
+        "nonce",
+        "code_challenge",
+        "code_challenge_method",
+    }
+)
 
 logger = logging.getLogger(__name__)
 
@@ -301,15 +320,38 @@ class OpenIDClient:
         digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
         return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
-    def login(self, redirect_after: Optional[str] = None) -> str:
+    def login(
+        self,
+        redirect_after: Optional[str] = None,
+        extra_params: Optional[Mapping[str, str]] = None,
+    ) -> str:
         """
-        Redirects the user to the authorization endpoint for Authorization
+        Redirects the user to the authorization endpoint for Authorization.
+
+        ``extra_params`` are appended verbatim to the authorization URL,
+        URL-encoded. Useful for OIDC pass-through parameters — both
+        spec-standard ones like ``prompt``, ``login_hint``,
+        ``ui_locales``, ``acr_values`` and any provider-specific hints
+        (e.g. ``kc_idp_hint`` on Keycloak, ``connection`` on Auth0,
+        ``identity_provider`` on Cognito). Keys that ona-oidc manages
+        itself (see ``RESERVED_AUTHORIZE_PARAMS``) are silently dropped
+        so callers can't override the redirect URI, PKCE challenge,
+        nonce, etc.
         """
         url = self.authorization_endpoint + (
             f"?client_id={self.client_id}&redirect_uri={self.redirect_uri}&"
             f"scope={self.scope}&response_type={self.response_type}&"
             f"response_mode={self.response_mode}"
         )
+
+        if extra_params:
+            safe_params = {
+                key: value
+                for key, value in extra_params.items()
+                if key not in RESERVED_AUTHORIZE_PARAMS
+            }
+            if safe_params:
+                url += "&" + urlencode(safe_params)
 
         if self.use_pkce:
             code_verifier = self._generate_pkce_code_verifier()

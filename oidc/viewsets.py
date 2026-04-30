@@ -151,7 +151,15 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     def login(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         client = self._get_client(auth_server=kwargs.get("auth_server"))
         if client:
-            response = client.login(redirect_after=request.query_params.get("next"))
+            extra_params = {
+                key: value
+                for key, value in request.query_params.items()
+                if key != "next"
+            }
+            response = client.login(
+                redirect_after=request.query_params.get("next"),
+                extra_params=extra_params,
+            )
             response.delete_cookie(
                 "csrftoken",
                 domain=getattr(settings, "CSRF_COOKIE_DOMAIN", None)

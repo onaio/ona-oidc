@@ -632,6 +632,47 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertIn("csrftoken", response.cookies)
         self.assertEqual(response.cookies["csrftoken"]["max-age"], 0)
 
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_login_forwards_arbitrary_query_params(self):
+        """Every query param other than ``next`` reaches the authorize URL.
+
+        Lets clients pass any OIDC pass-through parameter — both
+        spec-standard ones (``prompt``, ``login_hint``, ``ui_locales``,
+        ``acr_values``) and provider-specific hints (``kc_idp_hint`` on
+        Keycloak, ``connection`` on Auth0, ``identity_provider`` on
+        Cognito) — without ona-oidc needing per-provider plumbing.
+        """
+        viewset_class = BaseOpenIDConnectViewset
+        view = viewset_class.as_view({"get": "login"})
+
+        request = self.factory.get(
+            "/?kc_idp_hint=github&prompt=login&login_hint=alice%40example.com"
+        )
+        response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("kc_idp_hint=github", response.url)
+        self.assertIn("prompt=login", response.url)
+        self.assertIn("login_hint=alice%40example.com", response.url)
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_login_consumes_next_does_not_forward_it(self):
+        """``?next`` is consumed by ona-oidc — never forwarded as-is."""
+        viewset_class = BaseOpenIDConnectViewset
+        view = viewset_class.as_view({"get": "login"})
+
+        request = self.factory.get("/?next=/dashboard&kc_idp_hint=onadata")
+        response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 302)
+        # Forwarded
+        self.assertIn("kc_idp_hint=onadata", response.url)
+        # ona-oidc owns `next`; it routes through the redirect-after-auth
+        # cache, not the URL.
+        self.assertNotIn("next=", response.url)
+
     @patch(
         "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
         MagicMock(
