@@ -117,6 +117,32 @@ The `SSO` cookie emitted on successful authentication honours these keys:
 Future work: once `Secure=True` is enforced cohort-wide, the cookie name
 can migrate to `__Secure-SSO` for browser-enforced guarantees.
 
+### Forwarding query parameters to the authorization endpoint
+
+The login viewset forwards browser query parameters to the configured
+authorization endpoint only if they appear in a deployment-defined
+allowlist on the relevant auth server. Defaults to no forwarding.
+
+```python
+OPENID_CONNECT_AUTH_SERVERS = {
+    "microsoft": {
+        ...,
+        "LOGIN_QUERY_PARAM_ALLOWLIST": [
+            "prompt",
+            "ui_locales",
+            "acr_values",
+            "login_hint",
+        ],
+    }
+}
+```
+
+`next` is consumed by ona-oidc for redirect-after-auth caching and is
+never forwarded, regardless of allowlist. The client-side
+`RESERVED_AUTHORIZE_PARAMS` filter (covering OIDC params ona-oidc
+generates plus JAR / SIOP request-object hooks) applies as a second
+boundary for any programmatic caller of `OpenIDClient.login()`.
+
 4. (Optional) If you'd like to use the default OpenID Connect Viewset register the urls located in `oidc.urls`.
 
 ```python

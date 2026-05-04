@@ -40,6 +40,7 @@ from oidc.client import (
 )
 from oidc.utils import (
     email_usename_to_url_safe,
+    get_login_query_param_allowlist,
     get_viewset_config,
     replace_characters_in_username,
     str_to_bool,
@@ -149,12 +150,14 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
     @action(methods=["GET"], detail=False)
     def login(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
-        client = self._get_client(auth_server=kwargs.get("auth_server"))
+        auth_server = kwargs.get("auth_server")
+        client = self._get_client(auth_server=auth_server)
         if client:
+            allowlist = get_login_query_param_allowlist(auth_server) - {"next"}
             extra_params = {
                 key: value
                 for key, value in request.query_params.items()
-                if key != "next"
+                if key in allowlist
             }
             response = client.login(
                 redirect_after=request.query_params.get("next"),

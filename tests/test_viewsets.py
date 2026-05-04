@@ -16,6 +16,7 @@ from mock import MagicMock, patch
 from rest_framework.test import APIRequestFactory
 
 from oidc.client import OpenIDClient
+from oidc.utils import get_login_query_param_allowlist
 from oidc.viewsets import BaseOpenIDConnectViewset, UserModelOpenIDConnectViewset
 
 User = get_user_model()
@@ -632,14 +633,26 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertIn("csrftoken", response.cookies)
         self.assertEqual(response.cookies["csrftoken"]["max-age"], 0)
 
-    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
-    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
-    def test_login_forwards_arbitrary_query_params(self):
-        viewset_class = BaseOpenIDConnectViewset
-        view = viewset_class.as_view({"get": "login"})
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "LOGIN_QUERY_PARAM_ALLOWLIST": [
+                    "kc_idp_hint",
+                    "prompt",
+                    "login_hint",
+                ],
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_login_forwards_only_allowlisted_query_params(self):
+        view = BaseOpenIDConnectViewset.as_view({"get": "login"})
 
         request = self.factory.get(
             "/?kc_idp_hint=github&prompt=login&login_hint=alice%40example.com"
+            "&evil_param=injected"
         )
         response = view(request, auth_server="default")
 
@@ -647,12 +660,36 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertIn("kc_idp_hint=github", response.url)
         self.assertIn("prompt=login", response.url)
         self.assertIn("login_hint=alice%40example.com", response.url)
+        self.assertNotIn("evil_param", response.url)
 
-    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
-    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_login_default_allowlist_drops_all_query_params(self):
+        view = BaseOpenIDConnectViewset.as_view({"get": "login"})
+
+        request = self.factory.get("/?kc_idp_hint=github&prompt=login")
+        response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertNotIn("kc_idp_hint", response.url)
+        self.assertNotIn("prompt", response.url)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                # ``next`` deliberately included in the allowlist to prove
+                # the viewset's own exclusion overrides config.
+                "LOGIN_QUERY_PARAM_ALLOWLIST": ["kc_idp_hint", "next"],
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
     def test_login_consumes_next_does_not_forward_it(self):
-        viewset_class = BaseOpenIDConnectViewset
-        view = viewset_class.as_view({"get": "login"})
+        view = BaseOpenIDConnectViewset.as_view({"get": "login"})
 
         request = self.factory.get("/?next=/dashboard&kc_idp_hint=onadata")
         response = view(request, auth_server="default")
@@ -1360,3 +1397,28 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(cookie["path"], "/admin")
         self.assertEqual(cookie["samesite"], "Strict")
         self.assertEqual(cookie["max-age"], 0)
+
+
+class TestGetLoginQueryParamAllowlist(TestCase):
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                "LOGIN_QUERY_PARAM_ALLOWLIST": ["prompt", "ui_locales"],
+            },
+        }
+    )
+    def test_returns_configured_allowlist(self):
+        self.assertEqual(
+            get_login_query_param_allowlist("default"),
+            frozenset({"prompt", "ui_locales"}),
+        )
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={"default": {"CLIENT_ID": "client"}}
+    )
+    def test_returns_empty_when_key_missing(self):
+        self.assertEqual(get_login_query_param_allowlist("default"), frozenset())
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS={})
+    def test_returns_empty_for_unknown_auth_server(self):
+        self.assertEqual(get_login_query_param_allowlist("default"), frozenset())
