@@ -40,7 +40,9 @@ from oidc.client import (
 )
 from oidc.utils import (
     email_usename_to_url_safe,
+    get_login_query_param_allowlist,
     get_viewset_config,
+    is_safe_login_redirect,
     replace_characters_in_username,
     str_to_bool,
 )
@@ -149,9 +151,32 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
     @action(methods=["GET"], detail=False)
     def login(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
-        client = self._get_client(auth_server=kwargs.get("auth_server"))
+        auth_server = kwargs.get("auth_server")
+        client = self._get_client(auth_server=auth_server)
         if client:
-            response = client.login(redirect_after=request.query_params.get("next"))
+            allowlist = get_login_query_param_allowlist(auth_server) - {"next"}
+            extra_params = {
+                key: value
+                for key, value in request.query_params.items()
+                if key in allowlist
+            }
+            raw_next = request.query_params.get("next")
+            redirect_after = (
+                raw_next
+                if is_safe_login_redirect(raw_next, auth_server, request)
+                else None
+            )
+            if raw_next and redirect_after is None:
+                logger.warning(
+                    "Rejected unsafe ?next=%r for auth_server=%r",
+                    raw_next,
+                    auth_server,
+                )
+            response = client.login(
+                redirect_after=redirect_after,
+                extra_params=extra_params,
+            )
+            # Delete only csrftoken for the current domain
             response.delete_cookie(
                 "csrftoken",
                 domain=getattr(settings, "CSRF_COOKIE_DOMAIN", None)

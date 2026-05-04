@@ -61,10 +61,10 @@ class OpenIDClientTestCase(TestCase):
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch.object(cache, "set")
-    @patch.object(secrets, "randbits")
-    def test_login(self, mock_randbits, mock_cache_set):
+    @patch.object(secrets, "token_urlsafe")
+    def test_login(self, mock_token_urlsafe, mock_cache_set):
         """Returns redirect URL"""
-        mock_randbits.return_value = "123"
+        mock_token_urlsafe.return_value = "123"
         expected_url = (
             "https://example.com/oauth2/v2.0/authorize?"
             "client_id=client&"
@@ -95,6 +95,139 @@ class OpenIDClientTestCase(TestCase):
         self.assertIsInstance(result, HttpResponseRedirect)
         self.assertEqual(result.url, expected_url)
 
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch.object(cache, "set")
+    @patch.object(secrets, "token_urlsafe")
+    def test_login_forwards_extra_params(self, mock_token_urlsafe, mock_cache_set):
+        mock_token_urlsafe.return_value = "123"
+        client = OpenIDClient("default")
+
+        result = client.login(
+            extra_params={
+                "kc_idp_hint": "onadata",
+                "login_hint": "alice@example.com",
+                "prompt": "login",
+            }
+        )
+
+        expected_url = (
+            "https://example.com/oauth2/v2.0/authorize?"
+            "client_id=client&"
+            "redirect_uri=http://localhost:8000/oidc/msft/callback&"
+            "scope=openid%20profile&"
+            "response_type=code&"
+            "response_mode=form_post&"
+            "kc_idp_hint=onadata&"
+            "login_hint=alice%40example.com&"
+            "prompt=login&"
+            "nonce=123"
+        )
+        self.assertIsInstance(result, HttpResponseRedirect)
+        self.assertEqual(result.url, expected_url)
+        mock_cache_set.assert_called_once_with(
+            "123",
+            {"auth_server": "default", "redirect_after": None},
+            600,
+        )
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch.object(secrets, "token_urlsafe")
+    def test_login_no_extra_params_keeps_url_clean(self, mock_token_urlsafe):
+        mock_token_urlsafe.return_value = "123"
+        client = OpenIDClient("default")
+
+        unchanged_tail = "response_mode=form_post&nonce=123"
+
+        self.assertTrue(client.login(extra_params=None).url.endswith(unchanged_tail))
+        self.assertTrue(client.login(extra_params={}).url.endswith(unchanged_tail))
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch.object(cache, "set")
+    @patch.object(secrets, "token_urlsafe")
+    def test_login_drops_reserved_authorize_params(
+        self, mock_token_urlsafe, _mock_cache_set
+    ):
+        mock_token_urlsafe.return_value = "123"
+        client = OpenIDClient("default")
+
+        result_url = client.login(
+            extra_params={
+                "client_id": "evil",
+                "redirect_uri": "https://attacker.example/cb",
+                "state": "spoofed",
+                "nonce": "spoofed",
+                "code_challenge": "spoofed",
+                "code_challenge_method": "plain",
+                "request": "ey.attacker.signed.jwt",
+                "request_uri": "https://attacker.example/req.jwt",
+                "registration": '{"redirect_uris": ["https://attacker.example/cb"]}',
+                "client_metadata": '{"redirect_uris": ["https://attacker.example/cb"]}',
+                "client_metadata_uri": "https://attacker.example/metadata.json",
+                "kc_idp_hint": "onadata",
+            }
+        ).url
+
+        expected_url = (
+            "https://example.com/oauth2/v2.0/authorize?"
+            "client_id=client&"
+            "redirect_uri=http://localhost:8000/oidc/msft/callback&"
+            "scope=openid%20profile&"
+            "response_type=code&"
+            "response_mode=form_post&"
+            "kc_idp_hint=onadata&"
+            "nonce=123"
+        )
+        self.assertEqual(result_url, expected_url)
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch.object(cache, "set")
+    @patch.object(secrets, "token_urlsafe")
+    def test_login_extras_pkce_and_nonce_param_ordering(
+        self, mock_token_urlsafe, _mock_cache_set
+    ):
+        mock_token_urlsafe.return_value = "123"
+        code_verifier_hash = hashlib.sha256("123".encode("ascii")).digest()
+        code_challenge = (
+            base64.urlsafe_b64encode(code_verifier_hash).rstrip(b"=").decode("ascii")
+        )
+        client = OpenIDClient("pkce")
+
+        result_url = client.login(
+            redirect_after="/dashboard",
+            extra_params={"kc_idp_hint": "onadata"},
+        ).url
+
+        expected_url = (
+            "https://example.com/oauth2/v2.0/authorize?"
+            "client_id=client&"
+            "redirect_uri=http://localhost:8000/oidc/msft/callback&"
+            "scope=openid%20profile&"
+            "response_type=code&"
+            "response_mode=form_post&"
+            "kc_idp_hint=onadata&"
+            f"code_challenge={code_challenge}&"
+            "code_challenge_method=S256&"
+            "state=123&"
+            "nonce=123"
+        )
+        self.assertEqual(result_url, expected_url)
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch.object(cache, "set")
+    @patch.object(secrets, "token_urlsafe")
+    def test_login_non_ascii_extra_params(
+        self, mock_token_urlsafe, _mock_cache_set
+    ):
+        mock_token_urlsafe.return_value = "123"
+        client = OpenIDClient("default")
+
+        result_url = client.login(
+            extra_params={"login_hint": "ümlaut@example.com"}
+        ).url
+
+        # UTF-8 bytes for ``ü`` percent-encoded as ``%C3%BC``
+        self.assertIn("login_hint=%C3%BCmlaut%40example.com", result_url)
+
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
             "default": {
@@ -112,10 +245,10 @@ class OpenIDClientTestCase(TestCase):
         }
     )
     @patch.object(cache, "set")
-    @patch.object(secrets, "randbits")
-    def test_login_nonce_timeout_missing(self, mock_randbits, mock_cache_set):
+    @patch.object(secrets, "token_urlsafe")
+    def test_login_nonce_timeout_missing(self, mock_token_urlsafe, mock_cache_set):
         """Uses default nonce timeout on login if timeout not set"""
-        mock_randbits.return_value = "123"
+        mock_token_urlsafe.return_value = "123"
         expected_url = (
             "https://example.com/oauth2/v2.0/authorize?"
             "client_id=client&"
@@ -140,9 +273,8 @@ class OpenIDClientTestCase(TestCase):
     @patch.object(secrets, "token_urlsafe")
     def test_login_pkce(self, mock_token_urlsafe, mock_cache_set):
         """Returns correct redirect URL for PKCE flow"""
-        code_verifier = "123"
-        mock_token_urlsafe.return_value = code_verifier
-        code_verifier_hash = hashlib.sha256(code_verifier.encode("ascii")).digest()
+        mock_token_urlsafe.return_value = "123"
+        code_verifier_hash = hashlib.sha256(b"123").digest()
         expected_challenge = (
             base64.urlsafe_b64encode(code_verifier_hash).rstrip(b"=").decode("ascii")
         )
@@ -155,18 +287,16 @@ class OpenIDClientTestCase(TestCase):
             "response_mode=form_post&"
             f"code_challenge={expected_challenge}&"
             "code_challenge_method=S256&"
-            f"state=pkce_{expected_challenge}"
+            "state=123"
         )
         client = OpenIDClient("pkce")
         result = client.login()
         self.assertIsInstance(result, HttpResponseRedirect)
         self.assertEqual(result.url, expected_url)
-        mock_cache_set.assert_called_once_with(
-            f"pkce_{expected_challenge}",
-            code_verifier,
-            600,
-        )
-        mock_token_urlsafe.assert_called_once_with(128)
+        mock_cache_set.assert_called_once_with("123", "123", 600)
+        # Two calls now: 128-byte verifier + 32-byte state.
+        mock_token_urlsafe.assert_any_call(128)
+        mock_token_urlsafe.assert_any_call(32)
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
@@ -190,9 +320,8 @@ class OpenIDClientTestCase(TestCase):
     @patch.object(secrets, "token_urlsafe")
     def test_login_pkce_default_code_verifier_length(self, mock_token_urlsafe):
         """Uses default PKCE code verifier length on login if length not set"""
-        code_verifier = "123"
-        mock_token_urlsafe.return_value = code_verifier
-        code_verifier_hash = hashlib.sha256(code_verifier.encode("ascii")).digest()
+        mock_token_urlsafe.return_value = "123"
+        code_verifier_hash = hashlib.sha256(b"123").digest()
         expected_challenge = (
             base64.urlsafe_b64encode(code_verifier_hash).rstrip(b"=").decode("ascii")
         )
@@ -205,14 +334,15 @@ class OpenIDClientTestCase(TestCase):
             "response_mode=form_post&"
             f"code_challenge={expected_challenge}&"
             "code_challenge_method=S256&"
-            f"state=pkce_{expected_challenge}"
+            "state=123"
         )
         client = OpenIDClient("pkce")
         result = client.login()
         self.assertIsInstance(result, HttpResponseRedirect)
         self.assertEqual(result.url, expected_url)
-        # Default code verifier length is 64
-        mock_token_urlsafe.assert_called_once_with(64)
+        # Default code verifier length is 64; state generation requests 32.
+        mock_token_urlsafe.assert_any_call(64)
+        mock_token_urlsafe.assert_any_call(32)
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
@@ -239,9 +369,8 @@ class OpenIDClientTestCase(TestCase):
         self, mock_token_urlsafe, mock_cache_set
     ):
         """Uses default PKCE code challenge timeout on login if timeout not set"""
-        code_verifier = "123"
-        mock_token_urlsafe.return_value = code_verifier
-        code_verifier_hash = hashlib.sha256(code_verifier.encode("ascii")).digest()
+        mock_token_urlsafe.return_value = "123"
+        code_verifier_hash = hashlib.sha256(b"123").digest()
         expected_challenge = (
             base64.urlsafe_b64encode(code_verifier_hash).rstrip(b"=").decode("ascii")
         )
@@ -254,17 +383,14 @@ class OpenIDClientTestCase(TestCase):
             "response_mode=form_post&"
             f"code_challenge={expected_challenge}&"
             "code_challenge_method=S256&"
-            f"state=pkce_{expected_challenge}"
+            "state=123"
         )
         client = OpenIDClient("pkce")
         result = client.login()
         self.assertIsInstance(result, HttpResponseRedirect)
         self.assertEqual(result.url, expected_url)
-        mock_cache_set.assert_called_once_with(
-            f"pkce_{expected_challenge}",
-            code_verifier,
-            600,  # Default code challenge timeout is 600
-        )
+        # Default code challenge timeout is 600
+        mock_cache_set.assert_called_once_with("123", "123", 600)
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
@@ -288,9 +414,8 @@ class OpenIDClientTestCase(TestCase):
     @patch.object(secrets, "token_urlsafe")
     def test_login_pkce_default_pkce_code_challenge_method(self, mock_token_urlsafe):
         """Uses default PKCE code challenge method on login if method not set"""
-        code_verifier = "123"
-        mock_token_urlsafe.return_value = code_verifier
-        code_verifier_hash = hashlib.sha256(code_verifier.encode("ascii")).digest()
+        mock_token_urlsafe.return_value = "123"
+        code_verifier_hash = hashlib.sha256(b"123").digest()
         expected_challenge = (
             base64.urlsafe_b64encode(code_verifier_hash).rstrip(b"=").decode("ascii")
         )
@@ -303,7 +428,7 @@ class OpenIDClientTestCase(TestCase):
             "response_mode=form_post&"
             f"code_challenge={expected_challenge}&"
             "code_challenge_method=S256&"  # Default code challenge method is S256
-            f"state=pkce_{expected_challenge}"
+            "state=123"
         )
         client = OpenIDClient("pkce")
         result = client.login()

@@ -632,6 +632,71 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertIn("csrftoken", response.cookies)
         self.assertEqual(response.cookies["csrftoken"]["max-age"], 0)
 
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "LOGIN_QUERY_PARAM_ALLOWLIST": [
+                    "kc_idp_hint",
+                    "prompt",
+                    "login_hint",
+                ],
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_login_forwards_only_allowlisted_query_params(self):
+        view = BaseOpenIDConnectViewset.as_view({"get": "login"})
+
+        request = self.factory.get(
+            "/?kc_idp_hint=github&prompt=login&login_hint=alice%40example.com"
+            "&evil_param=injected"
+        )
+        response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("kc_idp_hint=github", response.url)
+        self.assertIn("prompt=login", response.url)
+        self.assertIn("login_hint=alice%40example.com", response.url)
+        self.assertNotIn("evil_param", response.url)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_login_default_allowlist_drops_all_query_params(self):
+        view = BaseOpenIDConnectViewset.as_view({"get": "login"})
+
+        request = self.factory.get("/?kc_idp_hint=github&prompt=login")
+        response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertNotIn("kc_idp_hint", response.url)
+        self.assertNotIn("prompt", response.url)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                # ``next`` deliberately included in the allowlist to prove
+                # the viewset's own exclusion overrides config.
+                "LOGIN_QUERY_PARAM_ALLOWLIST": ["kc_idp_hint", "next"],
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_login_consumes_next_does_not_forward_it(self):
+        view = BaseOpenIDConnectViewset.as_view({"get": "login"})
+
+        request = self.factory.get("/?next=/dashboard&kc_idp_hint=onadata")
+        response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("kc_idp_hint=onadata", response.url)
+        self.assertNotIn("next=", response.url)
+
     @patch(
         "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
         MagicMock(
@@ -1331,3 +1396,61 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(cookie["path"], "/admin")
         self.assertEqual(cookie["samesite"], "Strict")
         self.assertEqual(cookie["max-age"], 0)
+
+
+class TestLoginNextValidation(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    @patch("oidc.client.cache.set")
+    def test_safe_relative_next_is_cached(self, mock_cache_set):
+        view = BaseOpenIDConnectViewset.as_view({"get": "login"})
+        view(self.factory.get("/?next=/dashboard"), auth_server="default")
+        cached_payload = mock_cache_set.call_args[0][1]
+        self.assertEqual(cached_payload["redirect_after"], "/dashboard")
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "USE_NONCES": True,
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    @patch("oidc.client.cache.set")
+    def test_unsafe_external_next_is_dropped(self, mock_cache_set):
+        view = BaseOpenIDConnectViewset.as_view({"get": "login"})
+        view(
+            self.factory.get("/?next=https://attacker.example/phish"),
+            auth_server="default",
+        )
+        cached_payload = mock_cache_set.call_args[0][1]
+        self.assertIsNone(cached_payload["redirect_after"])
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "LOGIN_REDIRECT_ALLOWED_HOSTS": ["spa.example.com"],
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    @patch("oidc.client.cache.set")
+    def test_allowlisted_cross_origin_next_is_cached(self, mock_cache_set):
+        view = BaseOpenIDConnectViewset.as_view({"get": "login"})
+        view(
+            self.factory.get("/?next=https://spa.example.com/dashboard"),
+            auth_server="default",
+        )
+        cached_payload = mock_cache_set.call_args[0][1]
+        self.assertEqual(
+            cached_payload["redirect_after"], "https://spa.example.com/dashboard"
+        )

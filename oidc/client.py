@@ -7,7 +7,8 @@ import hashlib
 import json
 import logging
 import secrets
-from typing import Callable, Optional
+from typing import Any, Callable, Mapping, Optional
+from urllib.parse import quote, urlencode
 
 from django.conf import settings
 from django.core.cache import cache
@@ -21,6 +22,37 @@ import oidc.settings as default
 from oidc.utils import str_to_bool
 
 REDIRECT_AFTER_AUTH = "redirect_after_auth"
+
+# Caller-supplied entries matching these keys are dropped: allowing
+# overrides would let an attacker swap the redirect URI / PKCE challenge
+# / state / nonce, smuggle an attacker-signed authorize request via
+# ``request`` / ``request_uri`` (OIDC Core 1.0 §6), or smuggle a
+# ``redirect_uris`` claim via the SIOP client-metadata channel
+# (``registration`` per OIDC Core 1.0 §7.2.1; ``client_metadata`` /
+# ``client_metadata_uri`` per SIOPv2).
+# Characters left raw in the authorize-URL query string. ``:`` and ``/``
+# keep ``redirect_uri`` values like ``http://host:port/cb`` legible in
+# logs and easy to compare against IdP-side configuration.
+_AUTHORIZE_URL_SAFE_CHARS = ":/"
+
+RESERVED_AUTHORIZE_PARAMS = frozenset(
+    {
+        "client_id",
+        "redirect_uri",
+        "scope",
+        "response_type",
+        "response_mode",
+        "state",
+        "nonce",
+        "code_challenge",
+        "code_challenge_method",
+        "request",
+        "request_uri",
+        "registration",
+        "client_metadata",
+        "client_metadata_uri",
+    }
+)
 
 logger = logging.getLogger(__name__)
 
@@ -301,41 +333,61 @@ class OpenIDClient:
         digest = hashlib.sha256(code_verifier.encode("ascii")).digest()
         return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
-    def login(self, redirect_after: Optional[str] = None) -> str:
+    def login(
+        self,
+        redirect_after: Optional[str] = None,
+        extra_params: Optional[Mapping[str, str]] = None,
+    ) -> HttpResponseRedirect:
         """
         Redirects the user to the authorization endpoint for Authorization
         """
-        url = self.authorization_endpoint + (
-            f"?client_id={self.client_id}&redirect_uri={self.redirect_uri}&"
-            f"scope={self.scope}&response_type={self.response_type}&"
-            f"response_mode={self.response_mode}"
-        )
+        params: list[tuple[str, Any]] = [
+            ("client_id", self.client_id),
+            ("redirect_uri", self.redirect_uri),
+            ("scope", self.scope),
+            ("response_type", self.response_type),
+            ("response_mode", self.response_mode),
+        ]
+
+        if extra_params:
+            params.extend(
+                (key, value)
+                for key, value in extra_params.items()
+                if key not in RESERVED_AUTHORIZE_PARAMS
+            )
 
         if self.use_pkce:
             code_verifier = self._generate_pkce_code_verifier()
             code_challenge = self._generate_pkce_code_challenge(code_verifier)
-            code_verifier_key = f"pkce_{code_challenge}"
+            # ``state`` is generated independently of ``code_challenge`` so an
+            # observer of the redirect URL cannot derive one from the other.
+            # The state doubles as the cache key for the verifier we'll need
+            # at callback time.
+            state = secrets.token_urlsafe(32)
             cache.set(
-                code_verifier_key,
+                state,
                 code_verifier,
                 self.pkce_code_challenge_timeout,
             )
-            url += (
-                f"&code_challenge={code_challenge}"
-                f"&code_challenge_method={self.pkce_code_challenge_method}"
-                f"&state={code_verifier_key}"
+            params.extend(
+                [
+                    ("code_challenge", code_challenge),
+                    ("code_challenge_method", self.pkce_code_challenge_method),
+                    ("state", state),
+                ]
             )
 
         if self.cache_nonces or redirect_after:
-            nonce = secrets.randbits(16)
+            nonce = secrets.token_urlsafe(32)
             cache.set(
                 nonce,
                 {"auth_server": self.auth_server, "redirect_after": redirect_after},
                 self.nonce_cache_timeout,
             )
-            url += f"&nonce={nonce}"
+            params.append(("nonce", nonce))
 
-        return HttpResponseRedirect(url)
+        query = urlencode(params, quote_via=quote, safe=_AUTHORIZE_URL_SAFE_CHARS)
+        return HttpResponseRedirect(f"{self.authorization_endpoint}?{query}")
 
-    def logout(self):
+    def logout(self) -> HttpResponseRedirect:
         return HttpResponseRedirect(self.end_session_endpoint)
