@@ -121,7 +121,9 @@ can migrate to `__Secure-SSO` for browser-enforced guarantees.
 
 The login viewset forwards browser query parameters to the configured
 authorization endpoint only if they appear in a deployment-defined
-allowlist on the relevant auth server. Defaults to no forwarding.
+allowlist on the relevant auth server. The default is an empty list,
+so no browser query parameters reach the IdP unless explicitly
+opted in.
 
 ```python
 OPENID_CONNECT_AUTH_SERVERS = {

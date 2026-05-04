@@ -7,7 +7,7 @@ import hashlib
 import json
 import logging
 import secrets
-from typing import Callable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 from urllib.parse import quote, urlencode
 
 from django.conf import settings
@@ -30,6 +30,11 @@ REDIRECT_AFTER_AUTH = "redirect_after_auth"
 # ``redirect_uris`` claim via the SIOP client-metadata channel
 # (``registration`` per OIDC Core 1.0 §7.2.1; ``client_metadata`` /
 # ``client_metadata_uri`` per SIOPv2).
+# Characters left raw in the authorize-URL query string. ``:`` and ``/``
+# keep ``redirect_uri`` values like ``http://host:port/cb`` legible in
+# logs and easy to compare against IdP-side configuration.
+_AUTHORIZE_URL_SAFE_CHARS = ":/"
+
 RESERVED_AUTHORIZE_PARAMS = frozenset(
     {
         "client_id",
@@ -332,11 +337,11 @@ class OpenIDClient:
         self,
         redirect_after: Optional[str] = None,
         extra_params: Optional[Mapping[str, str]] = None,
-    ) -> str:
+    ) -> HttpResponseRedirect:
         """
         Redirects the user to the authorization endpoint for Authorization
         """
-        params: list = [
+        params: list[tuple[str, Any]] = [
             ("client_id", self.client_id),
             ("redirect_uri", self.redirect_uri),
             ("scope", self.scope),
@@ -369,7 +374,7 @@ class OpenIDClient:
             )
 
         if self.cache_nonces or redirect_after:
-            nonce = secrets.randbits(16)
+            nonce = secrets.token_urlsafe(32)
             cache.set(
                 nonce,
                 {"auth_server": self.auth_server, "redirect_after": redirect_after},
@@ -377,8 +382,8 @@ class OpenIDClient:
             )
             params.append(("nonce", nonce))
 
-        query = urlencode(params, quote_via=quote, safe=":/")
+        query = urlencode(params, quote_via=quote, safe=_AUTHORIZE_URL_SAFE_CHARS)
         return HttpResponseRedirect(f"{self.authorization_endpoint}?{query}")
 
-    def logout(self):
+    def logout(self) -> HttpResponseRedirect:
         return HttpResponseRedirect(self.end_session_endpoint)

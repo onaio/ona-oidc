@@ -61,10 +61,10 @@ class OpenIDClientTestCase(TestCase):
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch.object(cache, "set")
-    @patch.object(secrets, "randbits")
-    def test_login(self, mock_randbits, mock_cache_set):
+    @patch.object(secrets, "token_urlsafe")
+    def test_login(self, mock_token_urlsafe, mock_cache_set):
         """Returns redirect URL"""
-        mock_randbits.return_value = "123"
+        mock_token_urlsafe.return_value = "123"
         expected_url = (
             "https://example.com/oauth2/v2.0/authorize?"
             "client_id=client&"
@@ -97,9 +97,9 @@ class OpenIDClientTestCase(TestCase):
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch.object(cache, "set")
-    @patch.object(secrets, "randbits")
-    def test_login_forwards_extra_params(self, mock_randbits, mock_cache_set):
-        mock_randbits.return_value = "123"
+    @patch.object(secrets, "token_urlsafe")
+    def test_login_forwards_extra_params(self, mock_token_urlsafe, mock_cache_set):
+        mock_token_urlsafe.return_value = "123"
         client = OpenIDClient("default")
 
         result = client.login(
@@ -131,25 +131,23 @@ class OpenIDClientTestCase(TestCase):
         )
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
-    @patch.object(secrets, "randbits")
-    def test_login_no_extra_params_keeps_url_clean(self, mock_randbits):
-        mock_randbits.return_value = "123"
+    @patch.object(secrets, "token_urlsafe")
+    def test_login_no_extra_params_keeps_url_clean(self, mock_token_urlsafe):
+        mock_token_urlsafe.return_value = "123"
         client = OpenIDClient("default")
 
-        unchanged_tail = (
-            "response_mode=form_post&nonce=123"
-        )
+        unchanged_tail = "response_mode=form_post&nonce=123"
 
         self.assertTrue(client.login(extra_params=None).url.endswith(unchanged_tail))
         self.assertTrue(client.login(extra_params={}).url.endswith(unchanged_tail))
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch.object(cache, "set")
-    @patch.object(secrets, "randbits")
+    @patch.object(secrets, "token_urlsafe")
     def test_login_drops_reserved_authorize_params(
-        self, mock_randbits, _mock_cache_set
+        self, mock_token_urlsafe, _mock_cache_set
     ):
-        mock_randbits.return_value = "123"
+        mock_token_urlsafe.return_value = "123"
         client = OpenIDClient("default")
 
         result_url = client.login(
@@ -169,18 +167,66 @@ class OpenIDClientTestCase(TestCase):
             }
         ).url
 
-        self.assertIn("client_id=client&", result_url)
-        self.assertIn("redirect_uri=http://localhost:8000/oidc/msft/callback", result_url)
-        self.assertIn("nonce=123", result_url)
-        self.assertNotIn("evil", result_url)
-        self.assertNotIn("attacker.example", result_url)
-        self.assertNotIn("spoofed", result_url)
-        self.assertNotIn("request=", result_url)
-        self.assertNotIn("request_uri=", result_url)
-        self.assertNotIn("registration=", result_url)
-        self.assertNotIn("client_metadata=", result_url)
-        self.assertNotIn("client_metadata_uri=", result_url)
-        self.assertIn("kc_idp_hint=onadata", result_url)
+        expected_url = (
+            "https://example.com/oauth2/v2.0/authorize?"
+            "client_id=client&"
+            "redirect_uri=http://localhost:8000/oidc/msft/callback&"
+            "scope=openid%20profile&"
+            "response_type=code&"
+            "response_mode=form_post&"
+            "kc_idp_hint=onadata&"
+            "nonce=123"
+        )
+        self.assertEqual(result_url, expected_url)
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch.object(cache, "set")
+    @patch.object(secrets, "token_urlsafe")
+    def test_login_extras_pkce_and_nonce_param_ordering(
+        self, mock_token_urlsafe, _mock_cache_set
+    ):
+        mock_token_urlsafe.return_value = "123"
+        code_verifier_hash = hashlib.sha256("123".encode("ascii")).digest()
+        code_challenge = (
+            base64.urlsafe_b64encode(code_verifier_hash).rstrip(b"=").decode("ascii")
+        )
+        client = OpenIDClient("pkce")
+
+        result_url = client.login(
+            redirect_after="/dashboard",
+            extra_params={"kc_idp_hint": "onadata"},
+        ).url
+
+        expected_url = (
+            "https://example.com/oauth2/v2.0/authorize?"
+            "client_id=client&"
+            "redirect_uri=http://localhost:8000/oidc/msft/callback&"
+            "scope=openid%20profile&"
+            "response_type=code&"
+            "response_mode=form_post&"
+            "kc_idp_hint=onadata&"
+            f"code_challenge={code_challenge}&"
+            "code_challenge_method=S256&"
+            f"state=pkce_{code_challenge}&"
+            "nonce=123"
+        )
+        self.assertEqual(result_url, expected_url)
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch.object(cache, "set")
+    @patch.object(secrets, "token_urlsafe")
+    def test_login_non_ascii_extra_params(
+        self, mock_token_urlsafe, _mock_cache_set
+    ):
+        mock_token_urlsafe.return_value = "123"
+        client = OpenIDClient("default")
+
+        result_url = client.login(
+            extra_params={"login_hint": "ümlaut@example.com"}
+        ).url
+
+        # UTF-8 bytes for ``ü`` percent-encoded as ``%C3%BC``
+        self.assertIn("login_hint=%C3%BCmlaut%40example.com", result_url)
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
@@ -199,10 +245,10 @@ class OpenIDClientTestCase(TestCase):
         }
     )
     @patch.object(cache, "set")
-    @patch.object(secrets, "randbits")
-    def test_login_nonce_timeout_missing(self, mock_randbits, mock_cache_set):
+    @patch.object(secrets, "token_urlsafe")
+    def test_login_nonce_timeout_missing(self, mock_token_urlsafe, mock_cache_set):
         """Uses default nonce timeout on login if timeout not set"""
-        mock_randbits.return_value = "123"
+        mock_token_urlsafe.return_value = "123"
         expected_url = (
             "https://example.com/oauth2/v2.0/authorize?"
             "client_id=client&"

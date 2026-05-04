@@ -58,7 +58,7 @@ def get_viewset_config():
     return getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", default_config)
 
 
-def get_login_query_param_allowlist(auth_server: str) -> frozenset:
+def get_login_query_param_allowlist(auth_server: str) -> frozenset[str]:
     """
     Return the set of query parameter names that the login view is allowed to
     forward to the configured authorization endpoint for ``auth_server``.
@@ -69,7 +69,7 @@ def get_login_query_param_allowlist(auth_server: str) -> frozenset:
     viewset boundary.
     """
     config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
-    server_config = config.get(auth_server) or {}
+    server_config = config.get(auth_server, {})
     return frozenset(server_config.get("LOGIN_QUERY_PARAM_ALLOWLIST", ()))
 
 
@@ -93,7 +93,7 @@ def is_safe_login_redirect(
     if not url:
         return False
     config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
-    server_config = config.get(auth_server) or {}
+    server_config = config.get(auth_server, {})
     allowed_hosts = set(server_config.get("LOGIN_REDIRECT_ALLOWED_HOSTS", ()))
     allowed_hosts.add(request.get_host())
     return url_has_allowed_host_and_scheme(
