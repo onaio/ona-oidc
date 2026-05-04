@@ -1,5 +1,9 @@
+from typing import Optional
+
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.http import HttpRequest
+from django.utils.http import url_has_allowed_host_and_scheme
 
 import jwt
 from jwt.exceptions import InvalidSignatureError
@@ -67,3 +71,33 @@ def get_login_query_param_allowlist(auth_server: str) -> frozenset:
     config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
     server_config = config.get(auth_server) or {}
     return frozenset(server_config.get("LOGIN_QUERY_PARAM_ALLOWLIST", ()))
+
+
+def is_safe_login_redirect(
+    url: Optional[str], auth_server: str, request: HttpRequest
+) -> bool:
+    """
+    Whether ``url`` is safe to use as a post-authentication redirect target.
+
+    Path-only URLs are always accepted. Absolute URLs must point at the
+    request's own host or one of the hostnames listed in
+    ``OPENID_CONNECT_AUTH_SERVERS[<server>]["LOGIN_REDIRECT_ALLOWED_HOSTS"]``.
+    The default empty allowlist + the request host gives same-origin
+    deployments zero-config safety; cross-origin SPAs opt in by listing
+    their host explicitly.
+
+    Wraps Django's ``url_has_allowed_host_and_scheme`` so disallowed
+    schemes (``javascript:``, ``data:`` …) and protocol-relative
+    ``//attacker`` URLs are rejected.
+    """
+    if not url:
+        return False
+    config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
+    server_config = config.get(auth_server) or {}
+    allowed_hosts = set(server_config.get("LOGIN_REDIRECT_ALLOWED_HOSTS", ()))
+    allowed_hosts.add(request.get_host())
+    return url_has_allowed_host_and_scheme(
+        url,
+        allowed_hosts=allowed_hosts,
+        require_https=request.is_secure(),
+    )

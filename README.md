@@ -143,6 +143,29 @@ never forwarded, regardless of allowlist. The client-side
 generates plus JAR / SIOP request-object hooks) applies as a second
 boundary for any programmatic caller of `OpenIDClient.login()`.
 
+### Validating the post-authentication redirect target (`next`)
+
+The viewset only accepts a `next` query parameter that points at a
+relative path or a host explicitly trusted in
+`OPENID_CONNECT_AUTH_SERVERS[<server>]["LOGIN_REDIRECT_ALLOWED_HOSTS"]`.
+The current request's own host is always trusted, so same-origin
+deployments need no extra config. Unsafe values are dropped (logged at
+WARNING) and the post-auth redirect falls back to the configured
+`OPENID_CONNECT_VIEWSET_CONFIG["REDIRECT_AFTER_AUTH"]`.
+
+```python
+OPENID_CONNECT_AUTH_SERVERS = {
+    "microsoft": {
+        ...,
+        "LOGIN_REDIRECT_ALLOWED_HOSTS": ["spa.example.com"],
+    }
+}
+```
+
+Validation runs Django's `url_has_allowed_host_and_scheme`, so
+`javascript:` / `data:` schemes and protocol-relative `//evil` URLs
+are rejected. Under HTTPS, `http://` redirects are also rejected.
+
 4. (Optional) If you'd like to use the default OpenID Connect Viewset register the urls located in `oidc.urls`.
 
 ```python

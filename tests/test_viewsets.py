@@ -16,7 +16,10 @@ from mock import MagicMock, patch
 from rest_framework.test import APIRequestFactory
 
 from oidc.client import OpenIDClient
-from oidc.utils import get_login_query_param_allowlist
+from oidc.utils import (
+    get_login_query_param_allowlist,
+    is_safe_login_redirect,
+)
 from oidc.viewsets import BaseOpenIDConnectViewset, UserModelOpenIDConnectViewset
 
 User = get_user_model()
@@ -1422,3 +1425,126 @@ class TestGetLoginQueryParamAllowlist(TestCase):
     @override_settings(OPENID_CONNECT_AUTH_SERVERS={})
     def test_returns_empty_for_unknown_auth_server(self):
         self.assertEqual(get_login_query_param_allowlist("default"), frozenset())
+
+
+class TestIsSafeLoginRedirect(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+
+    def _request(self):
+        return self.factory.get("/")
+
+    def test_path_only_is_safe(self):
+        self.assertTrue(is_safe_login_redirect("/dashboard", "default", self._request()))
+
+    def test_empty_url_is_unsafe(self):
+        self.assertFalse(is_safe_login_redirect("", "default", self._request()))
+        self.assertFalse(is_safe_login_redirect(None, "default", self._request()))
+
+    def test_same_host_absolute_url_is_safe(self):
+        request = self._request()
+        same_host_url = f"http://{request.get_host()}/dashboard"
+        self.assertTrue(is_safe_login_redirect(same_host_url, "default", request))
+
+    def test_other_host_without_allowlist_is_unsafe(self):
+        self.assertFalse(
+            is_safe_login_redirect(
+                "https://attacker.example/phish", "default", self._request()
+            )
+        )
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {"LOGIN_REDIRECT_ALLOWED_HOSTS": ["spa.example.com"]},
+        }
+    )
+    def test_other_host_with_allowlist_is_safe(self):
+        self.assertTrue(
+            is_safe_login_redirect(
+                "https://spa.example.com/dashboard", "default", self._request()
+            )
+        )
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {"LOGIN_REDIRECT_ALLOWED_HOSTS": ["spa.example.com"]},
+        }
+    )
+    def test_other_host_outside_allowlist_is_unsafe(self):
+        self.assertFalse(
+            is_safe_login_redirect(
+                "https://attacker.example/phish", "default", self._request()
+            )
+        )
+
+    def test_javascript_scheme_is_unsafe(self):
+        self.assertFalse(
+            is_safe_login_redirect(
+                "javascript:alert(1)", "default", self._request()
+            )
+        )
+
+    def test_protocol_relative_url_is_unsafe(self):
+        self.assertFalse(
+            is_safe_login_redirect(
+                "//attacker.example/phish", "default", self._request()
+            )
+        )
+
+
+class TestLoginNextValidation(TestCase):
+    def setUp(self):
+        self.factory = APIRequestFactory()
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    @patch("oidc.client.cache.set")
+    def test_safe_relative_next_is_cached(self, mock_cache_set):
+        view = BaseOpenIDConnectViewset.as_view({"get": "login"})
+        view(self.factory.get("/?next=/dashboard"), auth_server="default")
+        cached_payload = mock_cache_set.call_args[0][1]
+        self.assertEqual(cached_payload["redirect_after"], "/dashboard")
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "USE_NONCES": True,
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    @patch("oidc.client.cache.set")
+    def test_unsafe_external_next_is_dropped(self, mock_cache_set):
+        view = BaseOpenIDConnectViewset.as_view({"get": "login"})
+        view(
+            self.factory.get("/?next=https://attacker.example/phish"),
+            auth_server="default",
+        )
+        cached_payload = mock_cache_set.call_args[0][1]
+        self.assertIsNone(cached_payload["redirect_after"])
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "LOGIN_REDIRECT_ALLOWED_HOSTS": ["spa.example.com"],
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    @patch("oidc.client.cache.set")
+    def test_allowlisted_cross_origin_next_is_cached(self, mock_cache_set):
+        view = BaseOpenIDConnectViewset.as_view({"get": "login"})
+        view(
+            self.factory.get("/?next=https://spa.example.com/dashboard"),
+            auth_server="default",
+        )
+        cached_payload = mock_cache_set.call_args[0][1]
+        self.assertEqual(
+            cached_payload["redirect_after"], "https://spa.example.com/dashboard"
+        )

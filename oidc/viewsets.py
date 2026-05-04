@@ -42,6 +42,7 @@ from oidc.utils import (
     email_usename_to_url_safe,
     get_login_query_param_allowlist,
     get_viewset_config,
+    is_safe_login_redirect,
     replace_characters_in_username,
     str_to_bool,
 )
@@ -159,8 +160,20 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 for key, value in request.query_params.items()
                 if key in allowlist
             }
+            raw_next = request.query_params.get("next")
+            redirect_after = (
+                raw_next
+                if is_safe_login_redirect(raw_next, auth_server, request)
+                else None
+            )
+            if raw_next and redirect_after is None:
+                logger.warning(
+                    "Rejected unsafe ?next=%r for auth_server=%r",
+                    raw_next,
+                    auth_server,
+                )
             response = client.login(
-                redirect_after=request.query_params.get("next"),
+                redirect_after=redirect_after,
                 extra_params=extra_params,
             )
             # Delete only csrftoken for the current domain
