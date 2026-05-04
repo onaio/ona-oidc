@@ -1,5 +1,6 @@
 """Tests for module oidc.utils"""
 
+from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 from django.test.utils import override_settings
 
@@ -34,6 +35,15 @@ class TestGetLoginQueryParamAllowlist(TestCase):
     @override_settings(OPENID_CONNECT_AUTH_SERVERS={})
     def test_returns_empty_for_unknown_auth_server(self):
         self.assertEqual(get_login_query_param_allowlist("default"), frozenset())
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {"LOGIN_QUERY_PARAM_ALLOWLIST": "prompt"},
+        }
+    )
+    def test_string_misconfig_raises_improperly_configured(self):
+        with self.assertRaises(ImproperlyConfigured):
+            get_login_query_param_allowlist("default")
 
 
 class TestIsSafeLoginRedirect(TestCase):
@@ -101,3 +111,14 @@ class TestIsSafeLoginRedirect(TestCase):
                 "//attacker.example/phish", "default", self._request()
             )
         )
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {"LOGIN_REDIRECT_ALLOWED_HOSTS": "spa.example.com"},
+        }
+    )
+    def test_string_misconfig_raises_improperly_configured(self):
+        with self.assertRaises(ImproperlyConfigured):
+            is_safe_login_redirect(
+                "https://spa.example.com/x", "default", self._request()
+            )

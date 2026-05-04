@@ -1,7 +1,8 @@
-from typing import Optional
+from typing import Iterable, Optional
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpRequest
 from django.utils.http import url_has_allowed_host_and_scheme
 
@@ -58,6 +59,23 @@ def get_viewset_config():
     return getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", default_config)
 
 
+def _coerce_string_iterable(
+    value, key: str, auth_server: str
+) -> Iterable[str]:
+    """Reject string configs for list-typed settings.
+
+    Without this, ``"prompt"`` (a common typo for ``["prompt"]``) silently
+    iterates as characters and produces a junk allowlist / hosts set.
+    """
+    if isinstance(value, str):
+        raise ImproperlyConfigured(
+            f"OPENID_CONNECT_AUTH_SERVERS[{auth_server!r}][{key!r}] must be "
+            f"a list/tuple of strings, got a single string {value!r}. "
+            f"Did you mean [{value!r}]?"
+        )
+    return value
+
+
 def get_login_query_param_allowlist(auth_server: str) -> frozenset[str]:
     """
     Return the set of query parameter names that the login view is allowed to
@@ -70,7 +88,13 @@ def get_login_query_param_allowlist(auth_server: str) -> frozenset[str]:
     """
     config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
     server_config = config.get(auth_server, {})
-    return frozenset(server_config.get("LOGIN_QUERY_PARAM_ALLOWLIST", ()))
+    return frozenset(
+        _coerce_string_iterable(
+            server_config.get("LOGIN_QUERY_PARAM_ALLOWLIST", ()),
+            "LOGIN_QUERY_PARAM_ALLOWLIST",
+            auth_server,
+        )
+    )
 
 
 def is_safe_login_redirect(
@@ -94,7 +118,13 @@ def is_safe_login_redirect(
         return False
     config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
     server_config = config.get(auth_server, {})
-    allowed_hosts = set(server_config.get("LOGIN_REDIRECT_ALLOWED_HOSTS", ()))
+    allowed_hosts = set(
+        _coerce_string_iterable(
+            server_config.get("LOGIN_REDIRECT_ALLOWED_HOSTS", ()),
+            "LOGIN_REDIRECT_ALLOWED_HOSTS",
+            auth_server,
+        )
+    )
     allowed_hosts.add(request.get_host())
     return url_has_allowed_host_and_scheme(
         url,

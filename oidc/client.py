@@ -359,9 +359,13 @@ class OpenIDClient:
         if self.use_pkce:
             code_verifier = self._generate_pkce_code_verifier()
             code_challenge = self._generate_pkce_code_challenge(code_verifier)
-            code_verifier_key = f"pkce_{code_challenge}"
+            # ``state`` is generated independently of ``code_challenge`` so an
+            # observer of the redirect URL cannot derive one from the other.
+            # The state doubles as the cache key for the verifier we'll need
+            # at callback time.
+            state = secrets.token_urlsafe(32)
             cache.set(
-                code_verifier_key,
+                state,
                 code_verifier,
                 self.pkce_code_challenge_timeout,
             )
@@ -369,7 +373,7 @@ class OpenIDClient:
                 [
                     ("code_challenge", code_challenge),
                     ("code_challenge_method", self.pkce_code_challenge_method),
-                    ("state", code_verifier_key),
+                    ("state", state),
                 ]
             )
 

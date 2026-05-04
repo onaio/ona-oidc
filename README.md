@@ -145,6 +145,17 @@ never forwarded, regardless of allowlist. The client-side
 generates plus JAR / SIOP request-object hooks) applies as a second
 boundary for any programmatic caller of `OpenIDClient.login()`.
 
+Two encoding details worth knowing:
+
+- If a caller repeats a key (e.g. `?prompt=login&prompt=consent`),
+  only the last value is forwarded. Most IdPs would resolve the
+  duplicate the same way, but if you need to send multiple values for
+  one key, encode them into a single value at the caller.
+- Whitespace and other reserved characters in forwarded values are
+  percent-encoded (e.g. spaces → `%20`, not `+`). Both forms are
+  spec-equivalent in URL query strings; ona-oidc picks `%20` for
+  log readability.
+
 ### Validating the post-authentication redirect target (`next`)
 
 The viewset only accepts a `next` query parameter that points at a
