@@ -162,6 +162,9 @@ class OpenIDClientTestCase(TestCase):
                 "code_challenge_method": "plain",
                 "request": "ey.attacker.signed.jwt",
                 "request_uri": "https://attacker.example/req.jwt",
+                "registration": '{"redirect_uris": ["https://attacker.example/cb"]}',
+                "client_metadata": '{"redirect_uris": ["https://attacker.example/cb"]}',
+                "client_metadata_uri": "https://attacker.example/metadata.json",
                 "kc_idp_hint": "onadata",
             }
         ).url
@@ -174,6 +177,9 @@ class OpenIDClientTestCase(TestCase):
         self.assertNotIn("spoofed", result_url)
         self.assertNotIn("request=", result_url)
         self.assertNotIn("request_uri=", result_url)
+        self.assertNotIn("registration=", result_url)
+        self.assertNotIn("client_metadata=", result_url)
+        self.assertNotIn("client_metadata_uri=", result_url)
         self.assertIn("kc_idp_hint=onadata", result_url)
 
     @override_settings(

@@ -25,8 +25,11 @@ REDIRECT_AFTER_AUTH = "redirect_after_auth"
 
 # Caller-supplied entries matching these keys are dropped: allowing
 # overrides would let an attacker swap the redirect URI / PKCE challenge
-# / state / nonce, or smuggle an attacker-signed authorize request via
-# ``request`` / ``request_uri``.
+# / state / nonce, smuggle an attacker-signed authorize request via
+# ``request`` / ``request_uri`` (OIDC Core 1.0 §6), or smuggle a
+# ``redirect_uris`` claim via the SIOP client-metadata channel
+# (``registration`` per OIDC Core 1.0 §7.2.1; ``client_metadata`` /
+# ``client_metadata_uri`` per SIOPv2).
 RESERVED_AUTHORIZE_PARAMS = frozenset(
     {
         "client_id",
@@ -40,6 +43,9 @@ RESERVED_AUTHORIZE_PARAMS = frozenset(
         "code_challenge_method",
         "request",
         "request_uri",
+        "registration",
+        "client_metadata",
+        "client_metadata_uri",
     }
 )
 
