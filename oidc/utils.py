@@ -59,9 +59,7 @@ def get_viewset_config():
     return getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", default_config)
 
 
-def _coerce_string_iterable(
-    value, key: str, auth_server: str
-) -> Iterable[str]:
+def _coerce_string_iterable(value, key: str, auth_server: str) -> Iterable[str]:
     """Reject string configs for list-typed settings.
 
     Without this, ``"prompt"`` (a common typo for ``["prompt"]``) silently
