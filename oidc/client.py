@@ -23,10 +23,10 @@ from oidc.utils import str_to_bool
 
 REDIRECT_AFTER_AUTH = "redirect_after_auth"
 
-# Authorization-endpoint query params that ona-oidc constructs itself.
-# Callers must not be allowed to override these via passthrough, since
-# doing so would let an attacker swap out the redirect URI, the PKCE
-# challenge, or the nonce that the callback handler validates against.
+# Caller-supplied entries matching these keys are dropped: allowing
+# overrides would let an attacker swap the redirect URI / PKCE challenge
+# / state / nonce, or smuggle an attacker-signed authorize request via
+# ``request`` / ``request_uri``.
 RESERVED_AUTHORIZE_PARAMS = frozenset(
     {
         "client_id",
@@ -38,6 +38,8 @@ RESERVED_AUTHORIZE_PARAMS = frozenset(
         "nonce",
         "code_challenge",
         "code_challenge_method",
+        "request",
+        "request_uri",
     }
 )
 
@@ -326,17 +328,7 @@ class OpenIDClient:
         extra_params: Optional[Mapping[str, str]] = None,
     ) -> str:
         """
-        Redirects the user to the authorization endpoint for Authorization.
-
-        ``extra_params`` are appended verbatim to the authorization URL,
-        URL-encoded. Useful for OIDC pass-through parameters — both
-        spec-standard ones like ``prompt``, ``login_hint``,
-        ``ui_locales``, ``acr_values`` and any provider-specific hints
-        (e.g. ``kc_idp_hint`` on Keycloak, ``connection`` on Auth0,
-        ``identity_provider`` on Cognito). Keys that ona-oidc manages
-        itself (see ``RESERVED_AUTHORIZE_PARAMS``) are silently dropped
-        so callers can't override the redirect URI, PKCE challenge,
-        nonce, etc.
+        Redirects the user to the authorization endpoint for Authorization
         """
         url = self.authorization_endpoint + (
             f"?client_id={self.client_id}&redirect_uri={self.redirect_uri}&"

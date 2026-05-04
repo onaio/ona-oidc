@@ -99,13 +99,6 @@ class OpenIDClientTestCase(TestCase):
     @patch.object(cache, "set")
     @patch.object(secrets, "randbits")
     def test_login_forwards_extra_params(self, mock_randbits, mock_cache_set):
-        """``extra_params`` are URL-encoded and appended to the redirect URL.
-
-        Covers the OIDC pass-through use case: any spec-standard or
-        provider-specific hint (``prompt``, ``login_hint``, and
-        provider-flavoured keys like ``kc_idp_hint``) should reach the
-        authorization endpoint via the authorize URL.
-        """
         mock_randbits.return_value = "123"
         client = OpenIDClient("default")
 
@@ -131,7 +124,6 @@ class OpenIDClientTestCase(TestCase):
         )
         self.assertIsInstance(result, HttpResponseRedirect)
         self.assertEqual(result.url, expected_url)
-        # Sanity: redirect_after still threads through alongside extras.
         mock_cache_set.assert_called_once_with(
             "123",
             {"auth_server": "default", "redirect_after": None},
@@ -141,11 +133,6 @@ class OpenIDClientTestCase(TestCase):
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch.object(secrets, "randbits")
     def test_login_no_extra_params_keeps_url_clean(self, mock_randbits):
-        """Empty dict / ``None`` extras leave the URL unchanged.
-
-        Guards consumers that always pass an ``extra_params`` dict — an
-        empty one should not stick a stray ``&`` on the URL.
-        """
         mock_randbits.return_value = "123"
         client = OpenIDClient("default")
 
@@ -162,14 +149,6 @@ class OpenIDClientTestCase(TestCase):
     def test_login_drops_reserved_authorize_params(
         self, mock_randbits, _mock_cache_set
     ):
-        """Reserved OIDC params can't be overridden via ``extra_params``.
-
-        A caller (or an attacker forwarding crafted query string)
-        attempting to pass ``client_id`` / ``redirect_uri`` / ``state``
-        / ``nonce`` / ``code_challenge*`` is silently ignored — the URL
-        keeps the values ona-oidc generated. ``kc_idp_hint`` and other
-        non-reserved keys still come through.
-        """
         mock_randbits.return_value = "123"
         client = OpenIDClient("default")
 
@@ -181,7 +160,8 @@ class OpenIDClientTestCase(TestCase):
                 "nonce": "spoofed",
                 "code_challenge": "spoofed",
                 "code_challenge_method": "plain",
-                # not reserved — must still be forwarded
+                "request": "ey.attacker.signed.jwt",
+                "request_uri": "https://attacker.example/req.jwt",
                 "kc_idp_hint": "onadata",
             }
         ).url
@@ -192,6 +172,8 @@ class OpenIDClientTestCase(TestCase):
         self.assertNotIn("evil", result_url)
         self.assertNotIn("attacker.example", result_url)
         self.assertNotIn("spoofed", result_url)
+        self.assertNotIn("request=", result_url)
+        self.assertNotIn("request_uri=", result_url)
         self.assertIn("kc_idp_hint=onadata", result_url)
 
     @override_settings(

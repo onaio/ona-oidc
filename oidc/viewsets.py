@@ -160,6 +160,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 redirect_after=request.query_params.get("next"),
                 extra_params=extra_params,
             )
+            # Delete only csrftoken for the current domain
             response.delete_cookie(
                 "csrftoken",
                 domain=getattr(settings, "CSRF_COOKIE_DOMAIN", None)
