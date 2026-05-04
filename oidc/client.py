@@ -8,7 +8,7 @@ import json
 import logging
 import secrets
 from typing import Callable, Mapping, Optional
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from django.conf import settings
 from django.core.cache import cache
@@ -336,20 +336,20 @@ class OpenIDClient:
         """
         Redirects the user to the authorization endpoint for Authorization
         """
-        url = self.authorization_endpoint + (
-            f"?client_id={self.client_id}&redirect_uri={self.redirect_uri}&"
-            f"scope={self.scope}&response_type={self.response_type}&"
-            f"response_mode={self.response_mode}"
-        )
+        params: list = [
+            ("client_id", self.client_id),
+            ("redirect_uri", self.redirect_uri),
+            ("scope", self.scope),
+            ("response_type", self.response_type),
+            ("response_mode", self.response_mode),
+        ]
 
         if extra_params:
-            safe_params = {
-                key: value
+            params.extend(
+                (key, value)
                 for key, value in extra_params.items()
                 if key not in RESERVED_AUTHORIZE_PARAMS
-            }
-            if safe_params:
-                url += "&" + urlencode(safe_params)
+            )
 
         if self.use_pkce:
             code_verifier = self._generate_pkce_code_verifier()
@@ -360,10 +360,12 @@ class OpenIDClient:
                 code_verifier,
                 self.pkce_code_challenge_timeout,
             )
-            url += (
-                f"&code_challenge={code_challenge}"
-                f"&code_challenge_method={self.pkce_code_challenge_method}"
-                f"&state={code_verifier_key}"
+            params.extend(
+                [
+                    ("code_challenge", code_challenge),
+                    ("code_challenge_method", self.pkce_code_challenge_method),
+                    ("state", code_verifier_key),
+                ]
             )
 
         if self.cache_nonces or redirect_after:
@@ -373,9 +375,10 @@ class OpenIDClient:
                 {"auth_server": self.auth_server, "redirect_after": redirect_after},
                 self.nonce_cache_timeout,
             )
-            url += f"&nonce={nonce}"
+            params.append(("nonce", nonce))
 
-        return HttpResponseRedirect(url)
+        query = urlencode(params, quote_via=quote, safe=":/")
+        return HttpResponseRedirect(f"{self.authorization_endpoint}?{query}")
 
     def logout(self):
         return HttpResponseRedirect(self.end_session_endpoint)
