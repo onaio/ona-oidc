@@ -371,13 +371,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         server_response = {}
 
         if client:
-            # The user-data-entry form re-POSTs to this same callback URL
-            # with the previously-decoded id_token in its body. The original
-            # OIDC redirect's `?code=...` is still on the URL though — if we
-            # treat this re-submit as a fresh callback we'll try to exchange
-            # the (one-shot, already-consumed) code and Keycloak will reject
-            # with `invalid_code`. Detect the form re-submit by the presence
-            # of `id_token` in POST data and short-circuit code exchange.
+            # Form re-submit carries id_token in the body; the URL still has
+            # the original (already-consumed) ?code=, so don't re-exchange.
             if request.method == "POST" and request.POST.get("id_token"):
                 server_response = {"id_token": request.POST.get("id_token")}
             elif client.response_mode == "form_post":
