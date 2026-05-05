@@ -167,17 +167,11 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(response.status_code, 302)
             user = User.objects.get(username="alice_chosen")
             self.assertEqual(user.email, "useralice@gmail.com")
-            # First-login marker cookie set so the SPA can route fresh
-            # accounts to the post-signup flow.
-            first_login_cookie = response.cookies.get("oidc_first_login")
-            self.assertIsNotNone(first_login_cookie)
-            self.assertEqual(first_login_cookie.value, "1")
-            # Cookie must be JS-readable for document.cookie inspection.
-            self.assertFalse(first_login_cookie["httponly"])
+            # First-login marker is appended so the SPA can route the user
+            # to the post-signup upgrade page.
+            self.assertIn("new_signup=1", response["Location"])
 
-        # A subsequent sign-in by the same user must clear the marker so
-        # a stale cookie from an earlier session can't masquerade as a
-        # fresh signup.
+        # A subsequent sign-in by the same user must NOT carry the marker.
         with patch(
             "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
         ) as mock_func:
@@ -193,9 +187,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             request = self.factory.post("/", data=data)
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 302)
-            cleared = response.cookies.get("oidc_first_login")
-            self.assertIsNotNone(cleared)
-            self.assertEqual(cleared.value, "")
+            self.assertNotIn("new_signup=1", response["Location"])
 
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG={
@@ -518,9 +510,13 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(
                 user_count + 1, User.objects.filter(username="john").count()
             )
-            # Redirects to the redirect url on successful user creation.
+            # Redirects to the redirect url on successful user creation,
+            # with new_signup=1 appended so the SPA knows this was a fresh
+            # account.
             self.assertEqual(response.status_code, 302)
-            self.assertEqual(response.url, "localhost/authenticate")
+            self.assertEqual(
+                response.url, "localhost/authenticate?new_signup=1"
+            )
 
             # Uses last_name as first_name if missing
             mock_func.return_value = {
@@ -742,9 +738,10 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         )
 
         self.assertEqual(user_count + 1, User.objects.filter(username="john").count())
-        # Redirects to the redirect url on successful user creation.
+        # Redirects to the redirect url on successful user creation,
+        # with new_signup=1 appended for first-login routing.
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.url, "http://localhost:3000")
+        self.assertEqual(response.url, "http://localhost:3000?new_signup=1")
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
