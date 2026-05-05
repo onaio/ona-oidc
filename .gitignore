@@ -1,6 +1,9 @@
 # Code Editor
 .vscode/
 
+# macOS
+.DS_Store
+
 # Python files
 *.egg-info/
 __pycache__/
