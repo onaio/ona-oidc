@@ -5,11 +5,19 @@ Tests for the OpenID Client
 import json
 
 from django.contrib.auth import get_user_model
+from django.contrib.sessions.middleware import SessionMiddleware
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 from django.test.utils import override_settings
 from django.utils import timezone
+
+
+def _attach_session(request):
+    """Run SessionMiddleware so the view can read/write request.session."""
+    SessionMiddleware(lambda r: None).process_request(request)
+    request.session.save()
+    return request
 
 import jwt
 from mock import MagicMock, patch
@@ -162,16 +170,16 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 "id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia",
                 "username": "alice_chosen",
             }
-            request = self.factory.post("/", data=data)
+            request = _attach_session(self.factory.post("/", data=data))
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 302)
             user = User.objects.get(username="alice_chosen")
             self.assertEqual(user.email, "useralice@gmail.com")
-            # First-login marker is appended so the SPA can route the user
-            # to the post-signup upgrade page.
-            self.assertIn("new_signup=1", response["Location"])
+            # First-login flag set on the session so the consumer's "/me"
+            # endpoint can route fresh accounts to a post-signup flow.
+            self.assertTrue(request.session.get("oidc_first_login"))
 
-        # A subsequent sign-in by the same user must NOT carry the marker.
+        # A subsequent sign-in by the same user must NOT set the flag.
         with patch(
             "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
         ) as mock_func:
@@ -184,10 +192,10 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 "email": "useralice@gmail.com",
             }
             data = {"id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia"}
-            request = self.factory.post("/", data=data)
+            request = _attach_session(self.factory.post("/", data=data))
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 302)
-            self.assertNotIn("new_signup=1", response["Location"])
+            self.assertFalse(request.session.get("oidc_first_login"))
 
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG={
@@ -510,13 +518,9 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(
                 user_count + 1, User.objects.filter(username="john").count()
             )
-            # Redirects to the redirect url on successful user creation,
-            # with new_signup=1 appended so the SPA knows this was a fresh
-            # account.
+            # Redirects to the redirect url on successful user creation.
             self.assertEqual(response.status_code, 302)
-            self.assertEqual(
-                response.url, "localhost/authenticate?new_signup=1"
-            )
+            self.assertEqual(response.url, "localhost/authenticate")
 
             # Uses last_name as first_name if missing
             mock_func.return_value = {
@@ -738,10 +742,9 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         )
 
         self.assertEqual(user_count + 1, User.objects.filter(username="john").count())
-        # Redirects to the redirect url on successful user creation,
-        # with new_signup=1 appended for first-login routing.
+        # Redirects to the redirect url on successful user creation.
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.url, "http://localhost:3000?new_signup=1")
+        self.assertEqual(response.url, "http://localhost:3000")
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
