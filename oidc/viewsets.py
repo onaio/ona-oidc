@@ -7,6 +7,7 @@ import logging
 import re
 import traceback
 from typing import List, Optional, Tuple
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from django.conf import settings
 from django.contrib.auth import get_user_model, login
@@ -136,6 +137,12 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         self.auto_create_user = str_to_bool(
             config.get("AUTO_CREATE_USER", default_config["AUTO_CREATE_USER"])
         )
+        self.always_prompt_username = str_to_bool(
+            config.get(
+                "ALWAYS_PROMPT_USERNAME",
+                default_config["ALWAYS_PROMPT_USERNAME"],
+            )
+        )
 
     def _get_client(self, auth_server: str) -> Optional[OpenIDClient]:
         auth_config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
@@ -210,6 +217,13 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             _("Unable to process OpenID connect logout request."),
         )
 
+    @staticmethod
+    def _append_query_param(url: str, key: str, value: str) -> str:
+        scheme, netloc, path, query, fragment = urlsplit(url)
+        existing = [q for q in query.split("&") if q] if query else []
+        existing.append(urlencode({key: value}))
+        return urlunsplit((scheme, netloc, path, "&".join(existing), fragment))
+
     def _check_user_uniqueness(self, user_data: dict) -> Optional[str]:
         """
         Helper function that checks if the supplied user data is unique. If user_data does not
@@ -226,16 +240,19 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         return None
 
     def generate_successful_response(
-        self, request, user, redirect_after=None
+        self, request, user, redirect_after=None, is_first_login=False
     ) -> HttpResponse:
         """
         Generates a success response for a successful Open ID Connect
         Authentication request
         """
         config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
-        response = HttpResponseRedirect(
-            redirect_after or config.get("REDIRECT_AFTER_AUTH")
-        )
+        target_url = redirect_after or config.get("REDIRECT_AFTER_AUTH")
+        if is_first_login and target_url:
+            target_url = self._append_query_param(
+                target_url, "new_signup", "1"
+            )
+        response = HttpResponseRedirect(target_url)
 
         if self.use_auth_backend:
             login(request, user, backend=self.auth_backend)
@@ -354,9 +371,17 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         server_response = {}
 
         if client:
-            if client.response_mode == "form_post":
+            # The user-data-entry form re-POSTs to this same callback URL
+            # with the previously-decoded id_token in its body. The original
+            # OIDC redirect's `?code=...` is still on the URL though — if we
+            # treat this re-submit as a fresh callback we'll try to exchange
+            # the (one-shot, already-consumed) code and Keycloak will reject
+            # with `invalid_code`. Detect the form re-submit by the presence
+            # of `id_token` in POST data and short-circuit code exchange.
+            if request.method == "POST" and request.POST.get("id_token"):
+                server_response = {"id_token": request.POST.get("id_token")}
+            elif client.response_mode == "form_post":
                 server_response = request.data
-
             elif client.response_mode == "query":
                 server_response = request.query_params
 
@@ -456,6 +481,19 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
                     if not user:
                         user_data, missing_fields = self._clean_user_data(user_data)
+                        if (
+                            self.always_prompt_username
+                            and not provided_username
+                        ):
+                            return Response(
+                                {
+                                    "id_token": id_token,
+                                    "default_username": user_data.get(
+                                        "username", ""
+                                    ),
+                                },
+                                template_name="oidc/oidc_user_data_entry.html",
+                            )
                         if missing_fields:
                             if (
                                 len(missing_fields) == 1
@@ -532,11 +570,15 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     )
                 else:
                     if user:
+                        is_first_login = user.last_login is None
                         user.last_login = timezone.now()
                         user.save(update_fields=["last_login"])
                         self._clear_login_states(server_response)
                         return self.generate_successful_response(
-                            request, user, redirect_after=redirect_after
+                            request,
+                            user,
+                            redirect_after=redirect_after,
+                            is_first_login=is_first_login,
                         )
         auth_servers = list(settings.OPENID_CONNECT_AUTH_SERVERS.keys())
         default_auth_server = auth_servers[0] if auth_servers else "default"
