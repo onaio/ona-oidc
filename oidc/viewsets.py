@@ -232,7 +232,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         return None
 
     def generate_successful_response(
-        self, request, user, redirect_after=None
+        self, request, user, redirect_after=None, is_first_login=False
     ) -> HttpResponse:
         """
         Generates a success response for a successful Open ID Connect
@@ -242,6 +242,28 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         response = HttpResponseRedirect(
             redirect_after or config.get("REDIRECT_AFTER_AUTH")
         )
+
+        # JS-readable, short-lived first-login marker. Set on signup and
+        # explicitly cleared on every other successful login so a cookie
+        # left behind by an earlier session can't masquerade as a fresh
+        # signup.
+        if is_first_login:
+            response.set_cookie(
+                "oidc_first_login",
+                value="1",
+                max_age=120,
+                domain=self.cookie_domain,
+                path=self.cookie_path,
+                httponly=False,
+                secure=self._resolve_cookie_secure(),
+                samesite=self.cookie_samesite,
+            )
+        else:
+            response.delete_cookie(
+                "oidc_first_login",
+                domain=self.cookie_domain,
+                path=self.cookie_path,
+            )
 
         if self.use_auth_backend:
             login(request, user, backend=self.auth_backend)
@@ -554,17 +576,15 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     )
                 else:
                     if user:
-                        if user.last_login is None and hasattr(
-                            request, "session"
-                        ):
-                            # One-shot signal for the consumer's "/me"-style
-                            # endpoint to detect a fresh signup.
-                            request.session["oidc_first_login"] = True
+                        is_first_login = user.last_login is None
                         user.last_login = timezone.now()
                         user.save(update_fields=["last_login"])
                         self._clear_login_states(server_response)
                         return self.generate_successful_response(
-                            request, user, redirect_after=redirect_after,
+                            request,
+                            user,
+                            redirect_after=redirect_after,
+                            is_first_login=is_first_login,
                         )
         auth_servers = list(settings.OPENID_CONNECT_AUTH_SERVERS.keys())
         default_auth_server = auth_servers[0] if auth_servers else "default"

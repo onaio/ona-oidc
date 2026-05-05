@@ -5,19 +5,11 @@ Tests for the OpenID Client
 import json
 
 from django.contrib.auth import get_user_model
-from django.contrib.sessions.middleware import SessionMiddleware
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 from django.test.utils import override_settings
 from django.utils import timezone
-
-
-def _attach_session(request):
-    """Run SessionMiddleware so the view can read/write request.session."""
-    SessionMiddleware(lambda r: None).process_request(request)
-    request.session.save()
-    return request
 
 import jwt
 from mock import MagicMock, patch
@@ -170,16 +162,22 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 "id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia",
                 "username": "alice_chosen",
             }
-            request = _attach_session(self.factory.post("/", data=data))
+            request = self.factory.post("/", data=data)
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 302)
             user = User.objects.get(username="alice_chosen")
             self.assertEqual(user.email, "useralice@gmail.com")
-            # First-login flag set on the session so the consumer's "/me"
-            # endpoint can route fresh accounts to a post-signup flow.
-            self.assertTrue(request.session.get("oidc_first_login"))
+            # First-login marker cookie set so the SPA can route fresh
+            # accounts to the post-signup flow.
+            first_login_cookie = response.cookies.get("oidc_first_login")
+            self.assertIsNotNone(first_login_cookie)
+            self.assertEqual(first_login_cookie.value, "1")
+            # Cookie must be JS-readable for document.cookie inspection.
+            self.assertFalse(first_login_cookie["httponly"])
 
-        # A subsequent sign-in by the same user must NOT set the flag.
+        # A subsequent sign-in by the same user must clear the marker so
+        # a stale cookie from an earlier session can't masquerade as a
+        # fresh signup.
         with patch(
             "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
         ) as mock_func:
@@ -192,10 +190,12 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 "email": "useralice@gmail.com",
             }
             data = {"id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia"}
-            request = _attach_session(self.factory.post("/", data=data))
+            request = self.factory.post("/", data=data)
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 302)
-            self.assertFalse(request.session.get("oidc_first_login"))
+            cleared = response.cookies.get("oidc_first_login")
+            self.assertIsNotNone(cleared)
+            self.assertEqual(cleared.value, "")
 
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG={
