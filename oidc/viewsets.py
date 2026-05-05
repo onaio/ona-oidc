@@ -7,6 +7,7 @@ import logging
 import re
 import traceback
 from typing import List, Optional, Tuple
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from django.conf import settings
 from django.contrib.auth import get_user_model, login
@@ -216,6 +217,13 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             _("Unable to process OpenID connect logout request."),
         )
 
+    @staticmethod
+    def _append_query_param(url: str, key: str, value: str) -> str:
+        scheme, netloc, path, query, fragment = urlsplit(url)
+        existing = [q for q in query.split("&") if q] if query else []
+        existing.append(urlencode({key: value}))
+        return urlunsplit((scheme, netloc, path, "&".join(existing), fragment))
+
     def _check_user_uniqueness(self, user_data: dict) -> Optional[str]:
         """
         Helper function that checks if the supplied user data is unique. If user_data does not
@@ -239,31 +247,12 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         Authentication request
         """
         config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
-        response = HttpResponseRedirect(
-            redirect_after or config.get("REDIRECT_AFTER_AUTH")
-        )
-
-        # JS-readable, short-lived first-login marker. Set on signup and
-        # explicitly cleared on every other successful login so a cookie
-        # left behind by an earlier session can't masquerade as a fresh
-        # signup.
-        if is_first_login:
-            response.set_cookie(
-                "oidc_first_login",
-                value="1",
-                max_age=120,
-                domain=self.cookie_domain,
-                path=self.cookie_path,
-                httponly=False,
-                secure=self._resolve_cookie_secure(),
-                samesite=self.cookie_samesite,
+        target_url = redirect_after or config.get("REDIRECT_AFTER_AUTH")
+        if is_first_login and target_url:
+            target_url = self._append_query_param(
+                target_url, "new_signup", "1"
             )
-        else:
-            response.delete_cookie(
-                "oidc_first_login",
-                domain=self.cookie_domain,
-                path=self.cookie_path,
-            )
+        response = HttpResponseRedirect(target_url)
 
         if self.use_auth_backend:
             login(request, user, backend=self.auth_backend)
