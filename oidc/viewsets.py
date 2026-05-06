@@ -7,7 +7,7 @@ import logging
 import re
 import traceback
 from typing import List, Optional, Tuple
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from django.conf import settings
 from django.contrib.auth import get_user_model, login
@@ -219,10 +219,16 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
     @staticmethod
     def _append_query_param(url: str, key: str, value: str) -> str:
+        # Idempotent: any prior occurrence of `key` is dropped before
+        # re-appending, so a URL that already carries the marker is not
+        # duplicated. Existing pairs are round-tripped through parse_qsl/
+        # urlencode so percent-encoding is canonical.
         scheme, netloc, path, query, fragment = urlsplit(url)
-        existing = [q for q in query.split("&") if q] if query else []
-        existing.append(urlencode({key: value}))
-        return urlunsplit((scheme, netloc, path, "&".join(existing), fragment))
+        pairs = [
+            (k, v) for k, v in parse_qsl(query, keep_blank_values=True) if k != key
+        ]
+        pairs.append((key, value))
+        return urlunsplit((scheme, netloc, path, urlencode(pairs), fragment))
 
     def _check_user_uniqueness(self, user_data: dict) -> Optional[str]:
         """
@@ -367,11 +373,27 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         client = self._get_client(auth_server=kwargs.get("auth_server"))
         user = redirect_after = code_verifier = None
         server_response = {}
+        # Tracks whether the user record was created in *this* request, so
+        # the first-login marker only fires for genuine OIDC signups —
+        # not for pre-existing accounts (e.g., createsuperuser) whose
+        # last_login happens to be None on their first OIDC sign-in.
+        user_was_created = False
 
         if client:
-            # Form re-submit carries id_token in the body; the URL still has
-            # the original (already-consumed) ?code=, so don't re-exchange.
-            if request.method == "POST" and request.POST.get("id_token"):
+            # The username-entry form re-POSTs to the callback URL with the
+            # original (already-consumed) ?code= still on the URL. Detect
+            # that specific re-submit via the hidden marker the form sets,
+            # and reuse the id_token it carries instead of re-exchanging
+            # the stale code. The marker prevents this short-circuit from
+            # widening the surface for clients configured with response
+            # modes other than form_post — those still go through the
+            # auth-code exchange (and its state/nonce validation).
+            is_username_form_resubmit = (
+                request.method == "POST"
+                and request.POST.get("from_username_form") == "1"
+                and request.POST.get("id_token")
+            )
+            if is_username_form_resubmit:
                 server_response = {"id_token": request.POST.get("id_token")}
             elif client.response_mode == "form_post":
                 server_response = request.data
@@ -475,10 +497,25 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     if not user:
                         user_data, missing_fields = self._clean_user_data(user_data)
                         if self.always_prompt_username and not provided_username:
+                            # Only pre-fill a default that satisfies the
+                            # form's HTML5 pattern; otherwise the browser
+                            # silently rejects submit and the user can't
+                            # tell why. _clean_user_data normalizes when
+                            # use_email_as_username is on, but not in
+                            # every config, so be defensive.
+                            default_username = user_data.get("username", "")
+                            username_regex_cfg = self.field_validation_regex.get(
+                                "username", {}
+                            ).get("regex")
+                            if default_username and username_regex_cfg:
+                                if not re.compile(username_regex_cfg).search(
+                                    default_username
+                                ):
+                                    default_username = ""
                             return Response(
                                 {
                                     "id_token": id_token,
-                                    "default_username": user_data.get("username", ""),
+                                    "default_username": default_username,
                                 },
                                 template_name="oidc/oidc_user_data_entry.html",
                             )
@@ -525,6 +562,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         create_data.update(user_data)
 
                         user = self.create_login_user(create_data)
+                        user_was_created = True
                 except ValueError as e:
                     stack_trace = traceback.format_exc()
                     logger.info("ValueError")
@@ -558,7 +596,6 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     )
                 else:
                     if user:
-                        is_first_login = user.last_login is None
                         user.last_login = timezone.now()
                         user.save(update_fields=["last_login"])
                         self._clear_login_states(server_response)
@@ -566,7 +603,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             request,
                             user,
                             redirect_after=redirect_after,
-                            is_first_login=is_first_login,
+                            is_first_login=user_was_created,
                         )
         auth_servers = list(settings.OPENID_CONNECT_AUTH_SERVERS.keys())
         default_auth_server = auth_servers[0] if auth_servers else "default"
