@@ -414,9 +414,12 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(viewset._safe_default_username("alice"), "alice")
         self.assertEqual(viewset._safe_default_username(""), "")
 
-        # No regex configured: pass through.
+        # No regex configured: fall back to _DEFAULT_USERNAME_PATTERN
+        # so the prefill is always validated against whatever pattern
+        # the form will display.
         viewset.field_validation_regex = {}
-        self.assertEqual(viewset._safe_default_username("anything!"), "anything!")
+        self.assertEqual(viewset._safe_default_username("anything!"), "")
+        self.assertEqual(viewset._safe_default_username("alice_2"), "alice_2")
 
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG={
@@ -480,6 +483,62 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         )
         self.assertIn(f'name="{USERNAME_FORM_MARKER_FIELD}"', rendered)
         self.assertIn(f'value="{USERNAME_FORM_MARKER_VALUE}"', rendered)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "ALWAYS_PROMPT_USERNAME": True,
+            "EMIT_FIRST_LOGIN_MARKER": True,
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000/authenticate",
+            "FIELD_VALIDATION_REGEX": {
+                "username": {
+                    "regex": r"(?!^\d+$)^.+$",
+                    "help_text": "Custom validation help",
+                },
+            },
+        }
+    )
+    def test_username_form_pattern_and_title_come_from_config(self):
+        """
+        The form's HTML5 `pattern` and `title` attributes must reflect
+        the configured FIELD_VALIDATION_REGEX["username"]["regex"] and
+        ["help_text"], not the legacy hard-coded `^[A-Za-z0-9_]*$`.
+        Otherwise a deployment with a permissive regex sees its
+        prefill rejected by the browser even though the server-side
+        validator would accept it.
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = self._ALICE_CLAIMS
+            request = self.factory.post(
+                "/", data={"id_token": self._ALICE_ID_TOKEN}
+            )
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                response.template_name, "oidc/oidc_user_data_entry.html"
+            )
+            self.assertEqual(response.data["username_pattern"], r"(?!^\d+$)^.+$")
+            self.assertEqual(
+                response.data["username_help_text"], "Custom validation help"
+            )
+
+    def test_username_field_config_falls_back_to_defaults(self):
+        """
+        When FIELD_VALIDATION_REGEX has no `username` entry, the form
+        must still render with a sensible pattern + title so the
+        legacy template behaviour is preserved for deployments that
+        haven't customized validation.
+        """
+        viewset = BaseOpenIDConnectViewset()
+        viewset.field_validation_regex = {}
+        regex, help_text = viewset._username_field_config()
+        self.assertEqual(regex, BaseOpenIDConnectViewset._DEFAULT_USERNAME_PATTERN)
+        self.assertEqual(
+            help_text, BaseOpenIDConnectViewset._DEFAULT_USERNAME_HELP_TEXT
+        )
 
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
     def test_create_user_providing_id_token_in_form(self):
