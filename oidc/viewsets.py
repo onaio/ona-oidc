@@ -244,6 +244,26 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             _("Unable to process OpenID connect logout request."),
         )
 
+    # Defaults used when FIELD_VALIDATION_REGEX has no "username" entry.
+    # Kept conservative so the rendered form matches the legacy template
+    # behaviour for deployments that haven't customized validation.
+    _DEFAULT_USERNAME_PATTERN = r"^[A-Za-z0-9_]*$"
+    _DEFAULT_USERNAME_HELP_TEXT = "Username should not contain . @ - symbols"
+
+    def _username_field_config(self) -> Tuple[str, str]:
+        """
+        Return (regex, help_text) for the username field, falling back
+        to conservative defaults when FIELD_VALIDATION_REGEX is unset.
+        Same source of truth used by the form template's pattern/title
+        attributes and by _safe_default_username's prefill validation,
+        so the two cannot disagree.
+        """
+        cfg = self.field_validation_regex.get("username", {})
+        return (
+            cfg.get("regex") or self._DEFAULT_USERNAME_PATTERN,
+            cfg.get("help_text") or self._DEFAULT_USERNAME_HELP_TEXT,
+        )
+
     def _safe_default_username(self, candidate: str) -> str:
         """
         Return `candidate` only if it satisfies the configured username
@@ -255,10 +275,27 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         """
         if not candidate:
             return ""
-        regex = self.field_validation_regex.get("username", {}).get("regex")
-        if not regex:
-            return candidate
+        regex, _help = self._username_field_config()
         return candidate if re.fullmatch(regex, candidate) else ""
+
+    def _username_form_response(self, data: dict, **response_kwargs) -> Response:
+        """
+        Build a Response for oidc_user_data_entry.html with the username
+        regex and help text injected so the form's `pattern`/`title`
+        attributes always reflect the deployed FIELD_VALIDATION_REGEX
+        config. Centralised so all four render sites (always-prompt,
+        missing-username, conflict, ValueError) stay in lockstep.
+        """
+        regex, help_text = self._username_field_config()
+        # Caller's keys first so existing fixtures that pin JSON
+        # serialisation order (e.g. {"error":"..."} startswith) keep
+        # working; helper-injected keys appended.
+        merged = {**data, "username_pattern": regex, "username_help_text": help_text}
+        return Response(
+            merged,
+            template_name="oidc/oidc_user_data_entry.html",
+            **response_kwargs,
+        )
 
     @staticmethod
     def _append_query_param(url: str, key: str, value: str) -> str:
@@ -541,14 +578,13 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     if not user:
                         user_data, missing_fields = self._clean_user_data(user_data)
                         if self.always_prompt_username and not provided_username:
-                            return Response(
+                            return self._username_form_response(
                                 {
                                     "id_token": id_token,
                                     "default_username": self._safe_default_username(
                                         user_data.get("username", "")
                                     ),
-                                },
-                                template_name="oidc/oidc_user_data_entry.html",
+                                }
                             )
                         if missing_fields:
                             if (
@@ -557,9 +593,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             ):
                                 data = {"id_token": id_token}
                                 logger.info("missing_fields: ", missing_fields)
-                                return Response(
-                                    data, template_name="oidc/oidc_user_data_entry.html"
-                                )
+                                return self._username_form_response(data)
                             else:
                                 missing_fields = ", ".join(missing_fields)
                                 logger.error(f"missing fields: {missing_fields}")
@@ -589,9 +623,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                                     ),
                                 }
                                 logger.info(data)
-                                return Response(
-                                    data, template_name="oidc/oidc_user_data_entry.html"
-                                )
+                                return self._username_form_response(data)
 
                         self.validate_fields(user_data)
 
@@ -606,10 +638,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     stack_trace = traceback.format_exc()
                     logger.info("ValueError")
                     logger.info(stack_trace)
-                    return Response(
+                    return self._username_form_response(
                         {"error": str(e), "id_token": id_token},
                         status=status.HTTP_400_BAD_REQUEST,
-                        template_name="oidc/oidc_user_data_entry.html",
                     )
                 except jwt.exceptions.DecodeError:
                     return Response(
