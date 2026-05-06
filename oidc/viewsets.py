@@ -334,7 +334,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         """
         config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
         target_url = redirect_after or config.get("REDIRECT_AFTER_AUTH")
-        if is_first_login and target_url and self.emit_first_login_marker:
+        if self.emit_first_login_marker and is_first_login and target_url:
             target_url = self._append_query_param(
                 target_url, NEW_SIGNUP_QUERY_PARAM, NEW_SIGNUP_QUERY_VALUE
             )
