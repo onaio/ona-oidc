@@ -445,9 +445,18 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         """
         from django.template.loader import render_to_string
 
+        # Render via the same context shape _username_form_response
+        # produces, so the template's `pattern`/`title` attributes
+        # have values to interpolate (the template no longer carries
+        # its own fallback defaults).
         rendered = render_to_string(
             "oidc/oidc_user_data_entry.html",
-            {"id_token": "tok", "default_username": ""},
+            {
+                "id_token": "tok",
+                "default_username": "",
+                "username_pattern": "^test$",
+                "username_help_text": "test help",
+            },
         )
         self.assertIn(f'name="{USERNAME_FORM_MARKER_FIELD}"', rendered)
         self.assertIn(f'value="{USERNAME_FORM_MARKER_VALUE}"', rendered)
@@ -726,10 +735,13 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             request = self.factory.post("/", data=data)
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 400)
-            self.assertTrue(
-                response.rendered_content.startswith(
-                    b'{"error":"Username should only contain word characters & numbers and should have 3 or more characters"'
-                )
+            # Don't pin JSON key order — assert the error message is
+            # present anywhere in the rendered body. Dict iteration
+            # order is stable in CPython but the helper that builds
+            # this response may legitimately reorder keys.
+            self.assertIn(
+                b'"error":"Username should only contain word characters & numbers and should have 3 or more characters"',
+                response.rendered_content,
             )
             self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
 
