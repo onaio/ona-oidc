@@ -164,6 +164,12 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 default_config["ALWAYS_PROMPT_USERNAME"],
             )
         )
+        self.emit_first_login_marker = str_to_bool(
+            config.get(
+                "EMIT_FIRST_LOGIN_MARKER",
+                default_config["EMIT_FIRST_LOGIN_MARKER"],
+            )
+        )
 
     def _get_client(self, auth_server: str) -> Optional[OpenIDClient]:
         auth_config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
@@ -291,7 +297,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         """
         config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
         target_url = redirect_after or config.get("REDIRECT_AFTER_AUTH")
-        if is_first_login and target_url:
+        if is_first_login and target_url and self.emit_first_login_marker:
             target_url = self._append_query_param(
                 target_url, NEW_SIGNUP_QUERY_PARAM, NEW_SIGNUP_QUERY_VALUE
             )

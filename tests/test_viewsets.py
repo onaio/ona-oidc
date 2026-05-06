@@ -137,6 +137,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         OPENID_CONNECT_VIEWSET_CONFIG={
             **OPENID_CONNECT_VIEWSET_CONFIG,
             "ALWAYS_PROMPT_USERNAME": True,
+            "EMIT_FIRST_LOGIN_MARKER": True,
             "REDIRECT_AFTER_AUTH": "http://localhost:3000/authenticate",
         }
     )
@@ -162,6 +163,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         OPENID_CONNECT_VIEWSET_CONFIG={
             **OPENID_CONNECT_VIEWSET_CONFIG,
             "ALWAYS_PROMPT_USERNAME": True,
+            "EMIT_FIRST_LOGIN_MARKER": True,
             "REDIRECT_AFTER_AUTH": "http://localhost:3000/authenticate",
         }
     )
@@ -194,6 +196,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         OPENID_CONNECT_VIEWSET_CONFIG={
             **OPENID_CONNECT_VIEWSET_CONFIG,
             "ALWAYS_PROMPT_USERNAME": True,
+            "EMIT_FIRST_LOGIN_MARKER": True,
             "REDIRECT_AFTER_AUTH": "http://localhost:3000/authenticate",
         }
     )
@@ -223,6 +226,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         OPENID_CONNECT_VIEWSET_CONFIG={
             **OPENID_CONNECT_VIEWSET_CONFIG,
             "ALWAYS_PROMPT_USERNAME": True,
+            "EMIT_FIRST_LOGIN_MARKER": True,
             "REDIRECT_AFTER_AUTH": "http://localhost:3000/authenticate",
         }
     )
@@ -253,7 +257,35 @@ class TestUserModelOpenIDConnectViewset(TestCase):
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG={
             **OPENID_CONNECT_VIEWSET_CONFIG,
+            # EMIT_FIRST_LOGIN_MARKER intentionally omitted — defaults to
+            # False, so a fresh signup must NOT receive the marker.
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000/authenticate",
+        }
+    )
+    def test_first_login_marker_is_off_by_default(self):
+        """
+        When EMIT_FIRST_LOGIN_MARKER is not enabled, even a genuinely
+        new signup (user_was_created in this request) must redirect to
+        the bare REDIRECT_AFTER_AUTH without the new_signup marker.
+        Existing ona-oidc consumers that haven't opted in must not
+        suddenly see a new query string after upgrading.
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = self._ALICE_CLAIMS
+            request = self.factory.post("/", data={"id_token": self._ALICE_ID_TOKEN})
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 302)
+            self.assertNotIn(NEW_SIGNUP_MARKER, response["Location"])
+            self.assertEqual(response["Location"], "http://localhost:3000/authenticate")
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
             "ALWAYS_PROMPT_USERNAME": True,
+            "EMIT_FIRST_LOGIN_MARKER": True,
             "REDIRECT_AFTER_AUTH": "http://localhost:3000/authenticate",
         }
     )
@@ -268,11 +300,14 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         short-circuit.
         """
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
-        with patch(
-            "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code"
-        ) as mock_exchange, patch(
-            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
-        ) as mock_decode:
+        with (
+            patch(
+                "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code"
+            ) as mock_exchange,
+            patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+            ) as mock_decode,
+        ):
             mock_decode.return_value = {
                 "email_verified": False,
                 "name": "Bob User",
@@ -312,11 +347,14 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         state/nonce validation tied to the auth-code flow.
         """
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
-        with patch(
-            "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code"
-        ) as mock_exchange, patch(
-            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
-        ) as mock_decode:
+        with (
+            patch(
+                "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code"
+            ) as mock_exchange,
+            patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+            ) as mock_decode,
+        ):
             # Make the exchange fail so we don't accidentally exercise
             # the rest of the flow. We pin two invariants:
             #   1. The code from the URL IS exchanged.
@@ -329,9 +367,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             )
             response = view(request, auth_server="default")
             mock_exchange.assert_called_once()
-            self.assertEqual(
-                mock_exchange.call_args[0][0], "fresh-code-from-idp"
-            )
+            self.assertEqual(mock_exchange.call_args[0][0], "fresh-code-from-idp")
             for call in mock_decode.call_args_list:
                 self.assertNotIn("attacker-supplied-id-token", call.args)
             self.assertEqual(response.status_code, 401)
@@ -386,6 +422,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         OPENID_CONNECT_VIEWSET_CONFIG={
             **OPENID_CONNECT_VIEWSET_CONFIG,
             "ALWAYS_PROMPT_USERNAME": True,
+            "EMIT_FIRST_LOGIN_MARKER": True,
             "REDIRECT_AFTER_AUTH": "http://localhost:3000/authenticate",
         }
     )
@@ -424,9 +461,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             )
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(
-                response.template_name, "oidc/oidc_user_data_entry.html"
-            )
+            self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
             self.assertEqual(response.data["default_username"], "taken_already")
             self.assertIn("already in use", response.data["error"])
 
@@ -703,10 +738,17 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 response.data.get("error"), "Missing required fields: first_name"
             )
 
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "EMIT_FIRST_LOGIN_MARKER": True,
+        }
+    )
     def test_create_non_existing_user(self):
         """
         Test that a new user is created if the username is present and
         that the user is redirected to the `REDIRECT_AFTER_AUTH` link
+        with new_signup=1 appended (EMIT_FIRST_LOGIN_MARKER is on).
         """
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         with patch(
@@ -921,6 +963,16 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            # Mirror the REDIRECT_AFTER_AUTH that tests/settings.py
+            # provides globally — overriding OPENID_CONNECT_VIEWSET_CONFIG
+            # replaces (not merges) it, so we have to restate it here.
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000",
+            "EMIT_FIRST_LOGIN_MARKER": True,
+        }
+    )
     @patch(
         "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
         MagicMock(
