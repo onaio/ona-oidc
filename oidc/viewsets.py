@@ -51,6 +51,17 @@ from oidc.utils import (
 default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 SSO_COOKIE_NAME = "SSO"
 
+# Hidden field on oidc_user_data_entry.html that signals the form is
+# re-POSTing to the callback URL. It is NOT a security boundary — the
+# value is a public constant in this repo and an attacker can include
+# it in a forged POST. Its purpose is to make the "use id_token from
+# body, skip auth-code exchange" path deliberate (only triggered by
+# our form), so the broader code-exchange/state/nonce path remains the
+# default for everyone else. Real replay protection comes from
+# verify_and_decode_id_token (signature, expiry, nonce).
+USERNAME_FORM_MARKER_FIELD = "from_username_form"
+USERNAME_FORM_MARKER_VALUE = "1"
+
 logger = logging.getLogger(__name__)
 
 
@@ -216,6 +227,22 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         return HttpResponseBadRequest(
             _("Unable to process OpenID connect logout request."),
         )
+
+    def _safe_default_username(self, candidate: str) -> str:
+        """
+        Return `candidate` only if it satisfies the configured username
+        regex (anchored full-match, mirroring the form's HTML5 `pattern`
+        attribute). Otherwise return "" so the form renders with an
+        empty field rather than a value the browser will silently reject
+        on submit. _clean_user_data normalizes when use_email_as_username
+        is on, but not in every config, so be defensive.
+        """
+        if not candidate:
+            return ""
+        regex = self.field_validation_regex.get("username", {}).get("regex")
+        if not regex:
+            return candidate
+        return candidate if re.fullmatch(regex, candidate) else ""
 
     @staticmethod
     def _append_query_param(url: str, key: str, value: str) -> str:
@@ -384,13 +411,12 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             # original (already-consumed) ?code= still on the URL. Detect
             # that specific re-submit via the hidden marker the form sets,
             # and reuse the id_token it carries instead of re-exchanging
-            # the stale code. The marker prevents this short-circuit from
-            # widening the surface for clients configured with response
-            # modes other than form_post — those still go through the
-            # auth-code exchange (and its state/nonce validation).
+            # the stale code. See USERNAME_FORM_MARKER_FIELD: the marker
+            # is a path gate, not an auth check.
             is_username_form_resubmit = (
                 request.method == "POST"
-                and request.POST.get("from_username_form") == "1"
+                and request.POST.get(USERNAME_FORM_MARKER_FIELD)
+                == USERNAME_FORM_MARKER_VALUE
                 and request.POST.get("id_token")
             )
             if is_username_form_resubmit:
@@ -497,25 +523,12 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     if not user:
                         user_data, missing_fields = self._clean_user_data(user_data)
                         if self.always_prompt_username and not provided_username:
-                            # Only pre-fill a default that satisfies the
-                            # form's HTML5 pattern; otherwise the browser
-                            # silently rejects submit and the user can't
-                            # tell why. _clean_user_data normalizes when
-                            # use_email_as_username is on, but not in
-                            # every config, so be defensive.
-                            default_username = user_data.get("username", "")
-                            username_regex_cfg = self.field_validation_regex.get(
-                                "username", {}
-                            ).get("regex")
-                            if default_username and username_regex_cfg:
-                                if not re.compile(username_regex_cfg).search(
-                                    default_username
-                                ):
-                                    default_username = ""
                             return Response(
                                 {
                                     "id_token": id_token,
-                                    "default_username": default_username,
+                                    "default_username": self._safe_default_username(
+                                        user_data.get("username", "")
+                                    ),
                                 },
                                 template_name="oidc/oidc_user_data_entry.html",
                             )
@@ -548,6 +561,14 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                                 data = {
                                     "id_token": id_token,
                                     "error": f"{field.capitalize()} field is already in use.",
+                                    # Pre-fill what the user just submitted
+                                    # (or the derived default on first
+                                    # render) so they can edit it instead
+                                    # of retyping from scratch.
+                                    "default_username": self._safe_default_username(
+                                        provided_username
+                                        or user_data.get("username", "")
+                                    ),
                                 }
                                 logger.info(data)
                                 return Response(
