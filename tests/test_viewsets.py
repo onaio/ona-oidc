@@ -89,6 +89,16 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     "SSO_COOKIE_MAX_AGE": 60 * 60 * 24 * 30,
 }
 
+# Common viewset-config override for tests that exercise the always-prompt-
+# username + first-login-marker flow. Keeps every always-prompt scenario in
+# lockstep — adding a new flag here propagates to every test that uses it.
+ALWAYS_PROMPT_VIEWSET_CONFIG = {
+    **OPENID_CONNECT_VIEWSET_CONFIG,
+    "ALWAYS_PROMPT_USERNAME": True,
+    "EMIT_FIRST_LOGIN_MARKER": True,
+    "REDIRECT_AFTER_AUTH": "http://localhost:3000/authenticate",
+}
+
 
 class TestUserModelOpenIDConnectViewset(TestCase):
     """
@@ -133,14 +143,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
     }
     _ALICE_ID_TOKEN = "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia"
 
-    @override_settings(
-        OPENID_CONNECT_VIEWSET_CONFIG={
-            **OPENID_CONNECT_VIEWSET_CONFIG,
-            "ALWAYS_PROMPT_USERNAME": True,
-            "EMIT_FIRST_LOGIN_MARKER": True,
-            "REDIRECT_AFTER_AUTH": "http://localhost:3000/authenticate",
-        }
-    )
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=ALWAYS_PROMPT_VIEWSET_CONFIG)
     def test_always_prompt_username_renders_form_with_default(self):
         """
         With ALWAYS_PROMPT_USERNAME=True, a brand-new signup is rendered
@@ -159,14 +162,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(response.data["default_username"], "useralice")
             self.assertFalse(User.objects.filter(email="useralice@gmail.com").exists())
 
-    @override_settings(
-        OPENID_CONNECT_VIEWSET_CONFIG={
-            **OPENID_CONNECT_VIEWSET_CONFIG,
-            "ALWAYS_PROMPT_USERNAME": True,
-            "EMIT_FIRST_LOGIN_MARKER": True,
-            "REDIRECT_AFTER_AUTH": "http://localhost:3000/authenticate",
-        }
-    )
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=ALWAYS_PROMPT_VIEWSET_CONFIG)
     def test_always_prompt_username_form_submit_creates_user_with_marker(self):
         """
         Submitting the username-entry form (carrying the form marker, the
@@ -190,16 +186,9 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(response.status_code, 302)
             user = User.objects.get(username="alice_chosen")
             self.assertEqual(user.email, "useralice@gmail.com")
-            self.assertIn(NEW_SIGNUP_MARKER, response["Location"])
+            self.assertIn(NEW_SIGNUP_MARKER, response.url)
 
-    @override_settings(
-        OPENID_CONNECT_VIEWSET_CONFIG={
-            **OPENID_CONNECT_VIEWSET_CONFIG,
-            "ALWAYS_PROMPT_USERNAME": True,
-            "EMIT_FIRST_LOGIN_MARKER": True,
-            "REDIRECT_AFTER_AUTH": "http://localhost:3000/authenticate",
-        }
-    )
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=ALWAYS_PROMPT_VIEWSET_CONFIG)
     def test_always_prompt_username_returning_user_no_marker(self):
         """
         A returning user (already in the DB, last_login set) signing in
@@ -220,16 +209,9 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             request = self.factory.post("/", data={"id_token": self._ALICE_ID_TOKEN})
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 302)
-            self.assertNotIn(NEW_SIGNUP_MARKER, response["Location"])
+            self.assertNotIn(NEW_SIGNUP_MARKER, response.url)
 
-    @override_settings(
-        OPENID_CONNECT_VIEWSET_CONFIG={
-            **OPENID_CONNECT_VIEWSET_CONFIG,
-            "ALWAYS_PROMPT_USERNAME": True,
-            "EMIT_FIRST_LOGIN_MARKER": True,
-            "REDIRECT_AFTER_AUTH": "http://localhost:3000/authenticate",
-        }
-    )
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=ALWAYS_PROMPT_VIEWSET_CONFIG)
     def test_pre_existing_user_first_oidc_login_no_marker(self):
         """
         A pre-existing user (e.g., created via createsuperuser) whose
@@ -252,7 +234,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             request = self.factory.post("/", data={"id_token": self._ALICE_ID_TOKEN})
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 302)
-            self.assertNotIn(NEW_SIGNUP_MARKER, response["Location"])
+            self.assertNotIn(NEW_SIGNUP_MARKER, response.url)
 
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG={
@@ -278,17 +260,10 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             request = self.factory.post("/", data={"id_token": self._ALICE_ID_TOKEN})
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 302)
-            self.assertNotIn(NEW_SIGNUP_MARKER, response["Location"])
-            self.assertEqual(response["Location"], "http://localhost:3000/authenticate")
+            self.assertNotIn(NEW_SIGNUP_MARKER, response.url)
+            self.assertEqual(response.url, "http://localhost:3000/authenticate")
 
-    @override_settings(
-        OPENID_CONNECT_VIEWSET_CONFIG={
-            **OPENID_CONNECT_VIEWSET_CONFIG,
-            "ALWAYS_PROMPT_USERNAME": True,
-            "EMIT_FIRST_LOGIN_MARKER": True,
-            "REDIRECT_AFTER_AUTH": "http://localhost:3000/authenticate",
-        }
-    )
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=ALWAYS_PROMPT_VIEWSET_CONFIG)
     def test_username_form_resubmit_does_not_re_exchange_code(self):
         """
         When the user-data-entry form re-POSTs to the callback URL, the
@@ -421,14 +396,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(viewset._safe_default_username("anything!"), "")
         self.assertEqual(viewset._safe_default_username("alice_2"), "alice_2")
 
-    @override_settings(
-        OPENID_CONNECT_VIEWSET_CONFIG={
-            **OPENID_CONNECT_VIEWSET_CONFIG,
-            "ALWAYS_PROMPT_USERNAME": True,
-            "EMIT_FIRST_LOGIN_MARKER": True,
-            "REDIRECT_AFTER_AUTH": "http://localhost:3000/authenticate",
-        }
-    )
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=ALWAYS_PROMPT_VIEWSET_CONFIG)
     def test_username_conflict_rerenders_form_with_user_input_preserved(self):
         """
         On a uniqueness conflict, the form re-renders with the username
@@ -486,10 +454,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
 
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG={
-            **OPENID_CONNECT_VIEWSET_CONFIG,
-            "ALWAYS_PROMPT_USERNAME": True,
-            "EMIT_FIRST_LOGIN_MARKER": True,
-            "REDIRECT_AFTER_AUTH": "http://localhost:3000/authenticate",
+            **ALWAYS_PROMPT_VIEWSET_CONFIG,
             "FIELD_VALIDATION_REGEX": {
                 "username": {
                     "regex": r"(?!^\d+$)^.+$",
@@ -512,14 +477,10 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
         ) as mock_func:
             mock_func.return_value = self._ALICE_CLAIMS
-            request = self.factory.post(
-                "/", data={"id_token": self._ALICE_ID_TOKEN}
-            )
+            request = self.factory.post("/", data={"id_token": self._ALICE_ID_TOKEN})
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 200)
-            self.assertEqual(
-                response.template_name, "oidc/oidc_user_data_entry.html"
-            )
+            self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
             self.assertEqual(response.data["username_pattern"], r"(?!^\d+$)^.+$")
             self.assertEqual(
                 response.data["username_help_text"], "Custom validation help"
@@ -800,6 +761,10 @@ class TestUserModelOpenIDConnectViewset(TestCase):
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG={
             **OPENID_CONNECT_VIEWSET_CONFIG,
+            # Mirror REDIRECT_AFTER_AUTH from tests/settings.py — overriding
+            # OPENID_CONNECT_VIEWSET_CONFIG replaces (not merges) it, so the
+            # davis sub-case below would otherwise redirect to "None".
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000",
             "EMIT_FIRST_LOGIN_MARKER": True,
         }
     )
@@ -851,6 +816,10 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 user_count + 1, User.objects.filter(username="john").count()
             )
             self.assertEqual(response.status_code, 302)
+            # No redirect_after_auth claim → falls back to the configured
+            # REDIRECT_AFTER_AUTH, with new_signup=1 appended for first-
+            # login routing.
+            self.assertEqual(response.url, f"http://localhost:3000?{NEW_SIGNUP_MARKER}")
             user = User.objects.get(username="davis")
             self.assertEqual(user.first_name, "davis")
 
