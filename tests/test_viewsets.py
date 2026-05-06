@@ -17,11 +17,15 @@ from rest_framework.test import APIRequestFactory
 
 from oidc.client import OpenIDClient, TokenVerificationFailed
 from oidc.viewsets import (
+    NEW_SIGNUP_QUERY_PARAM,
+    NEW_SIGNUP_QUERY_VALUE,
     USERNAME_FORM_MARKER_FIELD,
     USERNAME_FORM_MARKER_VALUE,
     BaseOpenIDConnectViewset,
     UserModelOpenIDConnectViewset,
 )
+
+NEW_SIGNUP_MARKER = f"{NEW_SIGNUP_QUERY_PARAM}={NEW_SIGNUP_QUERY_VALUE}"
 
 User = get_user_model()
 
@@ -184,7 +188,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(response.status_code, 302)
             user = User.objects.get(username="alice_chosen")
             self.assertEqual(user.email, "useralice@gmail.com")
-            self.assertIn("new_signup=1", response["Location"])
+            self.assertIn(NEW_SIGNUP_MARKER, response["Location"])
 
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG={
@@ -213,7 +217,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             request = self.factory.post("/", data={"id_token": self._ALICE_ID_TOKEN})
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 302)
-            self.assertNotIn("new_signup=1", response["Location"])
+            self.assertNotIn(NEW_SIGNUP_MARKER, response["Location"])
 
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG={
@@ -244,7 +248,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             request = self.factory.post("/", data={"id_token": self._ALICE_ID_TOKEN})
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 302)
-            self.assertNotIn("new_signup=1", response["Location"])
+            self.assertNotIn(NEW_SIGNUP_MARKER, response["Location"])
 
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG={
@@ -727,7 +731,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             # account.
             self.assertEqual(response.status_code, 302)
             self.assertEqual(
-                response.url, "localhost/authenticate?new_signup=1"
+                response.url, f"localhost/authenticate?{NEW_SIGNUP_MARKER}"
             )
 
             # Uses last_name as first_name if missing
@@ -953,7 +957,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         # Redirects to the redirect url on successful user creation,
         # with new_signup=1 appended for first-login routing.
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.url, "http://localhost:3000?new_signup=1")
+        self.assertEqual(response.url, f"http://localhost:3000?{NEW_SIGNUP_MARKER}")
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)

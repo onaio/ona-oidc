@@ -62,6 +62,16 @@ SSO_COOKIE_NAME = "SSO"
 USERNAME_FORM_MARKER_FIELD = "from_username_form"
 USERNAME_FORM_MARKER_VALUE = "1"
 
+# Query-string marker appended to the post-auth redirect on a fresh
+# OIDC signup (user_was_created in this request). Consuming SPAs read
+# it to route new accounts to a post-signup flow (e.g., a pricing /
+# subscription page) and then strip it from the URL. This is a
+# cross-repo contract: changing the name or value here requires a
+# coordinated update in every consuming SPA. Renaming should be done
+# via an additive deprecation (emit both old and new for a release).
+NEW_SIGNUP_QUERY_PARAM = "new_signup"
+NEW_SIGNUP_QUERY_VALUE = "1"
+
 logger = logging.getLogger(__name__)
 
 
@@ -282,7 +292,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
         target_url = redirect_after or config.get("REDIRECT_AFTER_AUTH")
         if is_first_login and target_url:
-            target_url = self._append_query_param(target_url, "new_signup", "1")
+            target_url = self._append_query_param(
+                target_url, NEW_SIGNUP_QUERY_PARAM, NEW_SIGNUP_QUERY_VALUE
+            )
         response = HttpResponseRedirect(target_url)
 
         if self.use_auth_backend:
