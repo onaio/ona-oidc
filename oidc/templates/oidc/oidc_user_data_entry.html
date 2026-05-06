@@ -11,8 +11,10 @@
             {% if error %}
             <p class="error-message">{{ error }}</p>
             {% endif %}
-            <input type="text" name="username" placeholder="Username" pattern="^[A-Za-z0-9_]*$" title="Username should not contain . @ - symbols">
+            <input type="text" name="username" placeholder="Username" pattern="{{ username_pattern }}" title="{{ username_help_text }}">
             <input type="hidden" name="id_token" value="{{ id_token }}">
+            <input type="hidden" name="state" value="{{ state|default:'' }}">
+            <input type="hidden" name="from_username_form" value="1">
             <input type="submit" value="Save">
         </form>
     </div>

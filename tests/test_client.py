@@ -13,7 +13,7 @@ from django.test.utils import override_settings
 import jwt
 import requests
 
-from oidc.client import OpenIDClient, TokenVerificationFailed
+from oidc.client import OpenIDClient, TokenVerificationFailed, state_cache_key
 
 OPENID_CONNECT_AUTH_SERVERS = {
     "default": {
@@ -293,7 +293,7 @@ class OpenIDClientTestCase(TestCase):
         result = client.login()
         self.assertIsInstance(result, HttpResponseRedirect)
         self.assertEqual(result.url, expected_url)
-        mock_cache_set.assert_called_once_with("123", "123", 600)
+        mock_cache_set.assert_called_once_with(state_cache_key("123"), "123", 600)
         # Two calls now: 128-byte verifier + 32-byte state.
         mock_token_urlsafe.assert_any_call(128)
         mock_token_urlsafe.assert_any_call(32)
@@ -390,7 +390,7 @@ class OpenIDClientTestCase(TestCase):
         self.assertIsInstance(result, HttpResponseRedirect)
         self.assertEqual(result.url, expected_url)
         # Default code challenge timeout is 600
-        mock_cache_set.assert_called_once_with("123", "123", 600)
+        mock_cache_set.assert_called_once_with(state_cache_key("123"), "123", 600)
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
