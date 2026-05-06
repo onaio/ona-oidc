@@ -16,7 +16,12 @@ from mock import MagicMock, patch
 from rest_framework.test import APIRequestFactory
 
 from oidc.client import OpenIDClient, TokenVerificationFailed
-from oidc.viewsets import BaseOpenIDConnectViewset, UserModelOpenIDConnectViewset
+from oidc.viewsets import (
+    USERNAME_FORM_MARKER_FIELD,
+    USERNAME_FORM_MARKER_VALUE,
+    BaseOpenIDConnectViewset,
+    UserModelOpenIDConnectViewset,
+)
 
 User = get_user_model()
 
@@ -172,7 +177,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 data={
                     "id_token": self._ALICE_ID_TOKEN,
                     "username": "alice_chosen",
-                    "from_username_form": "1",
+                    USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
                 },
             )
             response = view(request, auth_server="default")
@@ -277,7 +282,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 data={
                     "id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia",
                     "username": "bob_chosen",
-                    "from_username_form": "1",
+                    USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
                 },
             )
             response = view(request, auth_server="default")
@@ -305,10 +310,14 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         with patch(
             "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code"
-        ) as mock_exchange:
-            # Make the exchange fail loudly so we don't accidentally
-            # exercise the rest of the flow — we only care that it WAS
-            # called with the code from the URL.
+        ) as mock_exchange, patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_decode:
+            # Make the exchange fail so we don't accidentally exercise
+            # the rest of the flow. We pin two invariants:
+            #   1. The code from the URL IS exchanged.
+            #   2. The id_token from the body is NEVER decoded — even
+            #      if a refactor reordered things.
             mock_exchange.side_effect = TokenVerificationFailed("test stop")
             request = self.factory.post(
                 "/?code=fresh-code-from-idp",
@@ -319,6 +328,8 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(
                 mock_exchange.call_args[0][0], "fresh-code-from-idp"
             )
+            for call in mock_decode.call_args_list:
+                self.assertNotIn("attacker-supplied-id-token", call.args)
             self.assertEqual(response.status_code, 401)
 
     def test_append_query_param_is_idempotent_and_canonical(self):
@@ -345,6 +356,91 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         # Appends to an empty query.
         result = helper("https://x/cb", "new_signup", "1")
         self.assertEqual(result, "https://x/cb?new_signup=1")
+
+    def test_safe_default_username_rejects_unanchored_partial_match(self):
+        """
+        _safe_default_username must mirror the form's HTML5 `pattern`
+        attribute (anchored full-match). A regex without explicit
+        anchors must still reject values where the regex only matches
+        a prefix or substring — re.search() would accept those, but
+        the browser would reject the form on submit.
+        """
+        viewset = BaseOpenIDConnectViewset()
+        # Force a config where the regex has no anchors. fullmatch
+        # treats the whole string as anchored, so "user.alice" is
+        # rejected even though re.search would find a "user" prefix.
+        viewset.field_validation_regex = {"username": {"regex": "[A-Za-z0-9_]+"}}
+        self.assertEqual(viewset._safe_default_username("user.alice"), "")
+        self.assertEqual(viewset._safe_default_username("alice"), "alice")
+        self.assertEqual(viewset._safe_default_username(""), "")
+
+        # No regex configured: pass through.
+        viewset.field_validation_regex = {}
+        self.assertEqual(viewset._safe_default_username("anything!"), "anything!")
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "ALWAYS_PROMPT_USERNAME": True,
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000/authenticate",
+        }
+    )
+    def test_username_conflict_rerenders_form_with_user_input_preserved(self):
+        """
+        On a uniqueness conflict, the form re-renders with the username
+        the user just submitted pre-filled, so they can edit it instead
+        of retyping from scratch.
+        """
+        # Pre-existing user that will collide on email.
+        User.objects.create(
+            username="taken_already",
+            email="useralice@gmail.com",
+            first_name="user",
+            last_name="Alice",
+        )
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            # Different email so the existing-user lookup misses, but
+            # username will still trip uniqueness because we submit a
+            # username that matches the pre-existing user.
+            mock_func.return_value = {
+                **self._ALICE_CLAIMS,
+                "email": "newuser@gmail.com",
+                "preferred_username": "newuser@gmail.com",
+            }
+            request = self.factory.post(
+                "/",
+                data={
+                    "id_token": self._ALICE_ID_TOKEN,
+                    "username": "taken_already",
+                    USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+                },
+            )
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                response.template_name, "oidc/oidc_user_data_entry.html"
+            )
+            self.assertEqual(response.data["default_username"], "taken_already")
+            self.assertIn("already in use", response.data["error"])
+
+    def test_username_form_template_uses_marker_constants(self):
+        """
+        The form template hard-codes the marker field name and value;
+        the viewset reads them via constants. Pin that the two stay
+        in sync — a rename in viewsets.py without a template update
+        (or vice versa) silently breaks the form-resubmit gate.
+        """
+        from django.template.loader import render_to_string
+
+        rendered = render_to_string(
+            "oidc/oidc_user_data_entry.html",
+            {"id_token": "tok", "default_username": ""},
+        )
+        self.assertIn(f'name="{USERNAME_FORM_MARKER_FIELD}"', rendered)
+        self.assertIn(f'value="{USERNAME_FORM_MARKER_VALUE}"', rendered)
 
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
     def test_create_user_providing_id_token_in_form(self):
