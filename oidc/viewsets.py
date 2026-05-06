@@ -249,9 +249,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
         target_url = redirect_after or config.get("REDIRECT_AFTER_AUTH")
         if is_first_login and target_url:
-            target_url = self._append_query_param(
-                target_url, "new_signup", "1"
-            )
+            target_url = self._append_query_param(target_url, "new_signup", "1")
         response = HttpResponseRedirect(target_url)
 
         if self.use_auth_backend:
@@ -476,16 +474,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
                     if not user:
                         user_data, missing_fields = self._clean_user_data(user_data)
-                        if (
-                            self.always_prompt_username
-                            and not provided_username
-                        ):
+                        if self.always_prompt_username and not provided_username:
                             return Response(
                                 {
                                     "id_token": id_token,
-                                    "default_username": user_data.get(
-                                        "username", ""
-                                    ),
+                                    "default_username": user_data.get("username", ""),
                                 },
                                 template_name="oidc/oidc_user_data_entry.html",
                             )
