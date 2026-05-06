@@ -13,6 +13,7 @@
             {% endif %}
             <input type="text" name="username" placeholder="Username" value="{{ default_username|default:'' }}" pattern="^[A-Za-z0-9_]*$" title="Username should not contain . @ - symbols">
             <input type="hidden" name="id_token" value="{{ id_token }}">
+            <input type="hidden" name="from_username_form" value="1">
             <input type="submit" value="Save">
         </form>
     </div>

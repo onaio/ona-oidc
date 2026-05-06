@@ -15,7 +15,7 @@ import jwt
 from mock import MagicMock, patch
 from rest_framework.test import APIRequestFactory
 
-from oidc.client import OpenIDClient
+from oidc.client import OpenIDClient, TokenVerificationFailed
 from oidc.viewsets import BaseOpenIDConnectViewset, UserModelOpenIDConnectViewset
 
 User = get_user_model()
@@ -113,6 +113,17 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
 
+    # Shared id_token claims for the always-prompt-username scenarios.
+    _ALICE_CLAIMS = {
+        "email_verified": False,
+        "name": "Alice User",
+        "preferred_username": "useralice@gmail.com",
+        "given_name": "user",
+        "family_name": "Alice",
+        "email": "useralice@gmail.com",
+    }
+    _ALICE_ID_TOKEN = "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia"
+
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG={
             **OPENID_CONNECT_VIEWSET_CONFIG,
@@ -122,69 +133,110 @@ class TestUserModelOpenIDConnectViewset(TestCase):
     )
     def test_always_prompt_username_renders_form_with_default(self):
         """
-        When ALWAYS_PROMPT_USERNAME is enabled, a brand-new signup is sent
-        to the username entry form even when the email-derived username is
-        unique, with the derived username pre-filled as the default.
+        With ALWAYS_PROMPT_USERNAME=True, a brand-new signup is rendered
+        the username-entry form with the email-derived value pre-filled,
+        and no user is created until the form is submitted.
         """
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         with patch(
             "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
         ) as mock_func:
-            mock_func.return_value = {
-                "email_verified": False,
-                "name": "Alice User",
-                "preferred_username": "useralice@gmail.com",
-                "given_name": "user",
-                "family_name": "Alice",
-                "email": "useralice@gmail.com",
-            }
-            data = {"id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia"}
-            request = self.factory.post("/", data=data)
+            mock_func.return_value = self._ALICE_CLAIMS
+            request = self.factory.post("/", data={"id_token": self._ALICE_ID_TOKEN})
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
             self.assertEqual(response.data["default_username"], "useralice")
             self.assertFalse(User.objects.filter(email="useralice@gmail.com").exists())
 
-        # When the user submits the form with a username, the user is created.
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "ALWAYS_PROMPT_USERNAME": True,
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000/authenticate",
+        }
+    )
+    def test_always_prompt_username_form_submit_creates_user_with_marker(self):
+        """
+        Submitting the username-entry form (carrying the form marker, the
+        id_token, and the chosen username) creates the user and appends
+        new_signup=1 so the SPA can route the fresh account onward.
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         with patch(
             "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
         ) as mock_func:
-            mock_func.return_value = {
-                "email_verified": False,
-                "name": "Alice User",
-                "preferred_username": "useralice@gmail.com",
-                "given_name": "user",
-                "family_name": "Alice",
-                "email": "useralice@gmail.com",
-            }
-            data = {
-                "id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia",
-                "username": "alice_chosen",
-            }
-            request = self.factory.post("/", data=data)
+            mock_func.return_value = self._ALICE_CLAIMS
+            request = self.factory.post(
+                "/",
+                data={
+                    "id_token": self._ALICE_ID_TOKEN,
+                    "username": "alice_chosen",
+                    "from_username_form": "1",
+                },
+            )
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 302)
             user = User.objects.get(username="alice_chosen")
             self.assertEqual(user.email, "useralice@gmail.com")
-            # First-login marker is appended so the SPA can route the user
-            # to the post-signup upgrade page.
             self.assertIn("new_signup=1", response["Location"])
 
-        # A subsequent sign-in by the same user must NOT carry the marker.
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "ALWAYS_PROMPT_USERNAME": True,
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000/authenticate",
+        }
+    )
+    def test_always_prompt_username_returning_user_no_marker(self):
+        """
+        A returning user (already in the DB, last_login set) signing in
+        again must NOT pick up new_signup=1.
+        """
+        User.objects.create(
+            username="alice_chosen",
+            email="useralice@gmail.com",
+            first_name="user",
+            last_name="Alice",
+            last_login=timezone.now(),
+        )
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         with patch(
             "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
         ) as mock_func:
-            mock_func.return_value = {
-                "email_verified": False,
-                "name": "Alice User",
-                "preferred_username": "useralice@gmail.com",
-                "given_name": "user",
-                "family_name": "Alice",
-                "email": "useralice@gmail.com",
-            }
-            data = {"id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia"}
-            request = self.factory.post("/", data=data)
+            mock_func.return_value = self._ALICE_CLAIMS
+            request = self.factory.post("/", data={"id_token": self._ALICE_ID_TOKEN})
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 302)
+            self.assertNotIn("new_signup=1", response["Location"])
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "ALWAYS_PROMPT_USERNAME": True,
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000/authenticate",
+        }
+    )
+    def test_pre_existing_user_first_oidc_login_no_marker(self):
+        """
+        A pre-existing user (e.g., created via createsuperuser) whose
+        last_login is None signs in via OIDC for the first time. They
+        must NOT receive new_signup=1, since they were not created in
+        this request.
+        """
+        User.objects.create(
+            username="alice_chosen",
+            email="useralice@gmail.com",
+            first_name="user",
+            last_name="Alice",
+            last_login=None,
+        )
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = self._ALICE_CLAIMS
+            request = self.factory.post("/", data={"id_token": self._ALICE_ID_TOKEN})
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 302)
             self.assertNotIn("new_signup=1", response["Location"])
@@ -203,6 +255,8 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         action="" preserves the query string. The viewset must NOT try to
         re-exchange that one-shot code (which would 400 from Keycloak with
         invalid_code) — it should use the id_token already in the form body.
+        The form sends a `from_username_form=1` marker that gates this
+        short-circuit.
         """
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         with patch(
@@ -223,12 +277,74 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 data={
                     "id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia",
                     "username": "bob_chosen",
+                    "from_username_form": "1",
                 },
             )
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 302)
             mock_exchange.assert_not_called()
             self.assertTrue(User.objects.filter(username="bob_chosen").exists())
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "RESPONSE_MODE": "query",
+            }
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_query_mode_post_with_id_token_but_no_form_marker_uses_code_exchange(self):
+        """
+        Security regression: a POST to /callback carrying an id_token in
+        the body but WITHOUT the form marker must NOT short-circuit the
+        auth-code exchange for clients configured with response_mode=query.
+        Otherwise any holder of a signed id_token could bypass the
+        state/nonce validation tied to the auth-code flow.
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code"
+        ) as mock_exchange:
+            # Make the exchange fail loudly so we don't accidentally
+            # exercise the rest of the flow — we only care that it WAS
+            # called with the code from the URL.
+            mock_exchange.side_effect = TokenVerificationFailed("test stop")
+            request = self.factory.post(
+                "/?code=fresh-code-from-idp",
+                data={"id_token": "attacker-supplied-id-token"},
+            )
+            response = view(request, auth_server="default")
+            mock_exchange.assert_called_once()
+            self.assertEqual(
+                mock_exchange.call_args[0][0], "fresh-code-from-idp"
+            )
+            self.assertEqual(response.status_code, 401)
+
+    def test_append_query_param_is_idempotent_and_canonical(self):
+        """
+        _append_query_param must (a) not duplicate the key when the URL
+        already carries it, and (b) round-trip existing percent-encoded
+        values without re-escaping.
+        """
+        helper = BaseOpenIDConnectViewset._append_query_param
+
+        # Idempotent on repeated marker.
+        result = helper("https://x/cb?new_signup=1", "new_signup", "1")
+        self.assertEqual(result, "https://x/cb?new_signup=1")
+
+        # Replaces an existing value rather than duplicating.
+        result = helper("https://x/cb?new_signup=0", "new_signup", "1")
+        self.assertEqual(result, "https://x/cb?new_signup=1")
+
+        # Preserves an unrelated existing param.
+        result = helper("https://x/cb?foo=bar", "new_signup", "1")
+        self.assertIn("foo=bar", result)
+        self.assertIn("new_signup=1", result)
+
+        # Appends to an empty query.
+        result = helper("https://x/cb", "new_signup", "1")
+        self.assertEqual(result, "https://x/cb?new_signup=1")
 
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
     def test_create_user_providing_id_token_in_form(self):
