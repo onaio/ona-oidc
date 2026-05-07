@@ -1748,3 +1748,210 @@ class TestLoginNextValidation(TestCase):
         self.assertEqual(
             cached_payload["redirect_after"], "https://spa.example.com/dashboard"
         )
+
+
+class TestPerProviderTargetUrlAfterAuth(TestCase):
+    """
+    Pin the post-auth landing URL resolution order in
+    generate_successful_response:
+      1. explicit redirect_after (per-request, from id_token claim)
+      2. per-provider TARGET_URL_AFTER_AUTH on
+         OPENID_CONNECT_AUTH_SERVERS[auth_server]
+      3. global REDIRECT_AFTER_AUTH on OPENID_CONNECT_VIEWSET_CONFIG
+
+    Lets multi-tenant deployments give each provider its own landing
+    page without mutating a shared global default that would break
+    other tenants on the same install.
+    """
+
+    def setUp(self):
+        TestCase().setUp()
+        self.factory = APIRequestFactory()
+        cache.clear()
+
+    def _post_callback(self, *, id_token_claims, auth_server):
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = id_token_claims
+            request = self.factory.post(
+                "/",
+                data={"id_token": "header.payload.signature"},
+            )
+            return view(request, auth_server=auth_server)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "primary": {
+                "AUTHORIZATION_ENDPOINT": "https://example.com/authorize",
+                "CLIENT_ID": "client",
+                "JWKS_ENDPOINT": "https://example.com/keys",
+                "SCOPE": "openid profile email",
+                "TOKEN_ENDPOINT": "https://example.com/token",
+                "END_SESSION_ENDPOINT": "https://example.com/logout",
+                "REDIRECT_URI": "http://localhost:8000/oidc/primary/callback",
+                "RESPONSE_TYPE": "id_token",
+                "RESPONSE_MODE": "form_post",
+                "USE_NONCES": False,
+                "USE_EMAIL_USERNAME": True,
+                "TARGET_URL_AFTER_AUTH": "https://primary.example.com/landing",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            "REDIRECT_AFTER_AUTH": "https://global-default.example.com",
+            "USE_SSO_COOKIE": False,
+            "JWT_SECRET_KEY": "secret",
+            "JWT_ALGORITHM": "HS256",
+        },
+    )
+    def test_per_provider_target_wins_over_global_default(self):
+        response = self._post_callback(
+            id_token_claims={
+                "given_name": "ada",
+                "family_name": "lovelace",
+                "email": "ada1@example.com",
+                "preferred_username": "ada1",
+            },
+            auth_server="primary",
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "https://primary.example.com/landing")
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "primary": {
+                "AUTHORIZATION_ENDPOINT": "https://example.com/authorize",
+                "CLIENT_ID": "client",
+                "JWKS_ENDPOINT": "https://example.com/keys",
+                "SCOPE": "openid profile email",
+                "TOKEN_ENDPOINT": "https://example.com/token",
+                "END_SESSION_ENDPOINT": "https://example.com/logout",
+                "REDIRECT_URI": "http://localhost:8000/oidc/primary/callback",
+                "RESPONSE_TYPE": "id_token",
+                "RESPONSE_MODE": "form_post",
+                "USE_NONCES": False,
+                "USE_EMAIL_USERNAME": True,
+                "TARGET_URL_AFTER_AUTH": "https://primary.example.com/landing",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            "REDIRECT_AFTER_AUTH": "https://global-default.example.com",
+            "USE_SSO_COOKIE": False,
+            "JWT_SECRET_KEY": "secret",
+            "JWT_ALGORITHM": "HS256",
+        },
+    )
+    def test_explicit_redirect_after_claim_wins_over_per_provider(self):
+        response = self._post_callback(
+            id_token_claims={
+                "given_name": "ada",
+                "family_name": "lovelace",
+                "email": "ada2@example.com",
+                "preferred_username": "ada2",
+                "redirect_after_auth": "https://requested.example.com/dashboard",
+            },
+            auth_server="primary",
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response.url, "https://requested.example.com/dashboard"
+        )
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "primary": {
+                "AUTHORIZATION_ENDPOINT": "https://example.com/authorize",
+                "CLIENT_ID": "client",
+                "JWKS_ENDPOINT": "https://example.com/keys",
+                "SCOPE": "openid profile email",
+                "TOKEN_ENDPOINT": "https://example.com/token",
+                "END_SESSION_ENDPOINT": "https://example.com/logout",
+                "REDIRECT_URI": "http://localhost:8000/oidc/primary/callback",
+                "RESPONSE_TYPE": "id_token",
+                "RESPONSE_MODE": "form_post",
+                "USE_NONCES": False,
+                "USE_EMAIL_USERNAME": True,
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            "REDIRECT_AFTER_AUTH": "https://global-default.example.com",
+            "USE_SSO_COOKIE": False,
+            "JWT_SECRET_KEY": "secret",
+            "JWT_ALGORITHM": "HS256",
+        },
+    )
+    def test_global_default_applies_when_no_per_provider_target(self):
+        response = self._post_callback(
+            id_token_claims={
+                "given_name": "ada",
+                "family_name": "lovelace",
+                "email": "ada3@example.com",
+                "preferred_username": "ada3",
+            },
+            auth_server="primary",
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "https://global-default.example.com")
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "primary": {
+                "AUTHORIZATION_ENDPOINT": "https://example.com/authorize",
+                "CLIENT_ID": "client",
+                "JWKS_ENDPOINT": "https://example.com/keys",
+                "SCOPE": "openid profile email",
+                "TOKEN_ENDPOINT": "https://example.com/token",
+                "END_SESSION_ENDPOINT": "https://example.com/logout",
+                "REDIRECT_URI": "http://localhost:8000/oidc/primary/callback",
+                "RESPONSE_TYPE": "id_token",
+                "RESPONSE_MODE": "form_post",
+                "USE_NONCES": False,
+                "USE_EMAIL_USERNAME": True,
+                "TARGET_URL_AFTER_AUTH": "https://primary.example.com/landing",
+            },
+            "secondary": {
+                "AUTHORIZATION_ENDPOINT": "https://example.com/authorize",
+                "CLIENT_ID": "client",
+                "JWKS_ENDPOINT": "https://example.com/keys",
+                "SCOPE": "openid profile email",
+                "TOKEN_ENDPOINT": "https://example.com/token",
+                "END_SESSION_ENDPOINT": "https://example.com/logout",
+                "REDIRECT_URI": "http://localhost:8000/oidc/secondary/callback",
+                "RESPONSE_TYPE": "id_token",
+                "RESPONSE_MODE": "form_post",
+                "USE_NONCES": False,
+                "USE_EMAIL_USERNAME": True,
+                "TARGET_URL_AFTER_AUTH": "https://secondary.example.com",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            "REDIRECT_AFTER_AUTH": "https://global-default.example.com",
+            "USE_SSO_COOKIE": False,
+            "JWT_SECRET_KEY": "secret",
+            "JWT_ALGORITHM": "HS256",
+        },
+    )
+    def test_two_providers_resolve_independent_targets(self):
+        primary_response = self._post_callback(
+            id_token_claims={
+                "given_name": "ada",
+                "family_name": "lovelace",
+                "email": "ada4@example.com",
+                "preferred_username": "ada4",
+            },
+            auth_server="primary",
+        )
+        secondary_response = self._post_callback(
+            id_token_claims={
+                "given_name": "grace",
+                "family_name": "hopper",
+                "email": "grace4@example.com",
+                "preferred_username": "grace4",
+            },
+            auth_server="secondary",
+        )
+        self.assertEqual(primary_response.status_code, 302)
+        self.assertEqual(primary_response.url, "https://primary.example.com/landing")
+        self.assertEqual(secondary_response.status_code, 302)
+        self.assertEqual(secondary_response.url, "https://secondary.example.com")
