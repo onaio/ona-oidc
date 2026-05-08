@@ -310,9 +310,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 "TARGET_URL_AFTER_AUTH"
             )
         response = HttpResponseRedirect(
-            redirect_after
-            or per_provider_target
-            or config.get("REDIRECT_AFTER_AUTH")
+            redirect_after or per_provider_target or config.get("REDIRECT_AFTER_AUTH")
         )
 
         if self.use_auth_backend:
