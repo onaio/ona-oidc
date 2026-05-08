@@ -37,6 +37,7 @@ from oidc.client import (
     NonceVerificationFailed,
     OpenIDClient,
     TokenVerificationFailed,
+    state_cache_key,
 )
 from oidc.utils import (
     email_usename_to_url_safe,
@@ -49,6 +50,22 @@ from oidc.utils import (
 
 default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 SSO_COOKIE_NAME = "SSO"
+
+# Hidden field on oidc_user_data_entry.html that signals the form is
+# re-POSTing to the callback URL. Not a security boundary — the value
+# is a public constant and can be forged. Its purpose is to make the
+# "use id_token from body, skip auth-code exchange" path deliberate
+# (only triggered by our own form), so the broader code-exchange path
+# remains the default. Real protection comes from
+# verify_and_decode_id_token (signature, expiry, nonce).
+USERNAME_FORM_MARKER_FIELD = "from_username_form"
+USERNAME_FORM_MARKER_VALUE = "1"
+
+# Defaults used when FIELD_VALIDATION_REGEX has no "username" entry.
+# Kept conservative so the rendered form matches the legacy template
+# behaviour for deployments that haven't customized validation.
+DEFAULT_USERNAME_PATTERN = r"^[A-Za-z0-9_]*$"
+DEFAULT_USERNAME_HELP_TEXT = "Username should not contain . @ - symbols"
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +227,51 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             _("Unable to process OpenID connect logout request."),
         )
 
+    def _username_field_config(self) -> Tuple[str, str]:
+        """
+        Return (regex, help_text) for the username field, falling back
+        to conservative defaults when FIELD_VALIDATION_REGEX is unset.
+        The configured regex is forwarded as-is — HTML5 `pattern` already
+        full-matches the input value implicitly, so the contract is that
+        deployers supply a single complete pattern (top-level alternation
+        with internal anchors will combine with the implicit full-match
+        the same way it does in any browser-rendered form).
+        """
+        cfg = self.field_validation_regex.get("username", {})
+        regex = cfg.get("regex") or DEFAULT_USERNAME_PATTERN
+        help_text = cfg.get("help_text") or DEFAULT_USERNAME_HELP_TEXT
+        return regex, help_text
+
+    def _username_form_response(
+        self,
+        data: dict,
+        *,
+        state: Optional[str] = None,
+        **response_kwargs,
+    ) -> Response:
+        """
+        Build a Response for oidc_user_data_entry.html with the username
+        regex/help text injected so the form's `pattern`/`title`
+        attributes always reflect the deployed FIELD_VALIDATION_REGEX
+        config, and the original auth-flow `state` rendered as a hidden
+        input so the form re-submit carries it back. Callers pass the
+        state once via the kwarg; the helper guarantees it's emitted on
+        every render so `_clear_login_states` can drop the PKCE cache
+        entry on the success path that follows.
+        """
+        regex, help_text = self._username_field_config()
+        merged = {
+            **data,
+            "username_pattern": regex,
+            "username_help_text": help_text,
+            "state": state or "",
+        }
+        return Response(
+            merged,
+            template_name="oidc/oidc_user_data_entry.html",
+            **response_kwargs,
+        )
+
     def _check_user_uniqueness(self, user_data: dict) -> Optional[str]:
         """
         Helper function that checks if the supplied user data is unique. If user_data does not
@@ -344,8 +406,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
         :param server_response: Response from authorization server
         """
-        if server_response.get("state"):
-            cache.delete(server_response.get("state"))
+        state = server_response.get("state")
+        if state:
+            cache.delete(state_cache_key(state))
 
     @action(methods=["POST", "GET"], detail=False)
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
@@ -354,15 +417,44 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         server_response = {}
 
         if client:
-            if client.response_mode == "form_post":
+            # The username-entry form re-POSTs to the callback URL with
+            # the original (already-consumed) ?code= still on the URL
+            # because action="" preserves the query string. Detect that
+            # specific re-submit via the hidden marker the form sets and
+            # reuse the id_token it carries instead of re-exchanging the
+            # stale code (which 400s from the IdP as invalid_code). The
+            # marker is a path gate, not an auth check — the id_token is
+            # still verified downstream.
+            is_username_form_resubmit = (
+                request.method == "POST"
+                and request.data.get(USERNAME_FORM_MARKER_FIELD)
+                == USERNAME_FORM_MARKER_VALUE
+                and request.data.get("id_token")
+            )
+            if is_username_form_resubmit:
+                # Carry `state` forward (the form rendered it as a hidden
+                # input from the original server_response) so the success
+                # path's _clear_login_states can drop the PKCE cache entry
+                # written by client.login(). Without this, that entry would
+                # leak until cache TTL on every missing-username flow.
+                server_response = {
+                    "id_token": request.data.get("id_token"),
+                    "state": request.data.get("state"),
+                }
+            elif client.response_mode == "form_post":
                 server_response = request.data
 
             elif client.response_mode == "query":
                 server_response = request.query_params
 
-            if client.use_pkce and server_response.get("state"):
-                # Get the original code verifier for PKCE flow
-                code_verifier = cache.get(server_response.get("state"))
+            state_value = server_response.get("state")
+            if client.use_pkce and state_value:
+                # Get the original code verifier for PKCE flow. We only
+                # consult the namespaced key — never the raw state value
+                # — so an attacker who reaches this branch with a
+                # chosen `state` cannot probe arbitrary keys (e.g.
+                # session IDs) for existence via cache-hit timing.
+                code_verifier = cache.get(state_cache_key(state_value))
 
                 if code_verifier is None:
                     logger.error("PKCE code verifier not found in cache")
@@ -463,8 +555,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             ):
                                 data = {"id_token": id_token}
                                 logger.info("missing_fields: ", missing_fields)
-                                return Response(
-                                    data, template_name="oidc/oidc_user_data_entry.html"
+                                return self._username_form_response(
+                                    data, state=server_response.get("state")
                                 )
                             else:
                                 missing_fields = ", ".join(missing_fields)
@@ -487,8 +579,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                                     "error": f"{field.capitalize()} field is already in use.",
                                 }
                                 logger.info(data)
-                                return Response(
-                                    data, template_name="oidc/oidc_user_data_entry.html"
+                                return self._username_form_response(
+                                    data, state=server_response.get("state")
                                 )
 
                         self.validate_fields(user_data)
@@ -503,10 +595,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     stack_trace = traceback.format_exc()
                     logger.info("ValueError")
                     logger.info(stack_trace)
-                    return Response(
+                    return self._username_form_response(
                         {"error": str(e), "id_token": id_token},
+                        state=server_response.get("state"),
                         status=status.HTTP_400_BAD_REQUEST,
-                        template_name="oidc/oidc_user_data_entry.html",
                     )
                 except jwt.exceptions.DecodeError:
                     return Response(

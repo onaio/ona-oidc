@@ -15,8 +15,15 @@ import jwt
 from mock import MagicMock, patch
 from rest_framework.test import APIRequestFactory
 
-from oidc.client import OpenIDClient
-from oidc.viewsets import BaseOpenIDConnectViewset, UserModelOpenIDConnectViewset
+from oidc.client import OpenIDClient, TokenVerificationFailed, state_cache_key
+from oidc.viewsets import (
+    DEFAULT_USERNAME_HELP_TEXT,
+    DEFAULT_USERNAME_PATTERN,
+    USERNAME_FORM_MARKER_FIELD,
+    USERNAME_FORM_MARKER_VALUE,
+    BaseOpenIDConnectViewset,
+    UserModelOpenIDConnectViewset,
+)
 
 User = get_user_model()
 
@@ -112,6 +119,288 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_username_form_resubmit_clears_state_cache(self):
+        """
+        On a successful re-submit of the username-entry form, the cache
+        entry that client.login() wrote against the OIDC `state` value
+        must be deleted by _clear_login_states. The form carries the
+        original `state` back as a hidden input, the short-circuit
+        threads it into server_response, and cleanup runs as on the
+        non-form-render path. Without this, the entry leaks until cache
+        TTL on every missing-username flow.
+        """
+        # Prime the cache the way client.login() actually writes it
+        # (namespaced via state_cache_key).
+        state = "known-state-value"
+        cache.set(state_cache_key(state), "known-code-verifier")
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_decode:
+            mock_decode.return_value = {
+                "name": "Cache User",
+                "preferred_username": "cacheuser@example.com",
+                "given_name": "cache",
+                "family_name": "User",
+                "email": "cacheuser@example.com",
+            }
+            request = self.factory.post(
+                "/",
+                data={
+                    "id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia",
+                    "username": "cache_chosen",
+                    "state": state,
+                    USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+                },
+            )
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 302)
+            self.assertIsNone(cache.get(state_cache_key(state)))
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_form_resubmit_attacker_state_does_not_touch_unrelated_cache_entries(self):
+        """
+        Security boundary: an attacker holding a valid id_token can drive
+        the form re-submit short-circuit with an arbitrary `state` value
+        in the body. _clear_login_states must only delete entries inside
+        the OIDC `oidc:state:` keyspace, never raw keys that other apps
+        (Django sessions, rate-limit counters, feature flags, etc.) own.
+        Pins the state-cache-key namespace as the security boundary.
+        """
+        cache.set("unrelated-app-key", "important-data")
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_decode:
+            mock_decode.return_value = {
+                "name": "Attacker User",
+                "preferred_username": "attacker@example.com",
+                "given_name": "att",
+                "family_name": "Acker",
+                "email": "attacker@example.com",
+            }
+            request = self.factory.post(
+                "/",
+                data={
+                    "id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia",
+                    "username": "att_chosen",
+                    # Attacker chooses the cache key they want deleted.
+                    "state": "unrelated-app-key",
+                    USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+                },
+            )
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 302)
+            # The unrelated entry is untouched. Only the namespaced
+            # equivalent (oidc:state:unrelated-app-key) — which doesn't
+            # exist — would have been deleted.
+            self.assertEqual(cache.get("unrelated-app-key"), "important-data")
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_form_post_mode_post_with_id_token_no_marker_uses_request_data(self):
+        """
+        Symmetric to the query-mode security regression: in the default
+        response_mode=form_post, a POST that carries an `id_token` in
+        the body but NOT the form marker must follow the existing
+        `server_response = request.data` branch unchanged. The new
+        short-circuit must not alter form_post semantics for callers
+        that aren't our re-submit form (i.e., the IdP itself).
+
+        Limitation: the assertions below (`mock_exchange.assert_not_called`
+        + `mock_decode.assert_called_once_with(...)`) hold whether the
+        form_post branch or the short-circuit branch ran — both source
+        the id_token from request.data and skip the auth-code exchange.
+        This is therefore a behavioural pin, not a code-path pin.
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with (
+            patch(
+                "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code"
+            ) as mock_exchange,
+            patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+            ) as mock_decode,
+        ):
+            mock_decode.return_value = {
+                "name": "FormPost User",
+                "preferred_username": "fpuser@example.com",
+                "given_name": "fp",
+                "family_name": "User",
+                "email": "fpuser@example.com",
+            }
+            # No marker, no ?code= in URL: id_token comes from request.data
+            # via the form_post branch. Exchange must never be attempted.
+            request = self.factory.post(
+                "/",
+                data={"id_token": "idp-supplied-id-token"},
+            )
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 302)
+            mock_exchange.assert_not_called()
+            mock_decode.assert_called_once_with("idp-supplied-id-token")
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_username_form_resubmit_does_not_re_exchange_code(self):
+        """
+        When the user-data-entry form re-POSTs to the callback URL, the
+        original OIDC `?code=...` is still on the URL because the form's
+        action="" preserves the query string. The viewset must NOT try to
+        re-exchange that one-shot code (which would 400 from the IdP as
+        invalid_code) — it should use the id_token already in the form
+        body. The form sends a `from_username_form=1` marker that gates
+        this short-circuit.
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with (
+            patch(
+                "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code"
+            ) as mock_exchange,
+            patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+            ) as mock_decode,
+        ):
+            mock_decode.return_value = {
+                "email_verified": False,
+                "name": "Bob User",
+                "preferred_username": "bob@example.com",
+                "given_name": "bob",
+                "family_name": "User",
+                "email": "bob@example.com",
+            }
+            request = self.factory.post(
+                "/?code=stale-already-consumed-code&state=stale-state",
+                data={
+                    "id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia",
+                    "username": "bob_chosen",
+                    USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+                },
+            )
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 302)
+            mock_exchange.assert_not_called()
+            self.assertTrue(User.objects.filter(username="bob_chosen").exists())
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "RESPONSE_MODE": "query",
+            }
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_query_mode_post_with_id_token_but_no_form_marker_uses_code_exchange(self):
+        """
+        Security regression: a POST to /callback carrying an id_token in
+        the body but WITHOUT the form marker must NOT short-circuit the
+        auth-code exchange for clients configured with response_mode=query.
+        Otherwise any holder of a signed id_token could bypass the
+        state/nonce validation tied to the auth-code flow.
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with (
+            patch(
+                "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code"
+            ) as mock_exchange,
+            patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+            ) as mock_decode,
+        ):
+            # Make the exchange fail so we don't accidentally exercise
+            # the rest of the flow. We pin two invariants:
+            #   1. The code from the URL IS exchanged.
+            #   2. The id_token from the body is NEVER decoded.
+            mock_exchange.side_effect = TokenVerificationFailed("test stop")
+            request = self.factory.post(
+                "/?code=fresh-code-from-idp",
+                data={"id_token": "attacker-supplied-id-token"},
+            )
+            response = view(request, auth_server="default")
+            mock_exchange.assert_called_once()
+            self.assertEqual(mock_exchange.call_args[0][0], "fresh-code-from-idp")
+            for call in mock_decode.call_args_list:
+                self.assertNotIn("attacker-supplied-id-token", call.args)
+            self.assertEqual(response.status_code, 401)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            # Disable email-derived username so the missing-username
+            # path actually renders the form (instead of auto-deriving
+            # a value the permissive regex below would happily accept).
+            "USE_EMAIL_USERNAME": False,
+            "FIELD_VALIDATION_REGEX": {
+                "username": {
+                    "regex": r"(?!^\d+$)^.+$",
+                    "help_text": "Custom validation help",
+                },
+            },
+        }
+    )
+    def test_username_form_pattern_and_title_come_from_config(self):
+        """
+        The form's HTML5 `pattern` and `title` attributes must reflect
+        the configured FIELD_VALIDATION_REGEX["username"]["regex"] and
+        ["help_text"], not the legacy hard-coded `^[A-Za-z0-9_]*$`.
+        Otherwise a deployment with a permissive regex sees its
+        prefill rejected by the browser even though the server-side
+        validator would accept it.
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "family_name": "bob",
+                "given_name": "just bob",
+                "email": "bob@example.com",
+            }
+            data = {"id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia"}
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
+            # The configured regex is forwarded as-is; HTML5 `pattern`
+            # already implicitly full-matches the input value.
+            self.assertEqual(response.data["username_pattern"], r"(?!^\d+$)^.+$")
+            self.assertEqual(
+                response.data["username_help_text"], "Custom validation help"
+            )
+
+    def test_username_field_config_falls_back_to_defaults(self):
+        """
+        When FIELD_VALIDATION_REGEX has no `username` entry, the helper
+        falls back to the module-level defaults so the rendered template
+        keeps its legacy behaviour for deployments that haven't
+        customized validation.
+        """
+        viewset = BaseOpenIDConnectViewset()
+        viewset.field_validation_regex = {}
+        regex, help_text = viewset._username_field_config()
+        self.assertEqual(regex, DEFAULT_USERNAME_PATTERN)
+        self.assertEqual(help_text, DEFAULT_USERNAME_HELP_TEXT)
+
+    def test_username_form_template_uses_marker_constants(self):
+        """
+        The form template hard-codes the marker field name and value;
+        the viewset reads them via constants. Pin that the two stay
+        in sync — a rename in viewsets.py without a template update
+        (or vice versa) silently breaks the form-resubmit gate.
+        """
+        from django.template.loader import render_to_string
+
+        rendered = render_to_string(
+            "oidc/oidc_user_data_entry.html",
+            {
+                "id_token": "tok",
+                "username_pattern": "^test$",
+                "username_help_text": "test help",
+            },
+        )
+        self.assertIn(f'name="{USERNAME_FORM_MARKER_FIELD}"', rendered)
+        self.assertIn(f'value="{USERNAME_FORM_MARKER_VALUE}"', rendered)
 
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
     def test_create_user_providing_id_token_in_form(self):
@@ -338,10 +627,12 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             request = self.factory.post("/", data=data)
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 400)
-            self.assertTrue(
-                response.rendered_content.startswith(
-                    b'{"error":"Username should only contain word characters & numbers and should have 3 or more characters"'
-                )
+            # Don't pin JSON key order — the helper that builds this
+            # response merges in extra context keys (username_pattern,
+            # username_help_text), so the error key may not be first.
+            self.assertIn(
+                b'"error":"Username should only contain word characters & numbers and should have 3 or more characters"',
+                response.rendered_content,
             )
             self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
 
@@ -1053,11 +1344,12 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         }
         mock_retrieve_tokens_using_auth_code.return_value = {"id_token": "id_token"}
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
-        # Simulate the code verifier being in the cache
-        code_verifier_cache_key = "pkce_123"
-        cache.set(code_verifier_cache_key, "123")
+        # Simulate the code verifier being in the cache, namespaced the
+        # way client.login() writes it.
+        state = "pkce_123"
+        cache.set(state_cache_key(state), "123")
 
-        data = {"state": code_verifier_cache_key, "code": "auth_code"}
+        data = {"state": state, "code": "auth_code"}
         request = self.factory.post("/", data=data)
         response = view(request, auth_server="pkce")
 
@@ -1071,7 +1363,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             "auth_code", code_verifier="123"
         )
         # Code verifier is removed from cache
-        self.assertIsNone(cache.get(code_verifier_cache_key))
+        self.assertIsNone(cache.get(state_cache_key(state)))
 
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
@@ -1097,11 +1389,12 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         }
         mock_retrieve_tokens_using_auth_code.return_value = {"id_token": "id_token"}
         view = UserModelOpenIDConnectViewset.as_view({"get": "callback"})
-        # Simulate the code verifier being in the cache
-        code_verifier_cache_key = "pkce_123"
-        cache.set(code_verifier_cache_key, "123")
+        # Simulate the code verifier being in the cache, namespaced the
+        # way client.login() writes it.
+        state = "pkce_123"
+        cache.set(state_cache_key(state), "123")
 
-        data = {"state": code_verifier_cache_key, "code": "auth_code"}
+        data = {"state": state, "code": "auth_code"}
         request = self.factory.get("/", data=data)
         response = view(request, auth_server="pkce")
         self.assertEqual(response.status_code, 302)
@@ -1114,7 +1407,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             "auth_code", code_verifier="123"
         )
         # Code verifier is removed from cache
-        self.assertIsNone(cache.get(code_verifier_cache_key))
+        self.assertIsNone(cache.get(state_cache_key(state)))
 
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
@@ -1215,12 +1508,13 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         }
         mock_retrieve_tokens_using_auth_code.return_value = {"id_token": "id_token"}
 
-        # Simulate the cached code verifier
-        state_key = "pkce_123"
-        cache.set(state_key, "123")
+        # Simulate the cached code verifier (namespaced as client.login()
+        # would write it).
+        state = "pkce_123"
+        cache.set(state_cache_key(state), "123")
 
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
-        data = {"state": state_key, "code": "auth_code"}
+        data = {"state": state, "code": "auth_code"}
         request = self.factory.post("/", data=data)
         response = view(request, auth_server="pkce")
 
@@ -1230,7 +1524,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             response.data["error"],
             "The request is not authorized. Please contact the administrator.",
         )
-        self.assertIsNone(cache.get(state_key))
+        self.assertIsNone(cache.get(state_cache_key(state)))
 
     def _callback_cookie(self, mock_verify, mock_encode):
         mock_verify.return_value = {

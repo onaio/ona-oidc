@@ -35,6 +35,31 @@ REDIRECT_AFTER_AUTH = "redirect_after_auth"
 # logs and easy to compare against IdP-side configuration.
 _AUTHORIZE_URL_SAFE_CHARS = ":/"
 
+# Cache-key prefix (`oidc:state:`) for the PKCE `state -> code_verifier`
+# entry. The raw `state` value is reflected in URLs and (on the form
+# re-submit path) also flows from the request body, so using it directly
+# as the cache key would let any caller who reaches `_clear_login_states`
+# delete arbitrary unrelated cache entries (sessions, rate-limit
+# counters, etc.). Namespacing under `oidc:state:` confines those
+# mutations to the OIDC keyspace.
+_STATE_CACHE_PREFIX = "oidc:state:"
+
+
+def state_cache_key(state: str) -> str:
+    """
+    Return the namespaced cache key (`oidc:state:<state>`) for an OIDC
+    `state` value.
+
+    Always use this helper when reading, writing, or deleting the
+    PKCE state cache entry — never compute the key inline. The raw
+    `state` value can flow from attacker-controlled request bodies
+    on the form re-submit path; routing through this prefix is what
+    prevents `_clear_login_states` from deleting unrelated cache
+    entries (Django sessions, rate-limit counters, etc.).
+    """
+    return f"{_STATE_CACHE_PREFIX}{state}"
+
+
 RESERVED_AUTHORIZE_PARAMS = frozenset(
     {
         "client_id",
@@ -365,7 +390,7 @@ class OpenIDClient:
             # at callback time.
             state = secrets.token_urlsafe(32)
             cache.set(
-                state,
+                state_cache_key(state),
                 code_verifier,
                 self.pkce_code_challenge_timeout,
             )
