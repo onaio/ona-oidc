@@ -288,15 +288,29 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         return None
 
     def generate_successful_response(
-        self, request, user, redirect_after=None
+        self, request, user, redirect_after=None, auth_server=None
     ) -> HttpResponse:
         """
         Generates a success response for a successful Open ID Connect
         Authentication request
         """
         config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
+        # Resolution order for the post-auth landing URL:
+        #   1. explicit `redirect_after` (per-request, from id_token claim
+        #      or memcached-cached `next=`) — highest priority
+        #   2. per-provider TARGET_URL_AFTER_AUTH on
+        #      OPENID_CONNECT_AUTH_SERVERS[auth_server]
+        #   3. global REDIRECT_AFTER_AUTH on OPENID_CONNECT_VIEWSET_CONFIG
+        # Lets multi-tenant deployments give each provider its own landing
+        # page without mutating a shared global default.
+        per_provider_target = None
+        if auth_server:
+            auth_servers = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
+            per_provider_target = auth_servers.get(auth_server, {}).get(
+                "TARGET_URL_AFTER_AUTH"
+            )
         response = HttpResponseRedirect(
-            redirect_after or config.get("REDIRECT_AFTER_AUTH")
+            redirect_after or per_provider_target or config.get("REDIRECT_AFTER_AUTH")
         )
 
         if self.use_auth_backend:
@@ -412,7 +426,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
     @action(methods=["POST", "GET"], detail=False)
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
-        client = self._get_client(auth_server=kwargs.get("auth_server"))
+        auth_server = kwargs.get("auth_server")
+        client = self._get_client(auth_server=auth_server)
         user = redirect_after = code_verifier = None
         server_response = {}
 
@@ -628,7 +643,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         user.save(update_fields=["last_login"])
                         self._clear_login_states(server_response)
                         return self.generate_successful_response(
-                            request, user, redirect_after=redirect_after
+                            request,
+                            user,
+                            redirect_after=redirect_after,
+                            auth_server=auth_server,
                         )
         auth_servers = list(settings.OPENID_CONNECT_AUTH_SERVERS.keys())
         default_auth_server = auth_servers[0] if auth_servers else "default"
