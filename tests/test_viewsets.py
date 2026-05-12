@@ -1365,6 +1365,37 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(rows[1]["id"], "sess-2")
         self.assertFalse(rows[1]["current"])
 
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_sessions_revoke_others_passes_current_false(self):
+        """DELETE /sessions revokes every session EXCEPT the current one."""
+        view = BaseOpenIDConnectViewset.as_view(
+            {"delete": "sessions_revoke_others"}
+        )
+        request = self.factory.delete("/")
+        request.session = {"oidc_access_token": "stashed.access.token"}
+
+        upstream = MagicMock(status_code=204, content=b"")
+        with patch(
+            "oidc.client.requests.request", return_value=upstream
+        ) as mock_request:
+            response = view(request, auth_server="default")
+
+        # 204 No Content is Keycloak's natural success code for DELETE;
+        # passed through verbatim so the SPA can treat `res.ok` uniformly.
+        self.assertEqual(response.status_code, 204)
+        args, _ = mock_request.call_args
+        self.assertEqual(args[0], "DELETE")
+        self.assertIn("/sessions?current=false", args[1])
+
     @patch(
         "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
         MagicMock(

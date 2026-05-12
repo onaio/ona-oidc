@@ -372,6 +372,18 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             transform=self._flatten_session_devices,
         )
 
+    @action(methods=["DELETE"], detail=False, url_path="sessions")
+    def sessions_revoke_others(
+        self, request: HttpRequest, **kwargs: dict
+    ) -> HttpResponse:
+        """Revoke every Keycloak session except the current one."""
+        return self._proxy_or_error(
+            request,
+            kwargs.get("auth_server"),
+            "DELETE",
+            "/sessions?current=false",
+        )
+
     @staticmethod
     def _flatten_session_devices(body: Optional[list]) -> list:
         """``[{browser, os, sessions:[{id, started, ...}, ...]}, ...]``
