@@ -542,3 +542,45 @@ class OpenIDClient:
                 # surface as ``None``.
                 body = None
         return response.status_code, body
+
+    def request_keycloak_account(
+        self,
+        access_token: str,
+        method: str,
+        path_suffix: str,
+        json_body: Optional[Mapping[str, Any]] = None,
+    ) -> tuple[int, Optional[dict]]:
+        """
+        Issue a generic ``method`` request to ``account_endpoint + path_suffix``
+        on behalf of ``access_token``. Returns ``(status_code, body|None)``.
+
+        ``update_account_profile`` is the POST /account special-case kept
+        for backwards compatibility; new callers should use this helper.
+        """
+        if not self.account_endpoint:
+            raise ValueError(
+                f"ACCOUNT_ENDPOINT is not configured for auth_server "
+                f"{self.auth_server!r}."
+            )
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+        }
+        kwargs: dict = {"headers": headers}
+        if json_body is not None:
+            headers["Content-Type"] = "application/json"
+            kwargs["json"] = dict(json_body)
+        url = f"{self.account_endpoint}{path_suffix}"
+        try:
+            response = requests.request(method, url, **kwargs)
+        except requests.RequestException as exc:
+            logger.exception(exc)
+            raise
+
+        body: Optional[dict] = None
+        if response.content:
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+        return response.status_code, body

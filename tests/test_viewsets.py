@@ -1106,12 +1106,12 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             "/", data={"email": "new@example.com"}, format="json"
         )
         request.session = {}
-        with patch("oidc.client.requests.post") as mock_post:
+        with patch("oidc.client.requests.request") as mock_request:
             response = view(request, auth_server="default")
 
         self.assertEqual(response.status_code, 401)
         # Critical: we never reached out to Keycloak.
-        mock_post.assert_not_called()
+        mock_request.assert_not_called()
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
@@ -1144,13 +1144,13 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         mock_response.status_code = 204
         mock_response.content = b""
         with patch(
-            "oidc.client.requests.post", return_value=mock_response
-        ) as mock_post:
+            "oidc.client.requests.request", return_value=mock_response
+        ) as mock_request:
             response = view(request, auth_server="default")
 
         self.assertEqual(response.status_code, 200)
         # Bearer auth uses the stashed token.
-        _args, kwargs = mock_post.call_args
+        _args, kwargs = mock_request.call_args
         self.assertEqual(
             kwargs["headers"]["Authorization"], "Bearer stashed.access.token"
         )
@@ -1176,11 +1176,11 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         )
         request.session = {"oidc_access_token": "stashed.access.token"}
 
-        with patch("oidc.client.requests.post") as mock_post:
+        with patch("oidc.client.requests.request") as mock_request:
             response = view(request, auth_server="default")
 
         self.assertEqual(response.status_code, 400)
-        mock_post.assert_not_called()
+        mock_request.assert_not_called()
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
@@ -1216,16 +1216,20 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         second_call = MagicMock(status_code=204, content=b"")
 
         with patch(
-            "oidc.client.requests.post",
-            side_effect=[first_call, refresh_call, second_call],
+            "oidc.client.requests.request",
+            side_effect=[first_call, second_call],
+        ) as mock_request, patch(
+            "oidc.client.requests.post", return_value=refresh_call
         ) as mock_post:
             response = view(request, auth_server="default")
 
         self.assertEqual(response.status_code, 200)
-        # Three calls: account (401) → token (refresh) → account (retry, 204).
-        self.assertEqual(mock_post.call_count, 3)
+        # Two account calls (POST 401 → POST 204) plus one token refresh
+        # POST against ``token_endpoint``.
+        self.assertEqual(mock_request.call_count, 2)
+        self.assertEqual(mock_post.call_count, 1)
         # Retry used the fresh token.
-        _args, kwargs = mock_post.call_args_list[2]
+        _args, kwargs = mock_request.call_args_list[1]
         self.assertEqual(
             kwargs["headers"]["Authorization"], "Bearer fresh.access.token"
         )
@@ -1256,6 +1260,45 @@ class TestUserModelOpenIDConnectViewset(TestCase):
 
         self.assertEqual(response.status_code, 503)
         mock_post.assert_not_called()
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_keycloak_account_request_get_passes_through_status_and_body(self):
+        """Shared helper round-trips method/path/body and surfaces upstream
+        (status, body). Refresh + retry exists already; this locks the
+        plain happy-path so the helper extraction is observably safe."""
+        viewset = BaseOpenIDConnectViewset()
+        client = OpenIDClient("default")
+        session = {"oidc_access_token": "stashed.access.token"}
+
+        upstream = MagicMock(status_code=200, content=b'{"hello":"world"}')
+        upstream.json.return_value = {"hello": "world"}
+        with patch(
+            "oidc.client.requests.request", return_value=upstream
+        ) as mock_request:
+            status, body = viewset._keycloak_account_request(
+                client, session, "GET", "/sessions/devices"
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"hello": "world"})
+        args, kwargs = mock_request.call_args
+        self.assertEqual(args[0], "GET")
+        self.assertEqual(
+            args[1],
+            "https://idp.example.com/realms/r/account/sessions/devices",
+        )
+        self.assertEqual(
+            kwargs["headers"]["Authorization"], "Bearer stashed.access.token"
+        )
 
     @patch(
         "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",

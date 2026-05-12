@@ -6,7 +6,7 @@ import importlib
 import logging
 import re
 import traceback
-from typing import List, Optional, Tuple
+from typing import Any, List, Mapping, Optional, Tuple
 
 from django.conf import settings
 from django.contrib.auth import get_user_model, login
@@ -258,6 +258,55 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     # attributes (Account API rejects them, but be explicit).
     _ACCOUNT_UPDATE_ALLOWED_FIELDS = frozenset({"email", "firstName", "lastName"})
 
+    def _keycloak_account_request(
+        self,
+        client: OpenIDClient,
+        session,
+        method: str,
+        path_suffix: str,
+        json_body: Optional[Mapping[str, Any]] = None,
+    ) -> Tuple[int, Optional[dict]]:
+        """
+        Call Keycloak's Account REST API on behalf of the user identified
+        by the stashed ``oidc_access_token``. On 401 the helper mints a
+        fresh access_token via the stashed ``oidc_refresh_token``, writes
+        the new pair back to the session, and retries once.
+
+        Returns ``(upstream_status, parsed_json_or_None)``. Network
+        failures bubble up as ``RequestException`` — the caller is
+        expected to translate them to 502.
+        """
+        access_token = session.get("oidc_access_token")
+        if not access_token:
+            return 401, {"error": "No active OIDC session."}
+
+        status_code, body = client.request_keycloak_account(
+            access_token, method, path_suffix, json_body
+        )
+        if status_code != 401:
+            return status_code, body
+
+        refresh_token = session.get("oidc_refresh_token")
+        if not refresh_token:
+            return 401, body
+
+        try:
+            tokens = client.refresh_access_token(refresh_token)
+        except TokenVerificationFailed:
+            return 401, {"error": "Session expired — please sign in again."}
+
+        new_access = tokens.get("access_token")
+        new_refresh = tokens.get("refresh_token")
+        if new_access:
+            session["oidc_access_token"] = new_access
+        if new_refresh:
+            session["oidc_refresh_token"] = new_refresh
+        if not new_access:
+            return 401, body
+        return client.request_keycloak_account(
+            new_access, method, path_suffix, json_body
+        )
+
     @action(methods=["POST"], detail=False)
     def account(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         """
@@ -320,8 +369,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             )
 
         try:
-            upstream_status, upstream_body = client.update_account_profile(
-                access_token, payload
+            status_code, body = self._keycloak_account_request(
+                client, session, "POST", "", json_body=payload
             )
         except Exception as exc:
             logger.exception(exc)
@@ -330,51 +379,15 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        # Keycloak returned 401 → the access_token has expired. If we
-        # have a refresh_token, mint a fresh pair and retry once. This
-        # is the only retry path — a second 401 means the refresh
-        # itself is bad and the user has to re-authenticate.
-        if upstream_status == 401:
-            refresh_token = session.get("oidc_refresh_token")
-            if refresh_token:
-                try:
-                    tokens = client.refresh_access_token(refresh_token)
-                except TokenVerificationFailed:
-                    return Response(
-                        {
-                            "error": (
-                                "Session expired — please sign in again."
-                            )
-                        },
-                        status=status.HTTP_401_UNAUTHORIZED,
-                    )
-                new_access = tokens.get("access_token")
-                new_refresh = tokens.get("refresh_token")
-                if new_access:
-                    session["oidc_access_token"] = new_access
-                if new_refresh:
-                    session["oidc_refresh_token"] = new_refresh
-                if new_access:
-                    try:
-                        upstream_status, upstream_body = (
-                            client.update_account_profile(new_access, payload)
-                        )
-                    except Exception as exc:
-                        logger.exception(exc)
-                        return Response(
-                            {"error": "Could not reach the identity provider."},
-                            status=status.HTTP_502_BAD_GATEWAY,
-                        )
-
-        if 200 <= upstream_status < 300:
+        if 200 <= status_code < 300:
             return Response({"success": True}, status=status.HTTP_200_OK)
 
         return Response(
             {
                 "error": "Identity provider rejected the update.",
-                "upstream": upstream_body,
+                "upstream": body,
             },
-            status=upstream_status,
+            status=status_code,
         )
 
     def _username_field_config(self) -> Tuple[str, str]:
@@ -680,9 +693,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     # Account REST API on behalf of the user (and
                     # refresh on 401 expiry). ``user_tokens`` is the
                     # raw token-endpoint response dict.
-                    if callback_session is not None and isinstance(
-                        user_tokens, dict
-                    ):
+                    if callback_session is not None and isinstance(user_tokens, dict):
                         access_token = user_tokens.get("access_token")
                         refresh_token = user_tokens.get("refresh_token")
                         if access_token:
