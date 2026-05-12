@@ -42,6 +42,7 @@ from oidc.client import (
 from oidc.utils import (
     email_usename_to_url_safe,
     get_login_query_param_allowlist,
+    get_logout_query_param_allowlist,
     get_viewset_config,
     is_safe_login_redirect,
     replace_characters_in_username,
@@ -208,9 +209,32 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
     @action(methods=["GET"], detail=False)
     def logout(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
-        client = self._get_client(auth_server=kwargs.get("auth_server"))
+        auth_server = kwargs.get("auth_server")
+        client = self._get_client(auth_server=auth_server)
         if client:
-            response = client.logout()
+            # Pop (not get) so the token doesn't outlive the session
+            # it belonged to. If absent (legacy session predating the
+            # callback storing it), the end-session URL falls back to
+            # the bare ``client_id`` + ``post_logout_redirect_uri``
+            # baked into ``END_SESSION_ENDPOINT``.
+            extra_params: dict[str, str] = {}
+            # ``session`` is attached by ``SessionMiddleware``; absent in
+            # test rigs that build requests via ``APIRequestFactory``
+            # without middleware. Treat missing session as "no stashed
+            # token" — same fallback as the legacy bare end-session URL.
+            session = getattr(request, "session", None)
+            id_token_hint = session.pop("oidc_id_token", None) if session else None
+            if id_token_hint:
+                extra_params["id_token_hint"] = id_token_hint
+
+            allowlist = get_logout_query_param_allowlist(auth_server)
+            for key, value in request.query_params.items():
+                if key in allowlist and key not in extra_params:
+                    # Server-stashed hints (e.g. id_token_hint) win on
+                    # collision with caller-supplied query params.
+                    extra_params[key] = value
+
+            response = client.logout(extra_params=extra_params or None)
 
             if self.use_auth_backend:
                 logout_backend(request)
@@ -225,6 +249,132 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             return response
         return HttpResponseBadRequest(
             _("Unable to process OpenID connect logout request."),
+        )
+
+    # Fields the SPA is allowed to update on the Keycloak Account REST
+    # API. Anything else in the request body is dropped at this
+    # boundary. Notably absent: ``username`` (would diverge from the
+    # OnaData identity ona-oidc looks up by) and any role/group
+    # attributes (Account API rejects them, but be explicit).
+    _ACCOUNT_UPDATE_ALLOWED_FIELDS = frozenset({"email", "firstName", "lastName"})
+
+    @action(methods=["POST"], detail=False)
+    def account(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
+        """
+        Proxy a profile update from the SPA to Keycloak's Account REST
+        API. Uses the access_token stashed in the Django session at
+        callback time; if Keycloak rejects it as expired, refresh via
+        the stashed refresh_token and retry once.
+
+        Body: JSON object with any of ``email`` / ``firstName`` /
+        ``lastName``. Everything else is silently dropped.
+
+        Returns:
+        - 200 ``{"success": true}`` on Keycloak 2xx.
+        - 401 if no session-stashed access_token, or if refresh fails.
+        - Upstream Keycloak status + body for any other non-2xx.
+        """
+        auth_server = kwargs.get("auth_server")
+        client = self._get_client(auth_server=auth_server)
+        if client is None:
+            return HttpResponseBadRequest(
+                _("Unable to process OpenID connect account update.")
+            )
+        if not client.account_endpoint:
+            return Response(
+                {"error": "Account endpoint not configured."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        session = getattr(request, "session", None)
+        if session is None:
+            return Response(
+                {"error": "No active session."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        access_token = session.get("oidc_access_token")
+        if not access_token:
+            return Response(
+                {"error": "No active OIDC session — please sign in again."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        # Restrict to the allowlist at the boundary. ``request.data``
+        # is a QueryDict for form bodies and a plain dict for JSON;
+        # ``.items()`` works for both.
+        raw = request.data if hasattr(request, "data") else {}
+        payload = {
+            key: value
+            for key, value in raw.items()
+            if key in self._ACCOUNT_UPDATE_ALLOWED_FIELDS
+        }
+        if not payload:
+            return Response(
+                {
+                    "error": (
+                        "No allowed fields supplied. Allowed: "
+                        + ", ".join(sorted(self._ACCOUNT_UPDATE_ALLOWED_FIELDS))
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            upstream_status, upstream_body = client.update_account_profile(
+                access_token, payload
+            )
+        except Exception as exc:
+            logger.exception(exc)
+            return Response(
+                {"error": "Could not reach the identity provider."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        # Keycloak returned 401 → the access_token has expired. If we
+        # have a refresh_token, mint a fresh pair and retry once. This
+        # is the only retry path — a second 401 means the refresh
+        # itself is bad and the user has to re-authenticate.
+        if upstream_status == 401:
+            refresh_token = session.get("oidc_refresh_token")
+            if refresh_token:
+                try:
+                    tokens = client.refresh_access_token(refresh_token)
+                except TokenVerificationFailed:
+                    return Response(
+                        {
+                            "error": (
+                                "Session expired — please sign in again."
+                            )
+                        },
+                        status=status.HTTP_401_UNAUTHORIZED,
+                    )
+                new_access = tokens.get("access_token")
+                new_refresh = tokens.get("refresh_token")
+                if new_access:
+                    session["oidc_access_token"] = new_access
+                if new_refresh:
+                    session["oidc_refresh_token"] = new_refresh
+                if new_access:
+                    try:
+                        upstream_status, upstream_body = (
+                            client.update_account_profile(new_access, payload)
+                        )
+                    except Exception as exc:
+                        logger.exception(exc)
+                        return Response(
+                            {"error": "Could not reach the identity provider."},
+                            status=status.HTTP_502_BAD_GATEWAY,
+                        )
+
+        if 200 <= upstream_status < 300:
+            return Response({"success": True}, status=status.HTTP_200_OK)
+
+        return Response(
+            {
+                "error": "Identity provider rejected the update.",
+                "upstream": upstream_body,
+            },
+            status=upstream_status,
         )
 
     def _username_field_config(self) -> Tuple[str, str]:
@@ -512,6 +662,33 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 try:
                     id_token = id_token or user_tokens.get("id_token")
                     decoded_id_token = client.verify_and_decode_id_token(id_token)
+                    # Stash the raw id_token in the Django session so
+                    # the logout action below can replay it as
+                    # `id_token_hint` on the Keycloak end-session URL.
+                    # Without it, Keycloak 18+ shows the logout-confirm
+                    # screen even when `client_id` + a whitelisted
+                    # `post_logout_redirect_uri` are passed.
+                    # ``session`` is attached by ``SessionMiddleware``;
+                    # absent in callback rigs that build requests via
+                    # ``APIRequestFactory`` without middleware, so guard
+                    # the write the same way ``logout`` guards the read.
+                    callback_session = getattr(request, "session", None)
+                    if id_token and callback_session is not None:
+                        callback_session["oidc_id_token"] = id_token
+                    # Also stash the access_token + refresh_token so
+                    # the ``account`` action can call the Keycloak
+                    # Account REST API on behalf of the user (and
+                    # refresh on 401 expiry). ``user_tokens`` is the
+                    # raw token-endpoint response dict.
+                    if callback_session is not None and isinstance(
+                        user_tokens, dict
+                    ):
+                        access_token = user_tokens.get("access_token")
+                        refresh_token = user_tokens.get("refresh_token")
+                        if access_token:
+                            callback_session["oidc_access_token"] = access_token
+                        if refresh_token:
+                            callback_session["oidc_refresh_token"] = refresh_token
                     user_claims = client.tokens_to_user_info(
                         self.map_claims_to_model_field(decoded_id_token),
                         id_token,

@@ -228,6 +228,97 @@ class OpenIDClientTestCase(TestCase):
         # UTF-8 bytes for ``ü`` percent-encoded as ``%C3%BC``
         self.assertIn("login_hint=%C3%BCmlaut%40example.com", result_url)
 
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    def test_logout_forwards_extra_params(self):
+        """``extra_params`` are URL-encoded onto the end-session URL."""
+        client = OpenIDClient("default")
+
+        result = client.logout(
+            extra_params={
+                "id_token_hint": "ey.signed.jwt",
+                "logout_hint": "alice@example.com",
+                "ui_locales": "en-GB",
+            }
+        )
+
+        self.assertIsInstance(result, HttpResponseRedirect)
+        self.assertEqual(
+            result.url,
+            "http://localhost:3000?"
+            "id_token_hint=ey.signed.jwt&"
+            "logout_hint=alice%40example.com&"
+            "ui_locales=en-GB",
+        )
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                # End-session URL with `client_id` + `post_logout_redirect_uri`
+                # already baked in, the way Keycloak deployments typically
+                # configure it.
+                "END_SESSION_ENDPOINT": (
+                    "https://idp.example.com/logout?"
+                    "client_id=client&post_logout_redirect_uri=https%3A%2F%2Fapp%2F"
+                ),
+            }
+        }
+    )
+    def test_logout_appends_with_ampersand_when_endpoint_has_query(self):
+        """When END_SESSION_ENDPOINT already carries a query string, the
+        separator switches from ``?`` to ``&`` so the URL stays valid."""
+        client = OpenIDClient("default")
+
+        result_url = client.logout(
+            extra_params={"id_token_hint": "ey.signed.jwt"}
+        ).url
+
+        self.assertEqual(
+            result_url,
+            "https://idp.example.com/logout?"
+            "client_id=client&post_logout_redirect_uri=https%3A%2F%2Fapp%2F&"
+            "id_token_hint=ey.signed.jwt",
+        )
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    def test_logout_no_extra_params_keeps_url_clean(self):
+        """``None`` / ``{}`` / all-reserved leave the URL untouched."""
+        client = OpenIDClient("default")
+
+        self.assertEqual(client.logout().url, "http://localhost:3000")
+        self.assertEqual(client.logout(extra_params=None).url, "http://localhost:3000")
+        self.assertEqual(client.logout(extra_params={}).url, "http://localhost:3000")
+        # All entries reserved → filtered to empty → no stray `?`.
+        self.assertEqual(
+            client.logout(
+                extra_params={
+                    "client_id": "evil",
+                    "post_logout_redirect_uri": "https://attacker.example/",
+                }
+            ).url,
+            "http://localhost:3000",
+        )
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    def test_logout_drops_reserved_end_session_params(self):
+        """Caller-supplied ``client_id`` / ``post_logout_redirect_uri`` are
+        filtered at the client boundary — the security guard mirrors
+        ``RESERVED_AUTHORIZE_PARAMS`` on the login side."""
+        client = OpenIDClient("default")
+
+        result_url = client.logout(
+            extra_params={
+                "client_id": "evil",
+                "post_logout_redirect_uri": "https://attacker.example/cb",
+                "id_token_hint": "ey.signed.jwt",
+            }
+        ).url
+
+        self.assertEqual(
+            result_url,
+            "http://localhost:3000?id_token_hint=ey.signed.jwt",
+        )
+
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
             "default": {

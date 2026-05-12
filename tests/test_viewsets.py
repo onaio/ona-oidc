@@ -988,6 +988,275 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertIn("kc_idp_hint=onadata", response.url)
         self.assertNotIn("next=", response.url)
 
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_logout_forwards_id_token_hint_from_session(self):
+        """The id_token stashed by the callback is threaded as
+        ``id_token_hint`` on the end-session URL and popped from
+        the session so it doesn't outlive the logout it served."""
+        view = BaseOpenIDConnectViewset.as_view({"get": "logout"})
+
+        request = self.factory.get("/")
+        # Stand in for ``SessionMiddleware`` — APIRequestFactory skips it.
+        request.session = {"oidc_id_token": "ey.signed.jwt", "unrelated": "keep"}
+        response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response.url,
+            "http://localhost:3000?id_token_hint=ey.signed.jwt",
+        )
+        # Pop, not get — the token must not outlive the session it served.
+        self.assertNotIn("oidc_id_token", request.session)
+        self.assertEqual(request.session.get("unrelated"), "keep")
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "LOGOUT_QUERY_PARAM_ALLOWLIST": [
+                    "logout_hint",
+                    "ui_locales",
+                ],
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_logout_forwards_only_allowlisted_query_params(self):
+        """Allowlisted query params flow through; everything else is
+        dropped at the viewset boundary — same shape as login's
+        ``LOGIN_QUERY_PARAM_ALLOWLIST``."""
+        view = BaseOpenIDConnectViewset.as_view({"get": "logout"})
+
+        request = self.factory.get(
+            "/?logout_hint=alice%40example.com"
+            "&ui_locales=en-GB"
+            "&evil_param=injected"
+        )
+        request.session = {}
+        response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("logout_hint=alice%40example.com", response.url)
+        self.assertIn("ui_locales=en-GB", response.url)
+        self.assertNotIn("evil_param", response.url)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                # `id_token_hint` deliberately allowlisted to prove that
+                # the server-stashed token wins over caller-supplied
+                # query strings on collision.
+                "LOGOUT_QUERY_PARAM_ALLOWLIST": ["id_token_hint"],
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_logout_session_id_token_hint_wins_over_query_string(self):
+        """If a caller smuggles ``id_token_hint`` via query string AND a
+        legitimate token is stashed in the session, the trusted
+        server-side value must take precedence."""
+        view = BaseOpenIDConnectViewset.as_view({"get": "logout"})
+
+        request = self.factory.get("/?id_token_hint=ey.attacker.jwt")
+        request.session = {"oidc_id_token": "ey.legit.jwt"}
+        response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("id_token_hint=ey.legit.jwt", response.url)
+        self.assertNotIn("ey.attacker.jwt", response.url)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_logout_default_allowlist_drops_all_query_params(self):
+        """No ``LOGOUT_QUERY_PARAM_ALLOWLIST`` configured → empty set →
+        all query params dropped. Mirrors the login default."""
+        view = BaseOpenIDConnectViewset.as_view({"get": "logout"})
+
+        request = self.factory.get("/?logout_hint=alice&kc_idp_hint=onadata")
+        request.session = {}
+        response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 302)
+        # End-session URL untouched — bare endpoint, no stray `?`/`&`.
+        self.assertEqual(response.url, "http://localhost:3000")
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_account_update_no_session_token_returns_401(self):
+        """No stashed access_token → 401, never reach Keycloak."""
+        view = BaseOpenIDConnectViewset.as_view({"post": "account"})
+
+        request = self.factory.post(
+            "/", data={"email": "new@example.com"}, format="json"
+        )
+        request.session = {}
+        with patch("oidc.client.requests.post") as mock_post:
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 401)
+        # Critical: we never reached out to Keycloak.
+        mock_post.assert_not_called()
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_account_update_filters_disallowed_fields(self):
+        """Caller can only update ``email`` / ``firstName`` / ``lastName``;
+        anything else is dropped before the request leaves our process."""
+        view = BaseOpenIDConnectViewset.as_view({"post": "account"})
+
+        request = self.factory.post(
+            "/",
+            data={
+                "email": "new@example.com",
+                "username": "evil",
+                "enabled": False,
+                "realmRoles": ["admin"],
+            },
+            format="json",
+        )
+        request.session = {"oidc_access_token": "stashed.access.token"}
+
+        mock_response = MagicMock()
+        mock_response.status_code = 204
+        mock_response.content = b""
+        with patch(
+            "oidc.client.requests.post", return_value=mock_response
+        ) as mock_post:
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 200)
+        # Bearer auth uses the stashed token.
+        _args, kwargs = mock_post.call_args
+        self.assertEqual(
+            kwargs["headers"]["Authorization"], "Bearer stashed.access.token"
+        )
+        # Only ``email`` was forwarded — everything else dropped.
+        self.assertEqual(kwargs["json"], {"email": "new@example.com"})
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_account_update_no_allowed_fields_returns_400(self):
+        """Request body that's all-disallowed → 400, never reach Keycloak."""
+        view = BaseOpenIDConnectViewset.as_view({"post": "account"})
+
+        request = self.factory.post(
+            "/", data={"username": "evil"}, format="json"
+        )
+        request.session = {"oidc_access_token": "stashed.access.token"}
+
+        with patch("oidc.client.requests.post") as mock_post:
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 400)
+        mock_post.assert_not_called()
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_account_update_refreshes_on_401_and_retries(self):
+        """Keycloak 401 → refresh access_token via refresh_token → retry.
+        Session writeback so the next request uses the fresh token."""
+        view = BaseOpenIDConnectViewset.as_view({"post": "account"})
+
+        request = self.factory.post(
+            "/", data={"email": "new@example.com"}, format="json"
+        )
+        request.session = {
+            "oidc_access_token": "expired.access.token",
+            "oidc_refresh_token": "stashed.refresh.token",
+        }
+
+        first_call = MagicMock(status_code=401, content=b"{}")
+        first_call.json.return_value = {"error": "invalid_token"}
+        refresh_call = MagicMock(status_code=200)
+        refresh_call.json.return_value = {
+            "access_token": "fresh.access.token",
+            "refresh_token": "fresh.refresh.token",
+        }
+        refresh_call.raise_for_status = MagicMock()
+        second_call = MagicMock(status_code=204, content=b"")
+
+        with patch(
+            "oidc.client.requests.post",
+            side_effect=[first_call, refresh_call, second_call],
+        ) as mock_post:
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 200)
+        # Three calls: account (401) → token (refresh) → account (retry, 204).
+        self.assertEqual(mock_post.call_count, 3)
+        # Retry used the fresh token.
+        _args, kwargs = mock_post.call_args_list[2]
+        self.assertEqual(
+            kwargs["headers"]["Authorization"], "Bearer fresh.access.token"
+        )
+        # Session was updated with the fresh tokens.
+        self.assertEqual(
+            request.session["oidc_access_token"], "fresh.access.token"
+        )
+        self.assertEqual(
+            request.session["oidc_refresh_token"], "fresh.refresh.token"
+        )
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_account_update_returns_503_when_endpoint_not_configured(self):
+        """Deployments that haven't wired ``ACCOUNT_ENDPOINT`` get a
+        clear 503 — never reach Keycloak with a half-baked URL."""
+        view = BaseOpenIDConnectViewset.as_view({"post": "account"})
+
+        request = self.factory.post(
+            "/", data={"email": "new@example.com"}, format="json"
+        )
+        request.session = {"oidc_access_token": "stashed.access.token"}
+
+        with patch("oidc.client.requests.post") as mock_post:
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 503)
+        mock_post.assert_not_called()
+
     @patch(
         "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
         MagicMock(

@@ -95,6 +95,27 @@ def get_login_query_param_allowlist(auth_server: str) -> frozenset[str]:
     )
 
 
+def get_logout_query_param_allowlist(auth_server: str) -> frozenset[str]:
+    """
+    Return the set of query parameter names that the logout view is allowed to
+    forward to the configured end-session endpoint for ``auth_server``.
+
+    Configured per auth server via
+    ``OPENID_CONNECT_AUTH_SERVERS[<server>]["LOGOUT_QUERY_PARAM_ALLOWLIST"]``.
+    Defaults to an empty set so unknown query params are dropped at the
+    viewset boundary — matches the ``LOGIN_QUERY_PARAM_ALLOWLIST`` shape.
+    """
+    config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
+    server_config = config.get(auth_server, {})
+    return frozenset(
+        _coerce_string_iterable(
+            server_config.get("LOGOUT_QUERY_PARAM_ALLOWLIST", ()),
+            "LOGOUT_QUERY_PARAM_ALLOWLIST",
+            auth_server,
+        )
+    )
+
+
 def is_safe_login_redirect(
     url: Optional[str], auth_server: str, request: HttpRequest
 ) -> bool:

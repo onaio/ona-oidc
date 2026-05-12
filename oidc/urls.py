@@ -32,4 +32,9 @@ urlpatterns = [
         viewset_class.as_view({"get": "logout"}),
         name="openid_connect_logout",
     ),
+    re_path(
+        r"^oidc/(?P<auth_server>\w+)/account",
+        viewset_class.as_view({"post": "account"}),
+        name="openid_connect_account",
+    ),
 ]
