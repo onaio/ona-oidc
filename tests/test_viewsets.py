@@ -2314,6 +2314,56 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(cookie["max-age"], 0)
 
 
+class TestAccountRoutes(TestCase):
+    """URL→action wiring smoke test; per-action behaviour is covered
+    by the per-action tests above."""
+
+    def test_sessions_list_route_resolves(self):
+        from django.urls import resolve
+
+        match = resolve("/oidc/zonkey/sessions")
+        self.assertEqual(match.func.actions["get"], "sessions_list")
+
+    def test_sessions_revoke_others_route_resolves(self):
+        from django.urls import resolve
+
+        match = resolve("/oidc/zonkey/sessions")
+        self.assertEqual(match.func.actions["delete"], "sessions_revoke_others")
+
+    def test_sessions_revoke_one_route_resolves(self):
+        from django.urls import resolve
+
+        match = resolve("/oidc/zonkey/sessions/abc-123")
+        self.assertEqual(match.func.actions["delete"], "sessions_revoke_one")
+        self.assertEqual(match.kwargs["session_id"], "abc-123")
+
+    def test_linked_list_route_resolves(self):
+        from django.urls import resolve
+
+        match = resolve("/oidc/zonkey/linked-accounts")
+        self.assertEqual(match.func.actions["get"], "linked_list")
+
+    def test_linked_unlink_route_resolves(self):
+        from django.urls import resolve
+
+        match = resolve("/oidc/zonkey/linked-accounts/google")
+        self.assertEqual(match.func.actions["delete"], "linked_unlink")
+        self.assertEqual(match.kwargs["provider"], "google")
+
+    def test_linked_link_url_route_resolves(self):
+        from django.urls import resolve
+
+        match = resolve("/oidc/zonkey/linked-accounts/google/link-url")
+        self.assertEqual(match.func.actions["get"], "linked_link_url")
+        self.assertEqual(match.kwargs["provider"], "google")
+
+    def test_credentials_route_resolves(self):
+        from django.urls import resolve
+
+        match = resolve("/oidc/zonkey/credentials")
+        self.assertEqual(match.func.actions["get"], "credentials_list")
+
+
 class TestLoginNextValidation(TestCase):
     def setUp(self):
         self.factory = APIRequestFactory()
