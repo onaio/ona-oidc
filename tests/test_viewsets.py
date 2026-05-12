@@ -1375,6 +1375,70 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         },
         OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
     )
+    def test_sessions_revoke_one_forwards_id(self):
+        view = BaseOpenIDConnectViewset.as_view(
+            {"delete": "sessions_revoke_one"}
+        )
+        request = self.factory.delete("/")
+        request.session = {
+            "oidc_access_token": "stashed.access.token",
+            "oidc_id_token": "header.payload.sig",
+        }
+        upstream = MagicMock(status_code=204, content=b"")
+        with patch(
+            "oidc.viewsets._sid_from_id_token", return_value="current-sid"
+        ), patch(
+            "oidc.client.requests.request", return_value=upstream
+        ) as mock_request:
+            response = view(
+                request, auth_server="default", session_id="other-sid"
+            )
+
+        self.assertEqual(response.status_code, 204)
+        args, _ = mock_request.call_args
+        self.assertEqual(args[0], "DELETE")
+        self.assertTrue(args[1].endswith("/sessions/other-sid"))
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_sessions_revoke_one_rejects_current_session(self):
+        view = BaseOpenIDConnectViewset.as_view(
+            {"delete": "sessions_revoke_one"}
+        )
+        request = self.factory.delete("/")
+        request.session = {
+            "oidc_access_token": "stashed.access.token",
+            "oidc_id_token": "header.payload.sig",
+        }
+        with patch(
+            "oidc.viewsets._sid_from_id_token", return_value="current-sid"
+        ), patch("oidc.client.requests.request") as mock_request:
+            response = view(
+                request, auth_server="default", session_id="current-sid"
+            )
+
+        self.assertEqual(response.status_code, 409)
+        # Crucial: we never reach Keycloak.
+        mock_request.assert_not_called()
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
     def test_sessions_revoke_others_passes_current_false(self):
         """DELETE /sessions revokes every session EXCEPT the current one."""
         view = BaseOpenIDConnectViewset.as_view(

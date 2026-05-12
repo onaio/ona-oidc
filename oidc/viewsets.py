@@ -71,6 +71,18 @@ DEFAULT_USERNAME_HELP_TEXT = "Username should not contain . @ - symbols"
 logger = logging.getLogger(__name__)
 
 
+def _sid_from_id_token(id_token: str) -> Optional[str]:
+    """Decode the ``sid`` claim from an id_token *without* verifying the
+    signature. The token was already verified at callback time and
+    stashed in the user's session; we only need the session-id claim
+    to power the revoke-current guard."""
+    try:
+        unverified = jwt.decode(id_token, options={"verify_signature": False})
+    except jwt.exceptions.InvalidTokenError:
+        return None
+    return unverified.get("sid")
+
+
 class BaseOpenIDConnectViewset(viewsets.ViewSet):
     """
     BaseOpenIDConnectViewset: Base viewset that implements login and logout
@@ -370,6 +382,39 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             "GET",
             "/sessions/devices",
             transform=self._flatten_session_devices,
+        )
+
+    @action(
+        methods=["DELETE"],
+        detail=False,
+        url_path=r"sessions/(?P<session_id>[a-zA-Z0-9._-]+)",
+    )
+    def sessions_revoke_one(
+        self, request: HttpRequest, session_id: str = "", **kwargs: dict
+    ) -> HttpResponse:
+        """Revoke one Keycloak session by id. Rejects the user's current
+        session (defence in depth — the SPA already blocks this at the
+        button level)."""
+        session = getattr(request, "session", None)
+        if session is not None:
+            id_token = session.get("oidc_id_token")
+            if id_token:
+                current_sid = _sid_from_id_token(id_token)
+                if current_sid and current_sid == session_id:
+                    return Response(
+                        {
+                            "error": (
+                                "Cannot revoke the current session via this "
+                                "endpoint; use sign-out instead."
+                            )
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
+        return self._proxy_or_error(
+            request,
+            kwargs.get("auth_server"),
+            "DELETE",
+            f"/sessions/{session_id}",
         )
 
     @action(methods=["DELETE"], detail=False, url_path="sessions")
