@@ -6,7 +6,7 @@ import importlib
 import logging
 import re
 import traceback
-from typing import Any, List, Mapping, Optional, Tuple
+from typing import Any, Callable, List, Mapping, Optional, Tuple
 
 from django.conf import settings
 from django.contrib.auth import get_user_model, login
@@ -306,6 +306,96 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         return client.request_keycloak_account(
             new_access, method, path_suffix, json_body
         )
+
+    def _proxy_or_error(
+        self,
+        request: HttpRequest,
+        auth_server,
+        method: str,
+        path_suffix: str,
+        json_body: Optional[Mapping[str, Any]] = None,
+        transform: Optional[Callable[[Any], Any]] = None,
+    ) -> HttpResponse:
+        """
+        Boilerplate wrapper for read/write proxy actions: resolve client,
+        validate session, dispatch to ``_keycloak_account_request``,
+        return Response. ``transform`` runs on the parsed body before
+        it's returned so per-endpoint normalisation (e.g. flattening
+        session devices) stays close to the action that needs it.
+        """
+        client = self._get_client(auth_server=auth_server)
+        if client is None:
+            return HttpResponseBadRequest(
+                _("Unable to process OpenID connect account request.")
+            )
+        if not client.account_endpoint:
+            return Response(
+                {"error": "Account endpoint not configured."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        session = getattr(request, "session", None)
+        if session is None:
+            return Response(
+                {"error": "No active session."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        try:
+            status_code, body = self._keycloak_account_request(
+                client, session, method, path_suffix, json_body
+            )
+        except Exception as exc:
+            logger.exception(exc)
+            return Response(
+                {"error": "Could not reach the identity provider."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        if 200 <= status_code < 300:
+            payload = transform(body) if transform else body
+            return Response(payload, status=status_code)
+        return Response(
+            {"error": "Identity provider rejected the request.", "upstream": body},
+            status=status_code,
+        )
+
+    @action(methods=["GET"], detail=False, url_path="sessions")
+    def sessions_list(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
+        """
+        List the user's active Keycloak sessions. Flattens
+        Keycloak's per-device representation into one row per
+        session so the SPA renders a flat list.
+        """
+        return self._proxy_or_error(
+            request,
+            kwargs.get("auth_server"),
+            "GET",
+            "/sessions/devices",
+            transform=self._flatten_session_devices,
+        )
+
+    @staticmethod
+    def _flatten_session_devices(body: Optional[list]) -> list:
+        """``[{browser, os, sessions:[{id, started, ...}, ...]}, ...]``
+        → ``[{id, browser, os, started, ...}, ...]``."""
+        if not body:
+            return []
+        rows: list = []
+        for device in body:
+            browser = device.get("browser")
+            os_name = device.get("os")
+            for sess in device.get("sessions", []) or []:
+                rows.append(
+                    {
+                        "id": sess.get("id"),
+                        "browser": browser,
+                        "os": os_name,
+                        "ipAddress": sess.get("ipAddress"),
+                        "started": sess.get("started"),
+                        "lastAccess": sess.get("lastAccess"),
+                        "current": bool(sess.get("current")),
+                        "clients": sess.get("clients", []),
+                    }
+                )
+        return rows
 
     @action(methods=["POST"], detail=False)
     def account(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:

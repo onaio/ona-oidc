@@ -1300,6 +1300,71 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             kwargs["headers"]["Authorization"], "Bearer stashed.access.token"
         )
 
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_sessions_list_flattens_devices_into_rows(self):
+        """Keycloak returns DeviceRepresentation[] with nested sessions[].
+        Proxy flattens to a per-session list so the SPA renders rows,
+        not nested device groups."""
+        view = BaseOpenIDConnectViewset.as_view({"get": "sessions_list"})
+        request = self.factory.get("/")
+        request.session = {"oidc_access_token": "stashed.access.token"}
+
+        upstream = MagicMock(status_code=200)
+        upstream.content = b"[...]"
+        upstream.json.return_value = [
+            {
+                "browser": "Chrome",
+                "os": "macOS",
+                "current": True,
+                "sessions": [
+                    {
+                        "id": "sess-1",
+                        "ipAddress": "1.2.3.4",
+                        "started": 1715520000,
+                        "lastAccess": 1715526000,
+                        "current": True,
+                        "clients": [{"clientId": "zonkey"}],
+                    }
+                ],
+            },
+            {
+                "browser": "Firefox",
+                "os": "Windows",
+                "current": False,
+                "sessions": [
+                    {
+                        "id": "sess-2",
+                        "ipAddress": "5.6.7.8",
+                        "started": 1715500000,
+                        "lastAccess": 1715505000,
+                        "current": False,
+                        "clients": [{"clientId": "zonkey"}],
+                    }
+                ],
+            },
+        ]
+        with patch("oidc.client.requests.request", return_value=upstream):
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 200)
+        rows = response.data
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["id"], "sess-1")
+        self.assertEqual(rows[0]["browser"], "Chrome")
+        self.assertEqual(rows[0]["os"], "macOS")
+        self.assertTrue(rows[0]["current"])
+        self.assertEqual(rows[1]["id"], "sess-2")
+        self.assertFalse(rows[1]["current"])
+
     @patch(
         "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
         MagicMock(
