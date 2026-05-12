@@ -71,6 +71,9 @@ DEFAULT_USERNAME_HELP_TEXT = "Username should not contain . @ - symbols"
 logger = logging.getLogger(__name__)
 
 
+_PROVIDER_ALIAS_RE = re.compile(r"^[a-z0-9_-]+$")
+
+
 def _sid_from_id_token(id_token: str) -> Optional[str]:
     """Decode the ``sid`` claim from an id_token *without* verifying the
     signature. The token was already verified at callback time and
@@ -427,6 +430,73 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             kwargs.get("auth_server"),
             "DELETE",
             "/sessions?current=false",
+        )
+
+    @action(methods=["GET"], detail=False, url_path="linked-accounts")
+    def linked_list(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
+        """List broker IdPs configured on the realm with their connected
+        state for the current user."""
+        return self._proxy_or_error(
+            request,
+            kwargs.get("auth_server"),
+            "GET",
+            "/linked-accounts",
+        )
+
+    @action(
+        methods=["DELETE"],
+        detail=False,
+        url_path=r"linked-accounts/(?P<provider>[^/]+)",
+    )
+    def linked_unlink(
+        self, request: HttpRequest, provider: str = "", **kwargs: dict
+    ) -> HttpResponse:
+        """Unlink a broker IdP from the current user."""
+        if not _PROVIDER_ALIAS_RE.match(provider):
+            return Response(
+                {"error": "Invalid provider alias."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return self._proxy_or_error(
+            request,
+            kwargs.get("auth_server"),
+            "DELETE",
+            f"/linked-accounts/{provider}",
+        )
+
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path=r"linked-accounts/(?P<provider>[^/]+)/link-url",
+    )
+    def linked_link_url(
+        self, request: HttpRequest, provider: str = "", **kwargs: dict
+    ) -> HttpResponse:
+        """Get a one-shot URL the SPA opens in a new tab to drive
+        Keycloak's broker-link flow for ``provider``."""
+        if not _PROVIDER_ALIAS_RE.match(provider):
+            return Response(
+                {"error": "Invalid provider alias."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return self._proxy_or_error(
+            request,
+            kwargs.get("auth_server"),
+            "GET",
+            f"/linked-accounts/{provider}",
+            transform=lambda body: (
+                {"url": body.get("accountLinkUri")} if body else None
+            ),
+        )
+
+    @action(methods=["GET"], detail=False, url_path="credentials")
+    def credentials_list(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
+        """List credential metadata (TOTP / password / recovery codes)."""
+        return self._proxy_or_error(
+            request,
+            kwargs.get("auth_server"),
+            "GET",
+            "/credentials",
         )
 
     @staticmethod
