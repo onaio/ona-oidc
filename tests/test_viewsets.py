@@ -1585,7 +1585,16 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         },
         OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
     )
-    def test_credentials_list_forwards_keycloak_body(self):
+    def test_credentials_list_flattens_keycloak_body(self):
+        """Keycloak nests credential instances under
+        ``userCredentialMetadatas`` → ``credential`` — the SPA wants a
+        flat ``credentials`` array per category, so the proxy must
+        reshape rather than pass through. Regression test for the
+        "Authenticator app — Not set up" bug seen on stage when a user
+        had a TOTP credential but the SPA's
+        ``totpCred.credentials.length`` resolved to 0 against
+        Keycloak's real wire shape.
+        """
         view = BaseOpenIDConnectViewset.as_view(
             {"get": "credentials_list"}
         )
@@ -1597,10 +1606,67 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         upstream.json.return_value = [
             {
                 "type": "otp",
-                "category": "TWO_FACTOR",
-                "displayName": "Authenticator App",
-                "credentials": [
-                    {"id": "cred-1", "userLabel": "iPhone", "createdDate": 1715000000}
+                "category": "two-factor",
+                "displayName": "otp-display-name",
+                "userCredentialMetadatas": [
+                    {
+                        "credential": {
+                            "id": "cred-1",
+                            "type": "otp",
+                            "userLabel": "iPhone",
+                            "createdDate": 1715000000000,
+                        }
+                    }
+                ],
+            },
+            {
+                "type": "password",
+                "category": "basic-authentication",
+                "displayName": "password-display-name",
+                "userCredentialMetadatas": [
+                    {"credential": {"id": "cred-pw", "type": "password"}}
+                ],
+            },
+        ]
+        with patch("oidc.client.requests.request", return_value=upstream):
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 200)
+        otp = response.data[0]
+        self.assertEqual(otp["type"], "otp")
+        self.assertEqual(otp["category"], "two-factor")
+        self.assertEqual(otp["displayName"], "otp-display-name")
+        self.assertEqual(len(otp["credentials"]), 1)
+        self.assertEqual(otp["credentials"][0]["id"], "cred-1")
+        self.assertEqual(otp["credentials"][0]["userLabel"], "iPhone")
+        self.assertEqual(otp["credentials"][0]["createdDate"], 1715000000000)
+        # Password row: no userLabel / createdDate in upstream → keys
+        # absent from the flattened row (the SPA renders them
+        # conditionally, so emitting "null" would add a useless empty
+        # subtitle line).
+        pw = response.data[1]
+        self.assertEqual(pw["credentials"], [{"id": "cred-pw"}])
+
+    def test_credentials_list_drops_rows_without_id(self):
+        """A ``userCredentialMetadatas`` entry without an ``id`` can't be
+        rendered as a removable row (no DELETE target, no React key), so
+        the flatten skips it rather than emitting an unactionable row."""
+        view = BaseOpenIDConnectViewset.as_view(
+            {"get": "credentials_list"}
+        )
+        request = self.factory.get("/")
+        request.session = {"oidc_access_token": "stashed.access.token"}
+
+        upstream = MagicMock(status_code=200)
+        upstream.content = b"[...]"
+        upstream.json.return_value = [
+            {
+                "type": "otp",
+                "category": "two-factor",
+                "displayName": "otp-display-name",
+                "userCredentialMetadatas": [
+                    {"credential": {"userLabel": "ghost"}},
+                    {"credential": {"id": "real", "userLabel": "phone"}},
                 ],
             }
         ]
@@ -1608,7 +1674,9 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             response = view(request, auth_server="default")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data[0]["type"], "otp")
+        self.assertEqual(
+            response.data[0]["credentials"], [{"id": "real", "userLabel": "phone"}]
+        )
 
     @patch(
         "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",

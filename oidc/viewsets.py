@@ -491,13 +491,79 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
     @action(methods=["GET"], detail=False, url_path="credentials")
     def credentials_list(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
-        """List credential metadata (TOTP / password / recovery codes)."""
+        """List credential metadata (TOTP / password / recovery codes).
+
+        Keycloak's Account REST returns each credential category with the
+        configured instances nested under ``userCredentialMetadatas`` →
+        ``credential``. SPAs would have to walk two levels just to ask
+        "does the user have a TOTP?" — so we flatten to a single
+        ``credentials`` array of ``{id, userLabel?, createdDate?}`` and
+        forward only the top-level fields the SPA actually renders.
+        """
         return self._proxy_or_error(
             request,
             kwargs.get("auth_server"),
             "GET",
             "/credentials",
+            transform=self._flatten_credentials,
         )
+
+    @staticmethod
+    def _flatten_credentials(body: Optional[list]) -> list:
+        """Reshape Keycloak's credential-metadata array for the SPA.
+
+        Keycloak Account REST shape::
+
+            [
+              {
+                "type": "otp",
+                "category": "two-factor",
+                "displayName": "otp-display-name",
+                "userCredentialMetadatas": [
+                  {"credential": {"id": "...", "userLabel": "...",
+                                  "createdDate": 1700000000000}, ...}
+                ],
+                ...
+              },
+              ...
+            ]
+
+        SPA shape::
+
+            [{"type", "category", "displayName",
+              "credentials": [{"id", "userLabel", "createdDate"}]}, ...]
+        """
+        if not body:
+            return []
+        out: list = []
+        for entry in body:
+            instances = []
+            for meta in entry.get("userCredentialMetadatas", []) or []:
+                cred = (meta or {}).get("credential") or {}
+                cred_id = cred.get("id")
+                if not cred_id:
+                    # A metadata row without an id is unusable — the SPA
+                    # uses id as the React key and as the DELETE path, so
+                    # silently dropping it is safer than rendering a row
+                    # that can't be acted on.
+                    continue
+                row = {"id": cred_id}
+                user_label = cred.get("userLabel")
+                if user_label:
+                    row["userLabel"] = user_label
+                created = cred.get("createdDate")
+                if created is not None:
+                    row["createdDate"] = created
+                instances.append(row)
+            out.append(
+                {
+                    "type": entry.get("type"),
+                    "category": entry.get("category"),
+                    "displayName": entry.get("displayName"),
+                    "credentials": instances,
+                }
+            )
+        return out
 
     @staticmethod
     def _flatten_session_devices(body: Optional[list]) -> list:
