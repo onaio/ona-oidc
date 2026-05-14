@@ -6,7 +6,7 @@ import importlib
 import logging
 import re
 import traceback
-from typing import List, Optional, Tuple
+from typing import Any, Callable, List, Mapping, Optional, Tuple
 
 from django.conf import settings
 from django.contrib.auth import get_user_model, login
@@ -69,6 +69,21 @@ DEFAULT_USERNAME_PATTERN = r"^[A-Za-z0-9_]*$"
 DEFAULT_USERNAME_HELP_TEXT = "Username should not contain . @ - symbols"
 
 logger = logging.getLogger(__name__)
+
+
+_PROVIDER_ALIAS_RE = re.compile(r"^[a-z0-9_-]+$")
+
+
+def _sid_from_id_token(id_token: str) -> Optional[str]:
+    """Decode the ``sid`` claim from an id_token *without* verifying the
+    signature. The token was already verified at callback time and
+    stashed in the user's session; we only need the session-id claim
+    to power the revoke-current guard."""
+    try:
+        unverified = jwt.decode(id_token, options={"verify_signature": False})
+    except jwt.exceptions.InvalidTokenError:
+        return None
+    return unverified.get("sid")
 
 
 class BaseOpenIDConnectViewset(viewsets.ViewSet):
@@ -258,6 +273,323 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     # attributes (Account API rejects them, but be explicit).
     _ACCOUNT_UPDATE_ALLOWED_FIELDS = frozenset({"email", "firstName", "lastName"})
 
+    def _keycloak_account_request(
+        self,
+        client: OpenIDClient,
+        session,
+        method: str,
+        path_suffix: str,
+        json_body: Optional[Mapping[str, Any]] = None,
+    ) -> Tuple[int, Optional[dict]]:
+        """
+        Call Keycloak's Account REST API on behalf of the user identified
+        by the stashed ``oidc_access_token``. On 401 the helper mints a
+        fresh access_token via the stashed ``oidc_refresh_token``, writes
+        the new pair back to the session, and retries once.
+
+        Returns ``(upstream_status, parsed_json_or_None)``. Network
+        failures bubble up as ``RequestException`` — the caller is
+        expected to translate them to 502.
+        """
+        access_token = session.get("oidc_access_token")
+        if not access_token:
+            return 401, {"error": "No active OIDC session."}
+
+        status_code, body = client.request_keycloak_account(
+            access_token, method, path_suffix, json_body
+        )
+        if status_code != 401:
+            return status_code, body
+
+        refresh_token = session.get("oidc_refresh_token")
+        if not refresh_token:
+            return 401, body
+
+        try:
+            tokens = client.refresh_access_token(refresh_token)
+        except TokenVerificationFailed:
+            return 401, {"error": "Session expired — please sign in again."}
+
+        new_access = tokens.get("access_token")
+        new_refresh = tokens.get("refresh_token")
+        if new_access:
+            session["oidc_access_token"] = new_access
+        if new_refresh:
+            session["oidc_refresh_token"] = new_refresh
+        if not new_access:
+            return 401, body
+        return client.request_keycloak_account(
+            new_access, method, path_suffix, json_body
+        )
+
+    def _proxy_or_error(
+        self,
+        request: HttpRequest,
+        auth_server,
+        method: str,
+        path_suffix: str,
+        json_body: Optional[Mapping[str, Any]] = None,
+        transform: Optional[Callable[[Any], Any]] = None,
+    ) -> HttpResponse:
+        """
+        Boilerplate wrapper for read/write proxy actions: resolve client,
+        validate session, dispatch to ``_keycloak_account_request``,
+        return Response. ``transform`` runs on the parsed body before
+        it's returned so per-endpoint normalisation (e.g. flattening
+        session devices) stays close to the action that needs it.
+        """
+        client = self._get_client(auth_server=auth_server)
+        if client is None:
+            return HttpResponseBadRequest(
+                _("Unable to process OpenID connect account request.")
+            )
+        if not client.account_endpoint:
+            return Response(
+                {"error": "Account endpoint not configured."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        session = getattr(request, "session", None)
+        if session is None:
+            return Response(
+                {"error": "No active session."},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        try:
+            status_code, body = self._keycloak_account_request(
+                client, session, method, path_suffix, json_body
+            )
+        except Exception as exc:
+            logger.exception(exc)
+            return Response(
+                {"error": "Could not reach the identity provider."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        if 200 <= status_code < 300:
+            payload = transform(body) if transform else body
+            return Response(payload, status=status_code)
+        return Response(
+            {"error": "Identity provider rejected the request.", "upstream": body},
+            status=status_code,
+        )
+
+    @action(methods=["GET"], detail=False, url_path="sessions")
+    def sessions_list(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
+        """
+        List the user's active Keycloak sessions. Flattens
+        Keycloak's per-device representation into one row per
+        session so the SPA renders a flat list.
+        """
+        return self._proxy_or_error(
+            request,
+            kwargs.get("auth_server"),
+            "GET",
+            "/sessions/devices",
+            transform=self._flatten_session_devices,
+        )
+
+    @action(
+        methods=["DELETE"],
+        detail=False,
+        url_path=r"sessions/(?P<session_id>[a-zA-Z0-9._-]+)",
+    )
+    def sessions_revoke_one(
+        self, request: HttpRequest, session_id: str = "", **kwargs: dict
+    ) -> HttpResponse:
+        """Revoke one Keycloak session by id. Rejects the user's current
+        session (defence in depth — the SPA already blocks this at the
+        button level)."""
+        session = getattr(request, "session", None)
+        if session is not None:
+            id_token = session.get("oidc_id_token")
+            if id_token:
+                current_sid = _sid_from_id_token(id_token)
+                if current_sid and current_sid == session_id:
+                    return Response(
+                        {
+                            "error": (
+                                "Cannot revoke the current session via this "
+                                "endpoint; use sign-out instead."
+                            )
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
+        return self._proxy_or_error(
+            request,
+            kwargs.get("auth_server"),
+            "DELETE",
+            f"/sessions/{session_id}",
+        )
+
+    @action(methods=["DELETE"], detail=False, url_path="sessions")
+    def sessions_revoke_others(
+        self, request: HttpRequest, **kwargs: dict
+    ) -> HttpResponse:
+        """Revoke every Keycloak session except the current one."""
+        return self._proxy_or_error(
+            request,
+            kwargs.get("auth_server"),
+            "DELETE",
+            "/sessions?current=false",
+        )
+
+    @action(methods=["GET"], detail=False, url_path="linked-accounts")
+    def linked_list(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
+        """List broker IdPs configured on the realm with their connected
+        state for the current user."""
+        return self._proxy_or_error(
+            request,
+            kwargs.get("auth_server"),
+            "GET",
+            "/linked-accounts",
+        )
+
+    @action(
+        methods=["DELETE"],
+        detail=False,
+        url_path=r"linked-accounts/(?P<provider>[^/]+)",
+    )
+    def linked_unlink(
+        self, request: HttpRequest, provider: str = "", **kwargs: dict
+    ) -> HttpResponse:
+        """Unlink a broker IdP from the current user."""
+        if not _PROVIDER_ALIAS_RE.match(provider):
+            return Response(
+                {"error": "Invalid provider alias."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return self._proxy_or_error(
+            request,
+            kwargs.get("auth_server"),
+            "DELETE",
+            f"/linked-accounts/{provider}",
+        )
+
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path=r"linked-accounts/(?P<provider>[^/]+)/link-url",
+    )
+    def linked_link_url(
+        self, request: HttpRequest, provider: str = "", **kwargs: dict
+    ) -> HttpResponse:
+        """Get a one-shot URL the SPA opens in a new tab to drive
+        Keycloak's broker-link flow for ``provider``."""
+        if not _PROVIDER_ALIAS_RE.match(provider):
+            return Response(
+                {"error": "Invalid provider alias."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return self._proxy_or_error(
+            request,
+            kwargs.get("auth_server"),
+            "GET",
+            f"/linked-accounts/{provider}",
+            transform=lambda body: (
+                {"url": body.get("accountLinkUri")} if body else None
+            ),
+        )
+
+    @action(methods=["GET"], detail=False, url_path="credentials")
+    def credentials_list(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
+        """List credential metadata (TOTP / password / recovery codes).
+
+        Keycloak's Account REST returns each credential category with the
+        configured instances nested under ``userCredentialMetadatas`` →
+        ``credential``. SPAs would have to walk two levels just to ask
+        "does the user have a TOTP?" — so we flatten to a single
+        ``credentials`` array of ``{id, userLabel?, createdDate?}`` and
+        forward only the top-level fields the SPA actually renders.
+        """
+        return self._proxy_or_error(
+            request,
+            kwargs.get("auth_server"),
+            "GET",
+            "/credentials",
+            transform=self._flatten_credentials,
+        )
+
+    @staticmethod
+    def _flatten_credentials(body: Optional[list]) -> list:
+        """Reshape Keycloak's credential-metadata array for the SPA.
+
+        Keycloak Account REST shape::
+
+            [
+              {
+                "type": "otp",
+                "category": "two-factor",
+                "displayName": "otp-display-name",
+                "userCredentialMetadatas": [
+                  {"credential": {"id": "...", "userLabel": "...",
+                                  "createdDate": 1700000000000}, ...}
+                ],
+                ...
+              },
+              ...
+            ]
+
+        SPA shape::
+
+            [{"type", "category", "displayName",
+              "credentials": [{"id", "userLabel", "createdDate"}]}, ...]
+        """
+        if not body:
+            return []
+        out: list = []
+        for entry in body:
+            instances = []
+            for meta in entry.get("userCredentialMetadatas", []) or []:
+                cred = (meta or {}).get("credential") or {}
+                cred_id = cred.get("id")
+                if not cred_id:
+                    # A metadata row without an id is unusable — the SPA
+                    # uses id as the React key and as the DELETE path, so
+                    # silently dropping it is safer than rendering a row
+                    # that can't be acted on.
+                    continue
+                row = {"id": cred_id}
+                user_label = cred.get("userLabel")
+                if user_label:
+                    row["userLabel"] = user_label
+                created = cred.get("createdDate")
+                if created is not None:
+                    row["createdDate"] = created
+                instances.append(row)
+            out.append(
+                {
+                    "type": entry.get("type"),
+                    "category": entry.get("category"),
+                    "displayName": entry.get("displayName"),
+                    "credentials": instances,
+                }
+            )
+        return out
+
+    @staticmethod
+    def _flatten_session_devices(body: Optional[list]) -> list:
+        """``[{browser, os, sessions:[{id, started, ...}, ...]}, ...]``
+        → ``[{id, browser, os, started, ...}, ...]``."""
+        if not body:
+            return []
+        rows: list = []
+        for device in body:
+            browser = device.get("browser")
+            os_name = device.get("os")
+            for sess in device.get("sessions", []) or []:
+                rows.append(
+                    {
+                        "id": sess.get("id"),
+                        "browser": browser,
+                        "os": os_name,
+                        "ipAddress": sess.get("ipAddress"),
+                        "started": sess.get("started"),
+                        "lastAccess": sess.get("lastAccess"),
+                        "current": bool(sess.get("current")),
+                        "clients": sess.get("clients", []),
+                    }
+                )
+        return rows
+
     @action(methods=["POST"], detail=False)
     def account(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         """
@@ -320,8 +652,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             )
 
         try:
-            upstream_status, upstream_body = client.update_account_profile(
-                access_token, payload
+            status_code, body = self._keycloak_account_request(
+                client, session, "POST", "", json_body=payload
             )
         except Exception as exc:
             logger.exception(exc)
@@ -330,51 +662,15 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        # Keycloak returned 401 → the access_token has expired. If we
-        # have a refresh_token, mint a fresh pair and retry once. This
-        # is the only retry path — a second 401 means the refresh
-        # itself is bad and the user has to re-authenticate.
-        if upstream_status == 401:
-            refresh_token = session.get("oidc_refresh_token")
-            if refresh_token:
-                try:
-                    tokens = client.refresh_access_token(refresh_token)
-                except TokenVerificationFailed:
-                    return Response(
-                        {
-                            "error": (
-                                "Session expired — please sign in again."
-                            )
-                        },
-                        status=status.HTTP_401_UNAUTHORIZED,
-                    )
-                new_access = tokens.get("access_token")
-                new_refresh = tokens.get("refresh_token")
-                if new_access:
-                    session["oidc_access_token"] = new_access
-                if new_refresh:
-                    session["oidc_refresh_token"] = new_refresh
-                if new_access:
-                    try:
-                        upstream_status, upstream_body = (
-                            client.update_account_profile(new_access, payload)
-                        )
-                    except Exception as exc:
-                        logger.exception(exc)
-                        return Response(
-                            {"error": "Could not reach the identity provider."},
-                            status=status.HTTP_502_BAD_GATEWAY,
-                        )
-
-        if 200 <= upstream_status < 300:
+        if 200 <= status_code < 300:
             return Response({"success": True}, status=status.HTTP_200_OK)
 
         return Response(
             {
                 "error": "Identity provider rejected the update.",
-                "upstream": upstream_body,
+                "upstream": body,
             },
-            status=upstream_status,
+            status=status_code,
         )
 
     def _username_field_config(self) -> Tuple[str, str]:
@@ -680,9 +976,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     # Account REST API on behalf of the user (and
                     # refresh on 401 expiry). ``user_tokens`` is the
                     # raw token-endpoint response dict.
-                    if callback_session is not None and isinstance(
-                        user_tokens, dict
-                    ):
+                    if callback_session is not None and isinstance(user_tokens, dict):
                         access_token = user_tokens.get("access_token")
                         refresh_token = user_tokens.get("refresh_token")
                         if access_token:
