@@ -285,18 +285,26 @@ class OpenIDClient:
         decoded_token = jwt.decode(
             id_token, public_key, audience=[self.client_id], algorithms=alg
         )
+        # ``login()`` writes ``{auth_server, redirect_after}`` under the
+        # nonce whenever the caller supplied a ``next``, even when
+        # ``USE_NONCES`` is False (line 405: ``self.cache_nonces or
+        # redirect_after``). Read the cache here under the same
+        # condition so the post-auth redirect honors ``next`` regardless
+        # of nonce verification — otherwise the cached entry would
+        # silently expire unread when ``USE_NONCES`` is False (#116).
+        nonce = decoded_token.get("nonce")
+        cached_data = cache.get(nonce) if nonce else None
         if self.cache_nonces:
             # Verify that the cached nonce is present and that
             # the provider the nonce was initiated for, is the same
             # provider returning it
-            nonce = decoded_token.get("nonce")
             if not nonce:
                 raise NonceVerificationFailed(
                     "Failed to verify login request. Missing nonce value"
                 )
-            cached_data = cache.get(nonce)
             if not cached_data or self.auth_server != cached_data.get("auth_server"):
                 raise NonceVerificationFailed("Failed to verify returned nonce value")
+        if cached_data and cached_data.get("redirect_after"):
             decoded_token[REDIRECT_AFTER_AUTH] = cached_data.get("redirect_after")
         return decoded_token
 

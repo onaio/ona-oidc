@@ -179,6 +179,13 @@ Validation runs Django's `url_has_allowed_host_and_scheme`, so
 `javascript:` / `data:` schemes and protocol-relative `//evil` URLs
 are rejected. Under HTTPS, `http://` redirects are also rejected.
 
+`next` is honored regardless of `USE_NONCES`. When the caller supplies
+`next`, ona-oidc allocates a nonce and caches the validated redirect
+target under it for the duration of the auth round-trip; the callback
+restores the value from cache and uses it as the post-auth redirect.
+With `USE_NONCES=False` the nonce is still emitted purely as the cache
+key — no IdP-side nonce verification is performed.
+
 4. (Optional) If you'd like to use the default OpenID Connect Viewset register the urls located in `oidc.urls`.
 
 ```python
