@@ -126,14 +126,6 @@ class OpenIDClient:
         self.scope = config[auth_server].get("SCOPE") or default_config["SCOPE"]
         self.token_endpoint = config[auth_server].get("TOKEN_ENDPOINT")
         self.end_session_endpoint = config[auth_server].get("END_SESSION_ENDPOINT")
-        # Keycloak Account REST API root for this realm — e.g.
-        # ``https://idp.example.com/realms/zonkey/account``. Used by the
-        # ``account`` viewset action to proxy SPA-initiated profile
-        # updates through the user's own access_token (Account API
-        # requires the ``manage-account`` role, default for every realm
-        # user). Optional: deployments that don't expose the action
-        # leave it unset.
-        self.account_endpoint = config[auth_server].get("ACCOUNT_ENDPOINT")
         self.redirect_uri = config[auth_server].get("REDIRECT_URI")
         self.response_type = config[auth_server].get(
             "RESPONSE_TYPE", default_config["RESPONSE_TYPE"]
@@ -466,79 +458,3 @@ class OpenIDClient:
         separator = "&" if "?" in url else "?"
         query = urlencode(filtered, quote_via=quote, safe=_AUTHORIZE_URL_SAFE_CHARS)
         return HttpResponseRedirect(f"{url}{separator}{query}")
-
-    def refresh_access_token(self, refresh_token: str) -> dict:
-        """
-        Exchange a refresh_token for a fresh token pair at the
-        configured ``TOKEN_ENDPOINT``. Returns the parsed token
-        response (``access_token``, ``refresh_token``, ``expires_in``,
-        usually a new ``id_token`` too).
-
-        :raises TokenVerificationFailed: on any non-2xx from the IdP.
-        """
-        headers = {"Content-Type": "application/x-www-form-urlencoded"}
-        data = {
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
-        }
-        try:
-            response = requests.post(
-                self.token_endpoint,
-                data=data,
-                headers=headers,
-            )
-            response.raise_for_status()
-        except requests.RequestException as exc:
-            logger.exception(exc)
-            raise TokenVerificationFailed(
-                f"Failed to refresh access token: {exc}"
-            ) from exc
-        return response.json()
-
-    def update_account_profile(
-        self, access_token: str, payload: Mapping[str, Any]
-    ) -> tuple[int, Optional[dict]]:
-        """
-        POST ``payload`` to the Keycloak Account REST API on behalf of
-        the user identified by ``access_token``. Returns the upstream
-        ``(status_code, parsed_json_or_none)`` tuple so the viewset can
-        decide whether to retry after a token refresh.
-
-        ``ACCOUNT_ENDPOINT`` must be configured on the auth server.
-        ``payload`` is forwarded verbatim — the caller is responsible
-        for restricting it to safe fields (``email`` / ``firstName`` /
-        ``lastName`` / etc.).
-        """
-        if not self.account_endpoint:
-            raise ValueError(
-                f"ACCOUNT_ENDPOINT is not configured for auth_server "
-                f"{self.auth_server!r}; the account update action is "
-                f"disabled for this deployment."
-            )
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
-        try:
-            response = requests.post(
-                self.account_endpoint,
-                json=dict(payload),
-                headers=headers,
-            )
-        except requests.RequestException as exc:
-            logger.exception(exc)
-            raise
-
-        body: Optional[dict] = None
-        if response.content:
-            try:
-                body = response.json()
-            except ValueError:
-                # Keycloak returns 204 No Content on success or HTML
-                # error pages on misconfiguration — both are fine to
-                # surface as ``None``.
-                body = None
-        return response.status_code, body
