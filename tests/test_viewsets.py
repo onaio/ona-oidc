@@ -1647,6 +1647,16 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         pw = response.data[1]
         self.assertEqual(pw["credentials"], [{"id": "cred-pw"}])
 
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
     def test_credentials_list_drops_rows_without_id(self):
         """A ``userCredentialMetadatas`` entry without an ``id`` can't be
         rendered as a removable row (no DELETE target, no React key), so
