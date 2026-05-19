@@ -79,6 +79,18 @@ RESERVED_AUTHORIZE_PARAMS = frozenset(
     }
 )
 
+# Caller-supplied entries matching these keys are dropped at the
+# end-session URL boundary. ``client_id`` and ``post_logout_redirect_uri``
+# are already baked into ``END_SESSION_ENDPOINT``; allowing overrides
+# would let a query-string-tunnelled value swap the post-logout
+# redirect target or impersonate a different client at the IdP.
+RESERVED_END_SESSION_PARAMS = frozenset(
+    {
+        "client_id",
+        "post_logout_redirect_uri",
+    }
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -414,5 +426,35 @@ class OpenIDClient:
         query = urlencode(params, quote_via=quote, safe=_AUTHORIZE_URL_SAFE_CHARS)
         return HttpResponseRedirect(f"{self.authorization_endpoint}?{query}")
 
-    def logout(self) -> HttpResponseRedirect:
-        return HttpResponseRedirect(self.end_session_endpoint)
+    def logout(
+        self,
+        extra_params: Optional[Mapping[str, str]] = None,
+    ) -> HttpResponseRedirect:
+        """
+        Redirects the user to the end-session endpoint for RP-initiated logout.
+
+        ``extra_params`` is appended to the configured ``END_SESSION_ENDPOINT``
+        (which already carries ``client_id`` + ``post_logout_redirect_uri``).
+        Entries matching ``RESERVED_END_SESSION_PARAMS`` are silently dropped
+        so callers cannot swap the values ona-oidc itself manages.
+
+        Standard OIDC RP-Initiated Logout 1.0 hints (``id_token_hint``,
+        ``logout_hint``, ``state``, ``ui_locales``) and provider-specific
+        ones (``kc_idp_hint``, ``federated`` …) all flow through this
+        single channel — same shape as ``login()``.
+        """
+        url = self.end_session_endpoint
+        if not extra_params:
+            return HttpResponseRedirect(url)
+
+        filtered = [
+            (key, value)
+            for key, value in extra_params.items()
+            if key not in RESERVED_END_SESSION_PARAMS
+        ]
+        if not filtered:
+            return HttpResponseRedirect(url)
+
+        separator = "&" if "?" in url else "?"
+        query = urlencode(filtered, quote_via=quote, safe=_AUTHORIZE_URL_SAFE_CHARS)
+        return HttpResponseRedirect(f"{url}{separator}{query}")

@@ -42,6 +42,7 @@ from oidc.client import (
 from oidc.utils import (
     email_usename_to_url_safe,
     get_login_query_param_allowlist,
+    get_logout_query_param_allowlist,
     get_viewset_config,
     is_safe_login_redirect,
     replace_characters_in_username,
@@ -208,9 +209,32 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
     @action(methods=["GET"], detail=False)
     def logout(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
-        client = self._get_client(auth_server=kwargs.get("auth_server"))
+        auth_server = kwargs.get("auth_server")
+        client = self._get_client(auth_server=auth_server)
         if client:
-            response = client.logout()
+            # Pop (not get) so the token doesn't outlive the session
+            # it belonged to. If absent (legacy session predating the
+            # callback storing it), the end-session URL falls back to
+            # the bare ``client_id`` + ``post_logout_redirect_uri``
+            # baked into ``END_SESSION_ENDPOINT``.
+            extra_params: dict[str, str] = {}
+            # ``session`` is attached by ``SessionMiddleware``; absent in
+            # test rigs that build requests via ``APIRequestFactory``
+            # without middleware. Treat missing session as "no stashed
+            # token" — same fallback as the legacy bare end-session URL.
+            session = getattr(request, "session", None)
+            id_token_hint = session.pop("oidc_id_token", None) if session else None
+            if id_token_hint:
+                extra_params["id_token_hint"] = id_token_hint
+
+            allowlist = get_logout_query_param_allowlist(auth_server)
+            for key, value in request.query_params.items():
+                if key in allowlist and key not in extra_params:
+                    # Server-stashed hints (e.g. id_token_hint) win on
+                    # collision with caller-supplied query params.
+                    extra_params[key] = value
+
+            response = client.logout(extra_params=extra_params or None)
 
             if self.use_auth_backend:
                 logout_backend(request)
@@ -512,6 +536,19 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 try:
                     id_token = id_token or user_tokens.get("id_token")
                     decoded_id_token = client.verify_and_decode_id_token(id_token)
+                    # Stash the raw id_token in the Django session so
+                    # the logout action below can replay it as
+                    # `id_token_hint` on the Keycloak end-session URL.
+                    # Without it, Keycloak 18+ shows the logout-confirm
+                    # screen even when `client_id` + a whitelisted
+                    # `post_logout_redirect_uri` are passed.
+                    # ``session`` is attached by ``SessionMiddleware``;
+                    # absent in callback rigs that build requests via
+                    # ``APIRequestFactory`` without middleware, so guard
+                    # the write the same way ``logout`` guards the read.
+                    callback_session = getattr(request, "session", None)
+                    if id_token and callback_session is not None:
+                        callback_session["oidc_id_token"] = id_token
                     user_claims = client.tokens_to_user_info(
                         self.map_claims_to_model_field(decoded_id_token),
                         id_token,

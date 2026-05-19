@@ -988,6 +988,106 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertIn("kc_idp_hint=onadata", response.url)
         self.assertNotIn("next=", response.url)
 
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_logout_forwards_id_token_hint_from_session(self):
+        """The id_token stashed by the callback is threaded as
+        ``id_token_hint`` on the end-session URL and popped from
+        the session so it doesn't outlive the logout it served."""
+        view = BaseOpenIDConnectViewset.as_view({"get": "logout"})
+
+        request = self.factory.get("/")
+        # Stand in for ``SessionMiddleware`` — APIRequestFactory skips it.
+        request.session = {"oidc_id_token": "ey.signed.jwt", "unrelated": "keep"}
+        response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            response.url,
+            "http://localhost:3000?id_token_hint=ey.signed.jwt",
+        )
+        # Pop, not get — the token must not outlive the session it served.
+        self.assertNotIn("oidc_id_token", request.session)
+        self.assertEqual(request.session.get("unrelated"), "keep")
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "LOGOUT_QUERY_PARAM_ALLOWLIST": [
+                    "logout_hint",
+                    "ui_locales",
+                ],
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_logout_forwards_only_allowlisted_query_params(self):
+        """Allowlisted query params flow through; everything else is
+        dropped at the viewset boundary — same shape as login's
+        ``LOGIN_QUERY_PARAM_ALLOWLIST``."""
+        view = BaseOpenIDConnectViewset.as_view({"get": "logout"})
+
+        request = self.factory.get(
+            "/?logout_hint=alice%40example.com"
+            "&ui_locales=en-GB"
+            "&evil_param=injected"
+        )
+        request.session = {}
+        response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("logout_hint=alice%40example.com", response.url)
+        self.assertIn("ui_locales=en-GB", response.url)
+        self.assertNotIn("evil_param", response.url)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                # `id_token_hint` deliberately allowlisted to prove that
+                # the server-stashed token wins over caller-supplied
+                # query strings on collision.
+                "LOGOUT_QUERY_PARAM_ALLOWLIST": ["id_token_hint"],
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_logout_session_id_token_hint_wins_over_query_string(self):
+        """If a caller smuggles ``id_token_hint`` via query string AND a
+        legitimate token is stashed in the session, the trusted
+        server-side value must take precedence."""
+        view = BaseOpenIDConnectViewset.as_view({"get": "logout"})
+
+        request = self.factory.get("/?id_token_hint=ey.attacker.jwt")
+        request.session = {"oidc_id_token": "ey.legit.jwt"}
+        response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("id_token_hint=ey.legit.jwt", response.url)
+        self.assertNotIn("ey.attacker.jwt", response.url)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_logout_default_allowlist_drops_all_query_params(self):
+        """No ``LOGOUT_QUERY_PARAM_ALLOWLIST`` configured → empty set →
+        all query params dropped. Mirrors the login default."""
+        view = BaseOpenIDConnectViewset.as_view({"get": "logout"})
+
+        request = self.factory.get("/?logout_hint=alice&kc_idp_hint=onadata")
+        request.session = {}
+        response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 302)
+        # End-session URL untouched — bare endpoint, no stray `?`/`&`.
+        self.assertEqual(response.url, "http://localhost:3000")
+
     @patch(
         "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
         MagicMock(
