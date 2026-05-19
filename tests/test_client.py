@@ -13,7 +13,12 @@ from django.test.utils import override_settings
 import jwt
 import requests
 
-from oidc.client import OpenIDClient, TokenVerificationFailed, state_cache_key
+from oidc.client import (
+    REDIRECT_AFTER_AUTH,
+    OpenIDClient,
+    TokenVerificationFailed,
+    state_cache_key,
+)
 
 OPENID_CONNECT_AUTH_SERVERS = {
     "default": {
@@ -847,3 +852,99 @@ class OpenIDClientTestCase(TestCase):
             client.tokens_to_user_info(decoded_id_token, id_token, access_token)
 
         self.assertIn("Failed to validate access token", str(context.exception))
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                "AUTHORIZATION_ENDPOINT": (
+                    "https://example.com/oauth2/v2.0/authorize"
+                ),
+                "CLIENT_ID": "client",
+                "JWKS_ENDPOINT": "https://example.com/discovery/v2.0/keys",
+                "SCOPE": "openid profile",
+                "TOKEN_ENDPOINT": "https://example.com/oauth2/v2.0/token",
+                "END_SESSION_ENDPOINT": "http://localhost:3000",
+                "REDIRECT_URI": "http://localhost:8000/oidc/msft/callback",
+                "RESPONSE_TYPE": "code",
+                "RESPONSE_MODE": "form_post",
+                "USE_NONCES": False,
+                "NONCE_CACHE_TIMEOUT": 600,
+            }
+        }
+    )
+    @patch("oidc.client.RSAAlgorithm.from_jwk")
+    @patch("oidc.client.jwt.decode")
+    @patch("oidc.client.jwt.get_unverified_header")
+    @patch.object(OpenIDClient, "_retrieve_jwks_related_to_kid")
+    @patch.object(secrets, "token_urlsafe")
+    def test_next_round_trip_with_use_nonces_false(
+        self,
+        mock_token_urlsafe,
+        mock_jwks,
+        mock_get_header,
+        mock_jwt_decode,
+        _mock_from_jwk,
+    ):
+        """Regression test for #116: with ``USE_NONCES=False``, a
+        ``next`` value passed to ``login()`` is restored on the
+        callback so the post-auth redirect honors it.
+
+        Before the fix, ``verify_and_decode_id_token`` only restored
+        ``REDIRECT_AFTER_AUTH`` from cache inside the
+        ``cache_nonces=True`` branch, so the value was silently
+        dropped when nonces were disabled.
+        """
+        mock_token_urlsafe.return_value = "n1"
+        mock_jwks.return_value = {"kty": "RSA"}
+        mock_get_header.return_value = {"kid": "k1", "alg": "RS256"}
+        mock_jwt_decode.return_value = {"sub": "1", "nonce": "n1"}
+
+        client = OpenIDClient("default")
+        client.login(redirect_after="/dashboard")
+
+        decoded = client.verify_and_decode_id_token("h.p.s")
+
+        self.assertEqual(decoded[REDIRECT_AFTER_AUTH], "/dashboard")
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                "AUTHORIZATION_ENDPOINT": (
+                    "https://example.com/oauth2/v2.0/authorize"
+                ),
+                "CLIENT_ID": "client",
+                "JWKS_ENDPOINT": "https://example.com/discovery/v2.0/keys",
+                "SCOPE": "openid profile",
+                "TOKEN_ENDPOINT": "https://example.com/oauth2/v2.0/token",
+                "END_SESSION_ENDPOINT": "http://localhost:3000",
+                "REDIRECT_URI": "http://localhost:8000/oidc/msft/callback",
+                "RESPONSE_TYPE": "code",
+                "RESPONSE_MODE": "form_post",
+                "USE_NONCES": False,
+                "NONCE_CACHE_TIMEOUT": 600,
+            }
+        }
+    )
+    @patch("oidc.client.RSAAlgorithm.from_jwk")
+    @patch("oidc.client.jwt.decode")
+    @patch("oidc.client.jwt.get_unverified_header")
+    @patch.object(OpenIDClient, "_retrieve_jwks_related_to_kid")
+    def test_no_next_with_use_nonces_false_does_not_set_redirect_after(
+        self,
+        mock_jwks,
+        mock_get_header,
+        mock_jwt_decode,
+        _mock_from_jwk,
+    ):
+        """``USE_NONCES=False`` and no ``next``: nothing is cached,
+        ``verify_and_decode_id_token`` does not invent a redirect
+        target. ``REDIRECT_AFTER_AUTH`` is absent from the decoded
+        token so the viewset falls back to the configured default."""
+        mock_jwks.return_value = {"kty": "RSA"}
+        mock_get_header.return_value = {"kid": "k1", "alg": "RS256"}
+        mock_jwt_decode.return_value = {"sub": "1"}
+
+        client = OpenIDClient("default")
+        decoded = client.verify_and_decode_id_token("h.p.s")
+
+        self.assertNotIn(REDIRECT_AFTER_AUTH, decoded)
