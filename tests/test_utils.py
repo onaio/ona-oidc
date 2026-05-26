@@ -212,3 +212,25 @@ class TestAuthenticateSSO(TestCase):
     def test_returns_none_without_sso_token(self):
         request = APIRequestFactory().get("/")
         self.assertIsNone(authenticate_sso(request))
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=SSO_AUTH_CONFIG)
+    def test_malformed_token_fails_closed(self):
+        """A malformed token returns None rather than raising."""
+        request = APIRequestFactory().get("/")
+        request.COOKIES["SSO"] = "not-a-jwt"
+        self.assertIsNone(authenticate_sso(request))
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=SSO_AUTH_CONFIG)
+    def test_token_signed_with_wrong_key_fails_closed(self):
+        """A token signed with the wrong secret returns None, not a 500."""
+        User.objects.create_user(
+            username="erin", email="erin@example.com", is_active=True
+        )
+        token = jwt.encode(
+            {"email": "erin@example.com"},
+            "a-different-secret-key-than-the-server-uses",
+            "HS256",
+        )
+        request = APIRequestFactory().get("/")
+        request.COOKIES["SSO"] = token
+        self.assertIsNone(authenticate_sso(request))

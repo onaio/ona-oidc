@@ -1499,6 +1499,79 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(payload, {"username": "patrick"})
 
     @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "AUTO_CREATE_USER": False,
+        }
+    )
+    def test_shared_email_with_unmatched_username_is_not_authorized(self):
+        """
+        When several accounts share an email and the ``preferred_username``
+        claim matches none of them, the callback must fail closed instead of
+        binding the session to an arbitrary shared-email account.
+        """
+        User.objects.create_user(
+            username="john", email="team@example.com", first_name="John"
+        )
+        User.objects.create_user(
+            username="jane", email="team@example.com", first_name="Jane"
+        )
+
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "given_name": "Ghost",
+                "family_name": "User",
+                "email": "team@example.com",
+                "preferred_username": "ghost",
+            }
+            data = {"id_token": "test.token.here"}
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 401)
+        # Neither account sharing the email was logged in.
+        self.assertIsNone(User.objects.get(username="john").last_login)
+        self.assertIsNone(User.objects.get(username="jane").last_login)
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_shared_email_unmatched_username_does_not_bind_with_auto_create(self):
+        """
+        With auto-create on (the default), a shared email whose
+        ``preferred_username`` matches no existing account must still not bind
+        the session to an arbitrary shared-email account.
+        """
+        User.objects.create_user(
+            username="john", email="team@example.com", first_name="John"
+        )
+        User.objects.create_user(
+            username="jane", email="team@example.com", first_name="Jane"
+        )
+
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "given_name": "Ghost",
+                "family_name": "User",
+                "email": "team@example.com",
+                "preferred_username": "ghost",
+            }
+            data = {"id_token": "test.token.here"}
+            request = self.factory.post("/", data=data)
+            view(request, auth_server="default")
+
+        # Neither shared-email account was logged in, and the email already
+        # being in use routes to the username form rather than creating a
+        # duplicate "ghost" account.
+        self.assertIsNone(User.objects.get(username="john").last_login)
+        self.assertIsNone(User.objects.get(username="jane").last_login)
+        self.assertFalse(User.objects.filter(username="ghost").exists())
+
+    @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
         OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
     )
@@ -2127,3 +2200,61 @@ class TestPerProviderTargetUrlAfterAuth(TestCase):
         self.assertEqual(primary_response.url, "https://primary.example.com/landing")
         self.assertEqual(secondary_response.status_code, 302)
         self.assertEqual(secondary_response.url, "https://secondary.example.com")
+
+
+class TestResolveMatchedUser(TestCase):
+    """Tests for ``BaseOpenIDConnectViewset._resolve_matched_user``."""
+
+    def _shared_email_accounts(self):
+        john = User.objects.create_user(username="john", email="team@example.com")
+        jane = User.objects.create_user(username="jane", email="team@example.com")
+        return john, jane
+
+    def test_picks_account_matching_username_claim(self):
+        """The unique username claim disambiguates a shared email."""
+        _, jane = self._shared_email_accounts()
+        matched = User.objects.filter(email__iexact="team@example.com")
+        self.assertEqual(
+            UserModelOpenIDConnectViewset._resolve_matched_user(matched, "jane"),
+            jane,
+        )
+
+    def test_returns_none_for_shared_email_when_username_matches_none(self):
+        """Fail closed when no shared-email account matches the username."""
+        self._shared_email_accounts()
+        matched = User.objects.filter(email__iexact="team@example.com")
+        self.assertIsNone(
+            UserModelOpenIDConnectViewset._resolve_matched_user(matched, "ghost")
+        )
+
+    def test_single_match_binds_without_username(self):
+        """An unambiguous single match binds even without a username claim."""
+        solo = User.objects.create_user(username="solo", email="solo@example.com")
+        matched = User.objects.filter(email__iexact="solo@example.com")
+        self.assertEqual(
+            UserModelOpenIDConnectViewset._resolve_matched_user(matched, None),
+            solo,
+        )
+
+    def test_single_match_binds_even_when_username_differs(self):
+        """A single email match is authoritative even if the username differs."""
+        solo = User.objects.create_user(username="solo", email="solo@example.com")
+        matched = User.objects.filter(email__iexact="solo@example.com")
+        self.assertEqual(
+            UserModelOpenIDConnectViewset._resolve_matched_user(matched, "renamed"),
+            solo,
+        )
+
+    def test_returns_none_for_empty_match(self):
+        """No matches resolves to None."""
+        matched = User.objects.filter(email__iexact="nobody@example.com")
+        self.assertIsNone(
+            UserModelOpenIDConnectViewset._resolve_matched_user(matched, "anyone")
+        )
+
+    def test_resolves_with_a_single_query(self):
+        """Resolution materializes the queryset once instead of fanning out."""
+        self._shared_email_accounts()
+        matched = User.objects.filter(email__iexact="team@example.com")
+        with self.assertNumQueries(1):
+            UserModelOpenIDConnectViewset._resolve_matched_user(matched, "jane")

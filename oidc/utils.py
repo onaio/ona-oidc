@@ -7,7 +7,6 @@ from django.http import HttpRequest
 from django.utils.http import url_has_allowed_host_and_scheme
 
 import jwt
-from jwt.exceptions import InvalidSignatureError
 
 import oidc.settings as default
 
@@ -44,7 +43,10 @@ def authenticate_sso(request, unique_user_field: Optional[str] = None):
         )
         if user and user.is_active:
             return (user, True)
-    except InvalidSignatureError:
+    except jwt.PyJWTError:
+        # Any malformed/expired/badly-signed token is treated as
+        # unauthenticated rather than propagating as a 500. Previously only
+        # ``InvalidSignatureError`` was caught, so e.g. an expired token raised.
         pass
     return None
 

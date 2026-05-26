@@ -454,6 +454,45 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         if state:
             cache.delete(state_cache_key(state))
 
+    @staticmethod
+    def _resolve_matched_user(matched_users, claimed_username):
+        """Resolve the single account a login should attach to.
+
+        ``email`` is not unique on the user model, so an email lookup can
+        return several accounts. ``username`` *is* unique, so the
+        ``preferred_username`` claim is authoritative: when it matches one of
+        the email-matched accounts we attach to exactly that account. We bind
+        by email alone only when the match is unambiguous (a single account).
+        When several accounts share the email and none matches the username
+        claim we return ``None`` so the caller fails closed (auto-create or a
+        401) instead of binding the session to an arbitrary account.
+
+        :param matched_users: queryset of accounts matched by email
+        :param claimed_username: the unique username carried by the token, or
+            ``None`` when the claim is absent
+        :return: the resolved user, or ``None`` when no unambiguous match
+        """
+        # Materialize once; resolve the rest in memory rather than issuing a
+        # fresh query for each of exists()/count()/filter()/first().
+        matched = list(matched_users)
+        if not matched:
+            return None
+
+        if claimed_username:
+            # Exact match (not ``__iexact`` like the email lookup) is
+            # deliberate: ``username`` is unique, so at most one account can
+            # match exactly. A case-insensitive compare could match two
+            # case-variant usernames that share the email and reintroduce the
+            # very ambiguity this method exists to prevent.
+            for candidate in matched:
+                if candidate.username == claimed_username:
+                    return candidate
+
+        if len(matched) == 1:
+            return matched[0]
+
+        return None
+
     @action(methods=["POST", "GET"], detail=False)
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
         auth_server = kwargs.get("auth_server")
@@ -583,20 +622,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         user_data["email"] = user_data["emails"][0]
                         matched_users = self.user_model.objects.filter(q_objects)
 
-                    if matched_users is not None and matched_users.exists():
-                        # Email is not unique on the user model, so a lookup can
-                        # return several accounts. When it does, disambiguate with
-                        # the unique username carried by the ``preferred_username``
-                        # claim so we attach to the exact account that logged in
-                        # rather than letting ``.get()`` raise
-                        # ``MultipleObjectsReturned`` or picking one arbitrarily.
-                        claimed_username = user_data.get("username")
-                        if matched_users.count() > 1 and claimed_username:
-                            user = matched_users.filter(
-                                username=claimed_username
-                            ).first()
-                        if not user:
-                            user = matched_users.first()
+                    if matched_users is not None:
+                        user = self._resolve_matched_user(
+                            matched_users, user_data.get("username")
+                        )
 
                     if not user and not self.auto_create_user:
                         self._clear_login_states(server_response)
