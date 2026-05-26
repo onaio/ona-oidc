@@ -341,27 +341,33 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             login(request, user, backend=self.auth_backend)
 
         if self.use_sso:
-            # Key the cookie claim by the configured field name (``self.sso_cookie``
-            # == ``SSO_COOKIE_DATA``) rather than a hardcoded ``"email"``. The old
-            # hardcoded key stored e.g. the username *value* under an ``"email"``
-            # key, so ``authenticate_sso`` could only ever look users up by email —
-            # ambiguous when accounts share one. Producer and consumer now agree on
-            # the same field, defaulting to ``email`` for unchanged deployments.
-            sso_cookie = jwt.encode(
-                {self.sso_cookie: getattr(user, self.sso_cookie, None)},
-                config.get("JWT_SECRET_KEY"),
-                config.get("JWT_ALGORITHM"),
-            )
-            response.set_cookie(
-                SSO_COOKIE_NAME,
-                value=sso_cookie,
-                max_age=self.cookie_max_age,
-                domain=self.cookie_domain,
-                path=self.cookie_path,
-                httponly=self.cookie_httponly,
-                secure=self._resolve_cookie_secure(),
-                samesite=self.cookie_samesite,
-            )
+            # Key the cookie claim by the configured field name
+            # (``self.sso_cookie`` == ``SSO_COOKIE_DATA``) rather than a
+            # hardcoded ``"email"``. The old hardcoded key stored e.g. the
+            # username *value* under an ``"email"`` key, so ``authenticate_sso``
+            # could only ever look users up by email — ambiguous when accounts
+            # share one. Producer and consumer now agree on the same field,
+            # defaulting to ``email`` for unchanged deployments.
+            sso_value = getattr(user, self.sso_cookie, None)
+            # Skip the cookie entirely when the configured field is empty
+            # rather than issuing a dead ``{field: null}``/``{field: ""}``
+            # cookie that the consumer can never resolve to a user.
+            if sso_value:
+                sso_cookie = jwt.encode(
+                    {self.sso_cookie: sso_value},
+                    config.get("JWT_SECRET_KEY"),
+                    config.get("JWT_ALGORITHM"),
+                )
+                response.set_cookie(
+                    SSO_COOKIE_NAME,
+                    value=sso_cookie,
+                    max_age=self.cookie_max_age,
+                    domain=self.cookie_domain,
+                    path=self.cookie_path,
+                    httponly=self.cookie_httponly,
+                    secure=self._resolve_cookie_secure(),
+                    samesite=self.cookie_samesite,
+                )
 
         return response
 
@@ -461,11 +467,19 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         ``email`` is not unique on the user model, so an email lookup can
         return several accounts. ``username`` *is* unique, so the
         ``preferred_username`` claim is authoritative: when it matches one of
-        the email-matched accounts we attach to exactly that account. We bind
-        by email alone only when the match is unambiguous (a single account).
-        When several accounts share the email and none matches the username
-        claim we return ``None`` so the caller fails closed (auto-create or a
-        401) instead of binding the session to an arbitrary account.
+        the email-matched accounts we attach to exactly that account.
+
+        Resolution order, given the email match cardinality:
+
+        - **Several accounts** (the case this method exists for): the username
+          claim must pick one of them. If it matches none, return ``None`` so
+          the caller fails closed (auto-create or a 401) instead of binding
+          the session to an arbitrary account. The username guard only
+          engages here, at cardinality >= 2.
+        - **Exactly one account**: bind to it. A single email match is
+          unambiguous, so it wins even when the username claim differs or is
+          absent (this preserves the pre-change behaviour).
+        - **No accounts**: return ``None``.
 
         :param matched_users: queryset of accounts matched by email
         :param claimed_username: the unique username carried by the token, or
