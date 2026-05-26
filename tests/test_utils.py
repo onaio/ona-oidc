@@ -1,15 +1,37 @@
 """Tests for module oidc.utils"""
 
+from django.contrib.auth import get_user_model
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 from django.test.utils import override_settings
 
+import jwt
 from rest_framework.test import APIRequestFactory
 
 from oidc.utils import (
+    authenticate_sso,
     get_login_query_param_allowlist,
     is_safe_login_redirect,
 )
+
+User = get_user_model()
+
+SSO_AUTH_CONFIG = {
+    "JWT_SECRET_KEY": "test-secret-key-that-is-long-enough-to-be-ok",
+    "JWT_ALGORITHM": "HS256",
+}
+
+
+def _make_sso_request(payload):
+    """Build a request carrying a signed SSO cookie for ``payload``."""
+    token = jwt.encode(
+        payload,
+        SSO_AUTH_CONFIG["JWT_SECRET_KEY"],
+        SSO_AUTH_CONFIG["JWT_ALGORITHM"],
+    )
+    request = APIRequestFactory().get("/")
+    request.COOKIES["SSO"] = token
+    return request
 
 
 class TestGetLoginQueryParamAllowlist(TestCase):
@@ -122,3 +144,71 @@ class TestIsSafeLoginRedirect(TestCase):
             is_safe_login_redirect(
                 "https://spa.example.com/x", "default", self._request()
             )
+
+
+class TestAuthenticateSSO(TestCase):
+    """Tests for ``authenticate_sso`` SSO cookie/header resolution."""
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=SSO_AUTH_CONFIG)
+    def test_email_default_resolves_user(self):
+        """With no SSO_COOKIE_DATA override, lookup falls back to email."""
+        user = User.objects.create_user(
+            username="alice", email="alice@example.com", is_active=True
+        )
+        request = _make_sso_request({"email": "alice@example.com"})
+        self.assertEqual(authenticate_sso(request), (user, True))
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={**SSO_AUTH_CONFIG, "SSO_COOKIE_DATA": "username"}
+    )
+    def test_resolves_correct_account_by_username_for_shared_email(self):
+        """
+        Two accounts sharing an email are disambiguated by the unique
+        username claim instead of an arbitrary ``.first()`` pick.
+        """
+        User.objects.create_user(
+            username="john", email="team@example.com", is_active=True
+        )
+        jane = User.objects.create_user(
+            username="jane", email="team@example.com", is_active=True
+        )
+        request = _make_sso_request({"username": "jane"})
+        self.assertEqual(authenticate_sso(request), (jane, True))
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={**SSO_AUTH_CONFIG, "SSO_COOKIE_DATA": "username"}
+    )
+    def test_returns_none_when_configured_claim_missing(self):
+        """A legacy cookie missing the configured claim must not match."""
+        User.objects.create_user(
+            username="bob", email="bob@example.com", is_active=True
+        )
+        request = _make_sso_request({"email": "bob@example.com"})
+        self.assertIsNone(authenticate_sso(request))
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={**SSO_AUTH_CONFIG, "SSO_COOKIE_DATA": "email"}
+    )
+    def test_explicit_field_argument_overrides_config(self):
+        user = User.objects.create_user(
+            username="carol", email="carol@example.com", is_active=True
+        )
+        request = _make_sso_request({"username": "carol"})
+        self.assertEqual(
+            authenticate_sso(request, unique_user_field="username"), (user, True)
+        )
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={**SSO_AUTH_CONFIG, "SSO_COOKIE_DATA": "username"}
+    )
+    def test_inactive_user_not_authenticated(self):
+        User.objects.create_user(
+            username="dave", email="dave@example.com", is_active=False
+        )
+        request = _make_sso_request({"username": "dave"})
+        self.assertIsNone(authenticate_sso(request))
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=SSO_AUTH_CONFIG)
+    def test_returns_none_without_sso_token(self):
+        request = APIRequestFactory().get("/")
+        self.assertIsNone(authenticate_sso(request))

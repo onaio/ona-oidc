@@ -1427,6 +1427,78 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             )
 
     @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "SSO_COOKIE_DATA": "username",
+        }
+    )
+    def test_disambiguates_shared_email_by_username(self):
+        """
+        When two accounts share an email, the callback attaches to the one
+        whose username matches the ``preferred_username`` claim instead of
+        raising MultipleObjectsReturned or picking an arbitrary account.
+        """
+        User.objects.create_user(
+            username="john", email="team@example.com", first_name="John"
+        )
+        jane = User.objects.create_user(
+            username="jane", email="team@example.com", first_name="Jane"
+        )
+
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "given_name": "Jane",
+                "family_name": "Doe",
+                "email": "team@example.com",
+                "preferred_username": "jane",
+            }
+            data = {"id_token": "test.token.here"}
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 302)
+        # The matching account was logged in...
+        jane.refresh_from_db()
+        self.assertIsNotNone(jane.last_login)
+        # ...and the other account sharing the email was left untouched.
+        self.assertIsNone(User.objects.get(username="john").last_login)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "SSO_COOKIE_DATA": "username",
+        }
+    )
+    def test_sso_cookie_payload_uses_configured_field(self):
+        """The SSO cookie encodes the configured field as its claim key."""
+        User.objects.create_user(
+            username="patrick", email="patrick@example.com", first_name="Patrick"
+        )
+
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "given_name": "Patrick",
+                "family_name": "Doe",
+                "email": "patrick@example.com",
+                "preferred_username": "patrick",
+            }
+            data = {"id_token": "test.token.here"}
+            request = self.factory.post("/", data=data)
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 302)
+        sso_cookie = response.cookies.get("SSO")
+        self.assertIsNotNone(sso_cookie)
+        payload = jwt.decode(sso_cookie.value, "abc", algorithms=["HS256"])
+        self.assertEqual(payload, {"username": "patrick"})
+
+    @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
         OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
     )

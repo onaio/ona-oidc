@@ -12,10 +12,18 @@ from jwt.exceptions import InvalidSignatureError
 import oidc.settings as default
 
 
-def authenticate_sso(request, unique_user_field: str = "email"):
+def authenticate_sso(request, unique_user_field: Optional[str] = None):
     config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
     secret_key = config.get("JWT_SECRET_KEY", "")
     algorithm = config.get("JWT_ALGORITHM", "HS256")
+    # Resolve the lookup field from the same setting the SSO cookie is built
+    # with (see ``OpenIDConnectBaseViewset.generate_successful_response``) so
+    # the cookie producer and this consumer can never drift apart. ``username``
+    # is unique on the user model; ``email`` (the historical default) is not,
+    # which let ``.first()`` resolve to an arbitrary account whenever two users
+    # shared an email.
+    if unique_user_field is None:
+        unique_user_field = config.get("SSO_COOKIE_DATA", "email")
     sso = request.META.get("HTTP_SSO") or request.COOKIES.get("SSO")
     if not sso:
         return None
@@ -23,6 +31,12 @@ def authenticate_sso(request, unique_user_field: str = "email"):
     try:
         jwt_payload = jwt.decode(sso, secret_key, algorithms=[algorithm])
         unique_user_value = jwt_payload.get(unique_user_field)
+        # A cookie that doesn't carry the configured claim (e.g. a legacy
+        # ``{"email": ...}`` cookie after switching to ``username``) must not
+        # fall through to ``filter(field=None)``, which would otherwise match
+        # any user whose column is NULL.
+        if unique_user_value is None:
+            return None
         user = (
             get_user_model()
             .objects.filter(**{unique_user_field: unique_user_value})

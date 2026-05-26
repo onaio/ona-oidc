@@ -341,8 +341,14 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             login(request, user, backend=self.auth_backend)
 
         if self.use_sso:
+            # Key the cookie claim by the configured field name (``self.sso_cookie``
+            # == ``SSO_COOKIE_DATA``) rather than a hardcoded ``"email"``. The old
+            # hardcoded key stored e.g. the username *value* under an ``"email"``
+            # key, so ``authenticate_sso`` could only ever look users up by email —
+            # ambiguous when accounts share one. Producer and consumer now agree on
+            # the same field, defaulting to ``email`` for unchanged deployments.
             sso_cookie = jwt.encode(
-                {"email": getattr(user, self.sso_cookie, "email")},
+                {self.sso_cookie: getattr(user, self.sso_cookie, None)},
                 config.get("JWT_SECRET_KEY"),
                 config.get("JWT_ALGORITHM"),
             )
@@ -563,27 +569,34 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     provided_username = form_data.get("username")
                     if provided_username:
                         user_data.update({"username": provided_username})
-                    filter_kwargs = None
                     q_objects = Q()
+                    matched_users = None
 
                     if "email" in user_data:
-                        filter_kwargs = {"email__iexact": user_data.get("email")}
+                        matched_users = self.user_model.objects.filter(
+                            email__iexact=user_data.get("email")
+                        )
                     elif "emails" in user_data and user_data["emails"]:
                         emails: List[str] = user_data["emails"]
                         for email in emails:
                             q_objects |= Q(email__iexact=email)
                         user_data["email"] = user_data["emails"][0]
+                        matched_users = self.user_model.objects.filter(q_objects)
 
-                    if (
-                        filter_kwargs
-                        and self.user_model.objects.filter(**filter_kwargs).exists()
-                    ):
-                        user = self.user_model.objects.get(**filter_kwargs)
-
-                    elif (
-                        q_objects and self.user_model.objects.filter(q_objects).exists()
-                    ):
-                        user = self.user_model.objects.get(q_objects)
+                    if matched_users is not None and matched_users.exists():
+                        # Email is not unique on the user model, so a lookup can
+                        # return several accounts. When it does, disambiguate with
+                        # the unique username carried by the ``preferred_username``
+                        # claim so we attach to the exact account that logged in
+                        # rather than letting ``.get()`` raise
+                        # ``MultipleObjectsReturned`` or picking one arbitrarily.
+                        claimed_username = user_data.get("username")
+                        if matched_users.count() > 1 and claimed_username:
+                            user = matched_users.filter(
+                                username=claimed_username
+                            ).first()
+                        if not user:
+                            user = matched_users.first()
 
                     if not user and not self.auto_create_user:
                         self._clear_login_states(server_response)
