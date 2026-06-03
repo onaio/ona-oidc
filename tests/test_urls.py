@@ -6,6 +6,8 @@ Test that oidc urls resolve.
 from django.test import TestCase
 from django.urls import resolve, reverse
 
+from rest_framework.renderers import JSONRenderer
+
 from oidc.viewsets import UserModelOpenIDConnectViewset
 
 
@@ -36,3 +38,12 @@ class TestUrls(TestCase):
         view, _args, _kwargs = resolve(url)
         self.assertEqual(view.cls, UserModelOpenIDConnectViewset)
         self.assertEqual(view.actions, {"get": "logout"})
+
+        # Session
+        url = reverse("oidc:openid_connect_session", kwargs={"auth_server": "abc"})
+        self.assertEqual(url, "/oidc/abc/session")
+        view, _args, _kwargs = resolve(url)
+        self.assertEqual(view.cls, UserModelOpenIDConnectViewset)
+        self.assertEqual(view.actions, {"get": "session"})
+        self.assertEqual(view.initkwargs["authentication_classes"], [])
+        self.assertEqual(view.initkwargs["renderer_classes"], [JSONRenderer])

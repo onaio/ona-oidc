@@ -23,6 +23,12 @@ def authenticate_sso(request, unique_user_field: str = "email"):
     try:
         jwt_payload = jwt.decode(sso, secret_key, algorithms=[algorithm])
         unique_user_value = jwt_payload.get(unique_user_field)
+        if unique_user_value is None and unique_user_field != "email":
+            # Older SSO cookies always used the "email" claim name, even when
+            # SSO_COOKIE_DATA pointed at a different user model field.
+            unique_user_value = jwt_payload.get("email")
+        if unique_user_value is None:
+            return None
         user = (
             get_user_model()
             .objects.filter(**{unique_user_field: unique_user_value})

@@ -24,6 +24,7 @@ from django.utils import timezone
 from django.utils.translation import gettext as _
 
 import jwt
+from jwt.exceptions import PyJWTError
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.renderers import JSONRenderer, TemplateHTMLRenderer
@@ -40,6 +41,7 @@ from oidc.client import (
     state_cache_key,
 )
 from oidc.utils import (
+    authenticate_sso,
     email_usename_to_url_safe,
     get_login_query_param_allowlist,
     get_logout_query_param_allowlist,
@@ -80,6 +82,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     permission_classes = [permissions.AllowAny]
     renderer_classes = [JSONRenderer, TemplateHTMLRenderer]
     user_model = None
+
+    def perform_authentication(self, request):
+        if getattr(self, "action", None) == "session":
+            return
+        return super().perform_authentication(request)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -206,6 +213,47 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         return HttpResponseBadRequest(
             _("Unable to process OpenID connect login request."),
         )
+
+    @action(
+        methods=["GET"],
+        detail=False,
+        authentication_classes=[],
+        renderer_classes=[JSONRenderer],
+    )
+    def session(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
+        """Return the current SSO-backed browser session, without tokens.
+
+        The action bypasses DRF authentication so anonymous requests get a
+        plain JSON 401 instead of a Basic/Digest ``WWW-Authenticate`` challenge.
+        Subclasses can add non-secret fields through ``get_session_data`` and
+        apply deployment-specific policy through ``is_session_allowed``.
+        """
+        headers = {"Cache-Control": "no-store"}
+        if not self.use_sso:
+            return self._session_unauthorized_response(headers)
+
+        try:
+            auth = authenticate_sso(request, unique_user_field=self.sso_cookie)
+        except PyJWTError:
+            auth = None
+        if not auth or not self.is_session_allowed(auth[0]):
+            return self._session_unauthorized_response(headers)
+        return Response(self.get_session_data(auth[0], request), headers=headers)
+
+    def _session_unauthorized_response(self, headers) -> Response:
+        return Response(
+            {"detail": _("Authentication credentials were not provided.")},
+            status=status.HTTP_401_UNAUTHORIZED,
+            headers=headers,
+        )
+
+    def is_session_allowed(self, user) -> bool:
+        """Return whether ``user`` may establish a session."""
+        return True
+
+    def get_session_data(self, user, request) -> dict:
+        """Return the non-secret session payload for ``user``."""
+        return {"username": user.username}
 
     @action(methods=["GET"], detail=False)
     def logout(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
@@ -341,8 +389,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             login(request, user, backend=self.auth_backend)
 
         if self.use_sso:
+            sso_value = getattr(user, self.sso_cookie, getattr(user, "email", ""))
             sso_cookie = jwt.encode(
-                {"email": getattr(user, self.sso_cookie, "email")},
+                {self.sso_cookie: sso_value},
                 config.get("JWT_SECRET_KEY"),
                 config.get("JWT_ALGORITHM"),
             )

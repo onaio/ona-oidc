@@ -1954,9 +1954,7 @@ class TestPerProviderTargetUrlAfterAuth(TestCase):
             auth_server="primary",
         )
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(
-            response.url, "https://requested.example.com/dashboard"
-        )
+        self.assertEqual(response.url, "https://requested.example.com/dashboard")
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
@@ -2055,3 +2053,155 @@ class TestPerProviderTargetUrlAfterAuth(TestCase):
         self.assertEqual(primary_response.url, "https://primary.example.com/landing")
         self.assertEqual(secondary_response.status_code, 302)
         self.assertEqual(secondary_response.url, "https://secondary.example.com")
+
+
+class TestSessionAction(TestCase):
+    """Tests for the challenge-free ``session`` probe action."""
+
+    def setUp(self):
+        super().setUp()
+        self.factory = APIRequestFactory()
+        cache.clear()
+        self.user = User.objects.create(
+            username="jdoe", email="jdoe@example.com", is_active=True
+        )
+
+    def _sso_token(self, value, claim="email", **claims):
+        return jwt.encode({claim: value, **claims}, "abc", algorithm="HS256")
+
+    def _get_session(self, sso=None):
+        request = self.factory.get("/oidc/default/session")
+        if sso is not None:
+            request.COOKIES["SSO"] = sso
+        view = BaseOpenIDConnectViewset.as_view({"get": "session"})
+        return view(request, auth_server="default")
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_valid_sso_cookie_returns_username(self):
+        response = self._get_session(self._sso_token("jdoe@example.com"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {"username": "jdoe"})
+        # No token material or PII leaks out of the base payload.
+        self.assertNotIn("email", response.data)
+        self.assertNotIn("api_token", response.data)
+        self.assertNotIn("temp_token", response.data)
+        self.assertEqual(response["Cache-Control"], "no-store")
+        # Crucially: no native browser auth dialog can be triggered.
+        self.assertFalse(response.has_header("WWW-Authenticate"))
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "USE_SSO_COOKIE": False,
+        }
+    )
+    def test_sso_cookie_disabled_returns_plain_401_even_with_valid_cookie(self):
+        response = self._get_session(self._sso_token("jdoe@example.com"))
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response["Cache-Control"], "no-store")
+        self.assertFalse(response.has_header("WWW-Authenticate"))
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_missing_cookie_returns_plain_401(self):
+        response = self._get_session()
+        self.assertEqual(response.status_code, 401)
+        self.assertIn("detail", response.data)
+        self.assertEqual(response["Cache-Control"], "no-store")
+        self.assertFalse(response.has_header("WWW-Authenticate"))
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_url_route_uses_json_renderer_for_browser_accept_header(self):
+        response = self.client.get(
+            "/oidc/default/session",
+            HTTP_ACCEPT=(
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+            ),
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response["Content-Type"], "application/json")
+        self.assertFalse(response.has_header("WWW-Authenticate"))
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_authorization_header_does_not_trigger_browser_auth_challenge(self):
+        request = self.factory.get(
+            "/oidc/default/session", HTTP_AUTHORIZATION="Basic invalid"
+        )
+        response = BaseOpenIDConnectViewset.as_view({"get": "session"})(
+            request, auth_server="default"
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(response.has_header("WWW-Authenticate"))
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_invalid_jwt_returns_plain_401(self):
+        response = self._get_session("not-a-jwt")
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(response.has_header("WWW-Authenticate"))
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "SSO_COOKIE_DATA": "username",
+        }
+    )
+    def test_configured_sso_cookie_data_uses_matching_claim_and_user_field(self):
+        response = self._get_session(self._sso_token("jdoe", claim="username"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {"username": "jdoe"})
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "SSO_COOKIE_DATA": "username",
+        }
+    )
+    def test_configured_sso_cookie_data_accepts_legacy_email_claim(self):
+        response = self._get_session(self._sso_token("jdoe"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {"username": "jdoe"})
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_expired_jwt_returns_plain_401(self):
+        response = self._get_session(self._sso_token("jdoe@example.com", exp=0))
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(response.has_header("WWW-Authenticate"))
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_unknown_user_returns_plain_401(self):
+        response = self._get_session(self._sso_token("nobody@example.com"))
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(response.has_header("WWW-Authenticate"))
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000",
+            "SSO_COOKIE_DATA": "username",
+        }
+    )
+    def test_generated_sso_cookie_uses_configured_claim(self):
+        request = self.factory.get("/")
+        response = BaseOpenIDConnectViewset().generate_successful_response(
+            request, self.user
+        )
+        sso = response.cookies.get("SSO").value
+        payload = jwt.decode(sso, "abc", algorithms=["HS256"])
+        self.assertEqual(payload, {"username": "jdoe"})
+
+        session_response = self._get_session(sso)
+        self.assertEqual(session_response.status_code, 200)
+        self.assertEqual(session_response.data, {"username": "jdoe"})
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_is_session_allowed_hook_can_reject(self):
+        class Restricted(BaseOpenIDConnectViewset):
+            def is_session_allowed(self, user):
+                return False
+
+        request = self.factory.get("/oidc/default/session")
+        request.COOKIES["SSO"] = self._sso_token("jdoe@example.com")
+        response = Restricted.as_view({"get": "session"})(
+            request, auth_server="default"
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(response.has_header("WWW-Authenticate"))
