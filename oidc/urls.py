@@ -5,6 +5,8 @@ URL Configuration file for ona-oidc
 from django.conf import settings
 from django.urls import re_path
 
+from rest_framework.renderers import JSONRenderer
+
 from oidc.utils import str_to_bool
 from oidc.viewsets import RapidProOpenIDConnectViewset, UserModelOpenIDConnectViewset
 
@@ -31,5 +33,14 @@ urlpatterns = [
         r"^oidc/(?P<auth_server>\w+)/logout",
         viewset_class.as_view({"get": "logout"}),
         name="openid_connect_logout",
+    ),
+    re_path(
+        r"^oidc/(?P<auth_server>\w+)/session",
+        viewset_class.as_view(
+            {"get": "session"},
+            authentication_classes=[],
+            renderer_classes=[JSONRenderer],
+        ),
+        name="openid_connect_session",
     ),
 ]
