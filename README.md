@@ -156,6 +156,25 @@ Two encoding details worth knowing:
   spec-equivalent in URL query strings; ona-oidc picks `%20` for
   log readability.
 
+### Forwarding query parameters to the end-session endpoint
+
+The logout viewset applies the same allowlist treatment to the
+end-session endpoint, configured separately:
+
+```python
+OPENID_CONNECT_AUTH_SERVERS = {
+    "microsoft": {
+        ...,
+        "LOGOUT_QUERY_PARAM_ALLOWLIST": ["post_logout_redirect_uri"],
+    }
+}
+```
+
+The default is empty, so no browser query parameter reaches the IdP
+unless opted in. Parameters ona-oidc stashes server-side win on
+collision: if the session holds an `id_token_hint`, a caller-supplied
+`?id_token_hint=` is ignored rather than overriding it.
+
 ### Validating the post-authentication redirect target (`next`)
 
 The viewset only accepts a `next` query parameter that points at a
@@ -185,6 +204,37 @@ target under it for the duration of the auth round-trip; the callback
 restores the value from cache and uses it as the post-auth redirect.
 With `USE_NONCES=False` the nonce is still emitted purely as the cache
 key — no IdP-side nonce verification is performed.
+
+### PKCE (`USE_PKCE`)
+
+Off by default. When enabled, the login redirect carries a
+`code_challenge` / `code_challenge_method`, and the verifier is cached
+against the `state` value until the callback exchanges it:
+
+```python
+OPENID_CONNECT_AUTH_SERVERS = {
+    "keycloak": {
+        ...,
+        "USE_PKCE": True,
+        "PKCE_CODE_CHALLENGE_METHOD": "S256",
+        "PKCE_CODE_CHALLENGE_TIMEOUT": 600,
+        "PKCE_CODE_VERIFIER_LENGTH": 64,
+    }
+}
+```
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `USE_PKCE` | `False` | Enables the challenge on login and the verifier on token exchange |
+| `PKCE_CODE_CHALLENGE_METHOD` | `"S256"` | Sent as `code_challenge_method`. Leave it — see below |
+| `PKCE_CODE_CHALLENGE_TIMEOUT` | `600` | Seconds the cached `state → code_verifier` entry lives; caps how long a login may sit before callback |
+| `PKCE_CODE_VERIFIER_LENGTH` | `64` | RFC 7636 requires 43–128 characters |
+
+`PKCE_CODE_CHALLENGE_METHOD` only labels the outgoing parameter — the
+challenge is always `SHA-256(verifier)`. Setting it to `"plain"` would
+advertise `plain` while still sending a hashed challenge, and the IdP
+would reject the exchange. It exists for IdPs that expect a different
+spelling of the same method, not to switch algorithm.
 
 4. (Optional) If you'd like to use the default OpenID Connect Viewset register the urls located in `oidc.urls`.
 
