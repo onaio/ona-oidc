@@ -7,6 +7,7 @@ from django.urls import re_path
 
 from rest_framework.renderers import JSONRenderer
 
+from oidc.permissions import RequireAccountRequestHeader
 from oidc.utils import str_to_bool
 from oidc.viewsets import RapidProOpenIDConnectViewset, UserModelOpenIDConnectViewset
 
@@ -17,6 +18,15 @@ viewset_class = UserModelOpenIDConnectViewset
 config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 if str_to_bool(config.get("USE_RAPIDPRO_VIEWSET", False)):
     viewset_class = RapidProOpenIDConnectViewset
+
+# Every account-proxy route must use these. Dropping authentication_classes
+# without RequireAccountRequestHeader leaves the route CSRF-open; see the
+# "Keycloak Account REST proxy" section of the README.
+_ACCOUNT_PROXY_VIEW_KWARGS = {
+    "authentication_classes": [],
+    "permission_classes": [RequireAccountRequestHeader],
+    "renderer_classes": [JSONRenderer],
+}
 
 urlpatterns = [
     re_path(
@@ -35,12 +45,56 @@ urlpatterns = [
         name="openid_connect_logout",
     ),
     re_path(
-        r"^oidc/(?P<auth_server>\w+)/session",
+        r"^oidc/(?P<auth_server>\w+)/session$",
         viewset_class.as_view(
             {"get": "session"},
             authentication_classes=[],
             renderer_classes=[JSONRenderer],
         ),
         name="openid_connect_session",
+    ),
+    re_path(
+        r"^oidc/(?P<auth_server>\w+)/account$",
+        viewset_class.as_view({"post": "account"}, **_ACCOUNT_PROXY_VIEW_KWARGS),
+        name="openid_connect_account",
+    ),
+    re_path(
+        r"^oidc/(?P<auth_server>\w+)/sessions$",
+        viewset_class.as_view(
+            {"get": "sessions_list", "delete": "sessions_revoke_others"},
+            **_ACCOUNT_PROXY_VIEW_KWARGS,
+        ),
+        name="openid_connect_sessions",
+    ),
+    re_path(
+        r"^oidc/(?P<auth_server>\w+)/sessions/(?P<session_id>[a-zA-Z0-9._-]+)$",
+        viewset_class.as_view(
+            {"delete": "sessions_revoke_one"}, **_ACCOUNT_PROXY_VIEW_KWARGS
+        ),
+        name="openid_connect_sessions_revoke_one",
+    ),
+    re_path(
+        r"^oidc/(?P<auth_server>\w+)/linked-accounts$",
+        viewset_class.as_view({"get": "linked_list"}, **_ACCOUNT_PROXY_VIEW_KWARGS),
+        name="openid_connect_linked_list",
+    ),
+    re_path(
+        r"^oidc/(?P<auth_server>\w+)/linked-accounts/(?P<provider>[^/]+)/link-url$",
+        viewset_class.as_view({"get": "linked_link_url"}, **_ACCOUNT_PROXY_VIEW_KWARGS),
+        name="openid_connect_linked_link_url",
+    ),
+    re_path(
+        r"^oidc/(?P<auth_server>\w+)/linked-accounts/(?P<provider>[^/]+)$",
+        viewset_class.as_view(
+            {"delete": "linked_unlink"}, **_ACCOUNT_PROXY_VIEW_KWARGS
+        ),
+        name="openid_connect_linked_unlink",
+    ),
+    re_path(
+        r"^oidc/(?P<auth_server>\w+)/credentials$",
+        viewset_class.as_view(
+            {"get": "credentials_list"}, **_ACCOUNT_PROXY_VIEW_KWARGS
+        ),
+        name="openid_connect_credentials",
     ),
 ]

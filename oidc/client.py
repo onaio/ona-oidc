@@ -126,6 +126,7 @@ class OpenIDClient:
         self.scope = config[auth_server].get("SCOPE") or default_config["SCOPE"]
         self.token_endpoint = config[auth_server].get("TOKEN_ENDPOINT")
         self.end_session_endpoint = config[auth_server].get("END_SESSION_ENDPOINT")
+        self.account_endpoint = config[auth_server].get("ACCOUNT_ENDPOINT")
         self.redirect_uri = config[auth_server].get("REDIRECT_URI")
         self.response_type = config[auth_server].get(
             "RESPONSE_TYPE", default_config["RESPONSE_TYPE"]
@@ -466,3 +467,77 @@ class OpenIDClient:
         separator = "&" if "?" in url else "?"
         query = urlencode(filtered, quote_via=quote, safe=_AUTHORIZE_URL_SAFE_CHARS)
         return HttpResponseRedirect(f"{url}{separator}{query}")
+
+    def refresh_access_token(self, refresh_token: str) -> dict:
+        """
+        Exchange a refresh_token for a fresh token pair at the
+        configured ``TOKEN_ENDPOINT``. Returns the parsed token
+        response (``access_token``, ``refresh_token``, ``expires_in``,
+        usually a new ``id_token`` too).
+
+        :raises TokenVerificationFailed: on any non-2xx from the IdP.
+        """
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        data = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+        }
+        try:
+            response = requests.post(
+                self.token_endpoint,
+                data=data,
+                headers=headers,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            logger.exception(exc)
+            raise TokenVerificationFailed(
+                f"Failed to refresh access token: {exc}"
+            ) from exc
+        return response.json()
+
+    def request_keycloak_account(
+        self,
+        access_token: str,
+        method: str,
+        path_suffix: str,
+        json_body: Optional[Mapping[str, Any]] = None,
+    ) -> tuple[int, Optional[dict]]:
+        """
+        Issue a generic ``method`` request to ``account_endpoint + path_suffix``
+        on behalf of ``access_token``. Returns ``(status_code, body|None)``.
+
+        This is the single entry point for every Account REST proxy call
+        (profile update, sessions, linked-accounts, credentials). Pass
+        ``path_suffix=""`` and ``json_body=<fields>`` for a POST /account
+        profile update.
+        """
+        if not self.account_endpoint:
+            raise ValueError(
+                f"ACCOUNT_ENDPOINT is not configured for auth_server "
+                f"{self.auth_server!r}."
+            )
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+        }
+        kwargs: dict = {"headers": headers}
+        if json_body is not None:
+            headers["Content-Type"] = "application/json"
+            kwargs["json"] = dict(json_body)
+        url = f"{self.account_endpoint}{path_suffix}"
+        try:
+            response = requests.request(method, url, **kwargs)
+        except requests.RequestException as exc:
+            logger.exception(exc)
+            raise
+
+        body: Optional[dict] = None
+        if response.content:
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+        return response.status_code, body
