@@ -19,7 +19,7 @@ from mock import MagicMock, patch
 from rest_framework.test import APIRequestFactory
 
 from oidc.client import OpenIDClient, TokenVerificationFailed, state_cache_key
-from oidc.permissions import ACCOUNT_REQUEST_HEADER, RequireAccountRequestHeader
+from oidc.permissions import ACCOUNT_REQUEST_HEADER, IsCsrfSafeAccountRequest
 from oidc.viewsets import (
     DEFAULT_USERNAME_HELP_TEXT,
     DEFAULT_USERNAME_PATTERN,
@@ -2521,7 +2521,7 @@ class TestAccountRoutes(TestCase):
             with self.subTest(path=path):
                 initkwargs = resolve(path).func.initkwargs
                 self.assertIn(
-                    RequireAccountRequestHeader,
+                    IsCsrfSafeAccountRequest,
                     initkwargs.get("permission_classes", []),
                 )
                 self.assertEqual(initkwargs.get("authentication_classes"), [])
@@ -2948,7 +2948,7 @@ class AccountProxyCsrfTests(TestCase):
 
     def setUp(self):
         self.factory = APIRequestFactory()
-        self.perm = RequireAccountRequestHeader()
+        self.perm = IsCsrfSafeAccountRequest()
         self.view = SimpleNamespace(kwargs={"auth_server": "default"})
         self.header_kwarg = {
             "HTTP_" + ACCOUNT_REQUEST_HEADER.upper().replace("-", "_"): "1"
@@ -3021,7 +3021,7 @@ class AccountProxyCsrfTests(TestCase):
         view = BaseOpenIDConnectViewset.as_view(
             {"post": "account"},
             authentication_classes=[],
-            permission_classes=[RequireAccountRequestHeader],
+            permission_classes=[IsCsrfSafeAccountRequest],
         )
         request = self.factory.post(
             "/", data={"firstName": "X"}, format="json", **self.header_kwarg

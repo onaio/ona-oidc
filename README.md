@@ -209,7 +209,7 @@ default.
 These routes take identity from the OIDC tokens in `request.session`
 rather than `request.user`, and so run with DRF authentication
 disabled. State-changing methods are instead gated by
-`RequireAccountRequestHeader`, which requires the
+`IsCsrfSafeAccountRequest`, which requires the
 `X-Ona-Account-Request` header and an `Origin` in the same trusted-host
 set as `LOGIN_REDIRECT_ALLOWED_HOSTS`. Neither check depends on the
 session cookie's `SameSite` attribute or on the deployment's CORS

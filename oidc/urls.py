@@ -7,7 +7,7 @@ from django.urls import re_path
 
 from rest_framework.renderers import JSONRenderer
 
-from oidc.permissions import RequireAccountRequestHeader
+from oidc.permissions import IsCsrfSafeAccountRequest
 from oidc.utils import str_to_bool
 from oidc.viewsets import RapidProOpenIDConnectViewset, UserModelOpenIDConnectViewset
 
@@ -20,11 +20,11 @@ if str_to_bool(config.get("USE_RAPIDPRO_VIEWSET", False)):
     viewset_class = RapidProOpenIDConnectViewset
 
 # Every account-proxy route must use these. Dropping authentication_classes
-# without RequireAccountRequestHeader leaves the route CSRF-open; see the
+# without IsCsrfSafeAccountRequest leaves the route CSRF-open; see the
 # "Keycloak Account REST proxy" section of the README.
 _ACCOUNT_PROXY_VIEW_KWARGS = {
     "authentication_classes": [],
-    "permission_classes": [RequireAccountRequestHeader],
+    "permission_classes": [IsCsrfSafeAccountRequest],
     "renderer_classes": [JSONRenderer],
 }
 
