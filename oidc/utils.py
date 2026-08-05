@@ -1,4 +1,5 @@
 from typing import Iterable, Optional
+from urllib.parse import urlparse
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -80,6 +81,17 @@ def _coerce_string_iterable(value, key: str, auth_server: str) -> Iterable[str]:
     return value
 
 
+def _server_setting_values(auth_server: str, key: str) -> Iterable[str]:
+    """Validated string values of ``key`` for ``auth_server``; empty when unset.
+
+    Keeps ``key`` named once per call site — it is otherwise repeated as both
+    the lookup and the error label, which drift apart under rename.
+    """
+    config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
+    server_config = config.get(auth_server, {})
+    return _coerce_string_iterable(server_config.get(key, ()), key, auth_server)
+
+
 def get_login_query_param_allowlist(auth_server: str) -> frozenset[str]:
     """
     Return the set of query parameter names that the login view is allowed to
@@ -90,15 +102,7 @@ def get_login_query_param_allowlist(auth_server: str) -> frozenset[str]:
     Defaults to an empty set so unknown query params are dropped at the
     viewset boundary.
     """
-    config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
-    server_config = config.get(auth_server, {})
-    return frozenset(
-        _coerce_string_iterable(
-            server_config.get("LOGIN_QUERY_PARAM_ALLOWLIST", ()),
-            "LOGIN_QUERY_PARAM_ALLOWLIST",
-            auth_server,
-        )
-    )
+    return frozenset(_server_setting_values(auth_server, "LOGIN_QUERY_PARAM_ALLOWLIST"))
 
 
 def get_logout_query_param_allowlist(auth_server: str) -> frozenset[str]:
@@ -111,15 +115,24 @@ def get_logout_query_param_allowlist(auth_server: str) -> frozenset[str]:
     Defaults to an empty set so unknown query params are dropped at the
     viewset boundary — matches the ``LOGIN_QUERY_PARAM_ALLOWLIST`` shape.
     """
-    config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
-    server_config = config.get(auth_server, {})
     return frozenset(
-        _coerce_string_iterable(
-            server_config.get("LOGOUT_QUERY_PARAM_ALLOWLIST", ()),
-            "LOGOUT_QUERY_PARAM_ALLOWLIST",
-            auth_server,
-        )
+        _server_setting_values(auth_server, "LOGOUT_QUERY_PARAM_ALLOWLIST")
     )
+
+
+def _trusted_spa_hosts(auth_server: str, request: HttpRequest) -> set:
+    """Hosts trusted as the first-party SPA for ``auth_server``.
+
+    The request's own host plus any listed in
+    ``OPENID_CONNECT_AUTH_SERVERS[<server>]["LOGIN_REDIRECT_ALLOWED_HOSTS"]``.
+    One definition of "our SPA", reused by the login-redirect and the
+    account-proxy origin checks so they can't drift.
+    """
+    allowed_hosts = set(
+        _server_setting_values(auth_server, "LOGIN_REDIRECT_ALLOWED_HOSTS")
+    )
+    allowed_hosts.add(request.get_host())
+    return allowed_hosts
 
 
 def is_safe_login_redirect(
@@ -141,18 +154,30 @@ def is_safe_login_redirect(
     """
     if not url:
         return False
-    config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
-    server_config = config.get(auth_server, {})
-    allowed_hosts = set(
-        _coerce_string_iterable(
-            server_config.get("LOGIN_REDIRECT_ALLOWED_HOSTS", ()),
-            "LOGIN_REDIRECT_ALLOWED_HOSTS",
-            auth_server,
-        )
-    )
-    allowed_hosts.add(request.get_host())
     return url_has_allowed_host_and_scheme(
         url,
-        allowed_hosts=allowed_hosts,
+        allowed_hosts=_trusted_spa_hosts(auth_server, request),
+        require_https=request.is_secure(),
+    )
+
+
+def is_allowed_account_origin(
+    origin: Optional[str], auth_server: str, request: HttpRequest
+) -> bool:
+    """
+    Whether ``origin`` (an ``Origin`` header value, ``scheme://host``) is a
+    trusted first-party SPA for account-proxy calls.
+    """
+    if not origin:
+        return True
+
+    # Require an explicit scheme + host.
+    parsed = urlparse(origin)
+    if not parsed.scheme or not parsed.netloc:
+        return False
+
+    return url_has_allowed_host_and_scheme(
+        origin,
+        allowed_hosts=_trusted_spa_hosts(auth_server, request),
         require_https=request.is_secure(),
     )
