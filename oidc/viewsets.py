@@ -89,6 +89,25 @@ def _sid_from_id_token(id_token: str) -> Optional[str]:
     return unverified.get("sid")
 
 
+#: Single wording for "this request carries no usable OIDC session". The
+#: account proxy is driven by one SPA, so the same state must not surface
+#: three different strings depending on which endpoint was hit.
+NO_ACTIVE_SESSION = {"error": "No active OIDC session — please sign in again."}
+
+
+def _authenticated_session(request: HttpRequest):
+    """The request's session if it carries an OIDC access token, else ``None``.
+
+    Identity for the account proxy is the stashed token, not ``request.user``:
+    ona-oidc only calls Django's ``login()`` when ``USE_AUTH_BACKEND`` is on,
+    which is off by default, so there is no authenticated user to rely on.
+    """
+    session = getattr(request, "session", None)
+    if session is None or not session.get("oidc_access_token"):
+        return None
+    return session
+
+
 def _current_sid(request: HttpRequest) -> Optional[str]:
     """The caller's Keycloak session id, from the id_token stashed at callback.
 
@@ -352,7 +371,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         """
         access_token = session.get("oidc_access_token")
         if not access_token:
-            return status.HTTP_401_UNAUTHORIZED, {"error": "No active OIDC session."}
+            return status.HTTP_401_UNAUTHORIZED, NO_ACTIVE_SESSION
 
         status_code, body = client.request_keycloak_account(
             access_token, method, path_suffix, json_body
@@ -408,12 +427,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 {"error": "Account endpoint not configured."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        session = getattr(request, "session", None)
+        session = _authenticated_session(request)
         if session is None:
-            return Response(
-                {"error": "No active session."},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
+            return Response(NO_ACTIVE_SESSION, status=status.HTTP_401_UNAUTHORIZED)
         try:
             status_code, body = self._keycloak_account_request(
                 client, session, method, path_suffix, json_body
@@ -642,18 +658,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        session = getattr(request, "session", None)
+        session = _authenticated_session(request)
         if session is None:
-            return Response(
-                {"error": "No active session."},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
-        access_token = session.get("oidc_access_token")
-        if not access_token:
-            return Response(
-                {"error": "No active OIDC session — please sign in again."},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
+            return Response(NO_ACTIVE_SESSION, status=status.HTTP_401_UNAUTHORIZED)
 
         # ``request.data`` is a QueryDict for form bodies and a plain
         # dict for JSON; ``.items()`` works for both.
