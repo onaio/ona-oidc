@@ -186,6 +186,54 @@ restores the value from cache and uses it as the post-auth redirect.
 With `USE_NONCES=False` the nonce is still emitted purely as the cache
 key — no IdP-side nonce verification is performed.
 
+### Keycloak Account REST proxy (`ACCOUNT_ENDPOINT`)
+
+The account-proxy actions (profile update, sessions, linked accounts,
+credentials) forward to Keycloak's Account REST API. Point
+`ACCOUNT_ENDPOINT` at that realm's account root:
+
+```python
+OPENID_CONNECT_AUTH_SERVERS = {
+    "keycloak": {
+        ...,
+        "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/example/account",
+    }
+}
+```
+
+The setting is optional; the proxy actions return `503` while it is
+unset. Calls are made with the signed-in user's own `access_token`, so
+they need the `manage-account` role — granted to every realm user by
+default.
+
+These routes take identity from the OIDC tokens in `request.session`
+rather than `request.user`, and so run with DRF authentication
+disabled. State-changing methods are instead gated by
+`RequireAccountRequestHeader`, which requires the
+`X-Ona-Account-Request` header and an `Origin` in the same trusted-host
+set as `LOGIN_REDIRECT_ALLOWED_HOSTS`. Neither check depends on the
+session cookie's `SameSite` attribute or on the deployment's CORS
+configuration.
+
+#### Deployment requirements for the origin checks
+
+The trusted-host set is `LOGIN_REDIRECT_ALLOWED_HOSTS` plus the request's
+own host, so both the `next` validation and the account-proxy `Origin`
+check inherit their strength from Django's `ALLOWED_HOSTS`:
+
+* **Scope `ALLOWED_HOSTS` to the hosts you serve.** The request host is
+  read via `request.get_host()`, which Django rejects with a `400`
+  unless it matches `ALLOWED_HOSTS`. That validation is what keeps an
+  attacker-supplied `Host` out of the trusted set. With
+  `ALLOWED_HOSTS = ["*"]` there is no validation left, the header is
+  echoed back verbatim, and both checks degrade to comparing one
+  request header against another.
+
+* **With `USE_X_FORWARDED_HOST = True`, the proxy must strip any
+  client-supplied `X-Forwarded-Host`.** Django prefers that header over
+  `Host`, and unlike `Host` a page can set it on a `fetch`. A proxy that
+  forwards it lets a caller nominate its own origin as trusted.
+
 4. (Optional) If you'd like to use the default OpenID Connect Viewset register the urls located in `oidc.urls`.
 
 ```python
