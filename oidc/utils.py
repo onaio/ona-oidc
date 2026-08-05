@@ -161,13 +161,13 @@ def is_safe_login_redirect(
     )
 
 
-def is_allowed_account_origin(
-    origin: Optional[str], auth_server: str, request: HttpRequest
-) -> bool:
+def is_allowed_account_origin(auth_server: str, request: HttpRequest) -> bool:
     """
-    Whether ``origin`` (an ``Origin`` header value, ``scheme://host``) is a
-    trusted first-party SPA for account-proxy calls.
+    Whether ``request``'s ``Origin`` header is a trusted first-party SPA for
+    account-proxy calls. A missing ``Origin`` is allowed — same-origin
+    requests may omit it, and the custom-header requirement still gates those.
     """
+    origin = request.headers.get("Origin")
     if not origin:
         return True
 

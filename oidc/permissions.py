@@ -19,14 +19,12 @@ Neither depends on the session cookie's ``SameSite`` attribute (kept as
 when a cross-site SPA forces ``SameSite=None`` to send credentials.
 """
 
-from rest_framework.permissions import BasePermission
+from rest_framework.permissions import SAFE_METHODS, BasePermission
 
 from oidc.utils import is_allowed_account_origin
 
 #: Header the SPA sets on every state-changing account-proxy request.
 ACCOUNT_REQUEST_HEADER = "X-Ona-Account-Request"
-
-_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 class RequireAccountRequestHeader(BasePermission):
@@ -36,12 +34,8 @@ class RequireAccountRequestHeader(BasePermission):
     )
 
     def has_permission(self, request, view):
-        if request.method in _SAFE_METHODS:
+        if request.method in SAFE_METHODS:
             return True
         if not request.headers.get(ACCOUNT_REQUEST_HEADER):
             return False
-        return is_allowed_account_origin(
-            request.headers.get("Origin"),
-            view.kwargs.get("auth_server"),
-            request,
-        )
+        return is_allowed_account_origin(view.kwargs.get("auth_server"), request)

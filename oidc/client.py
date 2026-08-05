@@ -475,7 +475,9 @@ class OpenIDClient:
         response (``access_token``, ``refresh_token``, ``expires_in``,
         usually a new ``id_token`` too).
 
-        :raises TokenVerificationFailed: on any non-2xx from the IdP.
+        :raises TokenVerificationFailed: the IdP answered and refused.
+        :raises requests.RequestException: the IdP could not be reached, or
+            ``TOKEN_ENDPOINT`` is unset/malformed.
         """
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
         data = {
@@ -491,11 +493,18 @@ class OpenIDClient:
                 headers=headers,
             )
             response.raise_for_status()
-        except requests.RequestException as exc:
+        except requests.HTTPError as exc:
+            # The IdP answered and refused: the refresh token is spent,
+            # revoked, or issued to another client. That is a genuinely
+            # dead session, so the caller turns this into a 401.
             logger.exception(exc)
             raise TokenVerificationFailed(
                 f"Failed to refresh access token: {exc}"
             ) from exc
+        # Transport failures (DNS, timeout, unset TOKEN_ENDPOINT) are left to
+        # propagate. Reporting an unreachable IdP as "session expired" would
+        # send the user through a re-login that cannot fix it; the proxy maps
+        # RequestException to 502 instead.
         return response.json()
 
     def request_keycloak_account(

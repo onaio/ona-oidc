@@ -14,6 +14,7 @@ from django.urls import resolve
 from django.utils import timezone
 
 import jwt
+import requests
 from mock import MagicMock, patch
 from rest_framework.test import APIRequestFactory
 
@@ -1185,6 +1186,74 @@ class TestUserModelOpenIDConnectViewset(TestCase):
 
         self.assertEqual(response.status_code, 400)
         mock_request.assert_not_called()
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_account_update_refresh_rejected_by_idp_returns_401(self):
+        """The IdP answered and refused the refresh token: the session really
+        is dead, so signing in again is the right instruction."""
+        view = BaseOpenIDConnectViewset.as_view({"post": "account"})
+        request = self.factory.post("/", data={"firstName": "New"}, format="json")
+        request.session = {
+            "oidc_access_token": "expired.access.token",
+            "oidc_refresh_token": "revoked.refresh.token",
+        }
+
+        first_call = MagicMock(status_code=401, content=b"{}")
+        first_call.json.return_value = {"error": "invalid_token"}
+        refresh_call = MagicMock(status_code=400)
+        refresh_call.raise_for_status.side_effect = requests.HTTPError("400")
+
+        with (
+            patch("oidc.client.requests.request", return_value=first_call),
+            patch("oidc.client.requests.post", return_value=refresh_call),
+        ):
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 401)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_account_update_refresh_transport_failure_returns_502(self):
+        """Pin: an unreachable IdP (or an unset TOKEN_ENDPOINT, which raises
+        MissingSchema) must not be reported as an expired session. Doing so
+        sends the user through a re-login that cannot fix a server problem."""
+        view = BaseOpenIDConnectViewset.as_view({"post": "account"})
+        request = self.factory.post("/", data={"firstName": "New"}, format="json")
+        request.session = {
+            "oidc_access_token": "expired.access.token",
+            "oidc_refresh_token": "stashed.refresh.token",
+        }
+
+        first_call = MagicMock(status_code=401, content=b"{}")
+        first_call.json.return_value = {"error": "invalid_token"}
+
+        with (
+            patch("oidc.client.requests.request", return_value=first_call),
+            patch(
+                "oidc.client.requests.post",
+                side_effect=requests.ConnectionError("idp unreachable"),
+            ),
+        ):
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 502)
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
