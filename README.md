@@ -209,11 +209,23 @@ default.
 These routes take identity from the OIDC tokens in `request.session`
 rather than `request.user`, and so run with DRF authentication
 disabled. State-changing methods are instead gated by
-`IsCsrfSafeAccountRequest`, which requires the
-`X-Ona-Account-Request` header and an `Origin` in the same trusted-host
-set as `LOGIN_REDIRECT_ALLOWED_HOSTS`. Neither check depends on the
-session cookie's `SameSite` attribute or on the deployment's CORS
-configuration.
+`IsCsrfSafeAccountRequest`, which requires a custom header and an
+`Origin` in the same trusted-host set as `LOGIN_REDIRECT_ALLOWED_HOSTS`.
+Neither check depends on the session cookie's `SameSite` attribute or on
+the deployment's CORS configuration.
+
+The header defaults to `X-Ona-Account-Request` and is configurable:
+
+```python
+OPENID_CONNECT_VIEWSET_CONFIG = {
+    ...,
+    "ACCOUNT_REQUEST_HEADER": "X-Acme-Account-Request",
+}
+```
+
+Any name works as a CSRF defence — what matters is that cross-site
+markup cannot set a custom header at all, not which name is used. The
+SPA must send whichever name is configured.
 
 #### Deployment requirements for the origin checks
 

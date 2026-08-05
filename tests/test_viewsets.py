@@ -19,7 +19,7 @@ from mock import MagicMock, patch
 from rest_framework.test import APIRequestFactory
 
 from oidc.client import OpenIDClient, TokenVerificationFailed, state_cache_key
-from oidc.permissions import ACCOUNT_REQUEST_HEADER, IsCsrfSafeAccountRequest
+from oidc.permissions import IsCsrfSafeAccountRequest, get_account_request_header
 from oidc.viewsets import (
     DEFAULT_USERNAME_HELP_TEXT,
     DEFAULT_USERNAME_PATTERN,
@@ -2951,8 +2951,40 @@ class AccountProxyCsrfTests(TestCase):
         self.perm = IsCsrfSafeAccountRequest()
         self.view = SimpleNamespace(kwargs={"auth_server": "default"})
         self.header_kwarg = {
-            "HTTP_" + ACCOUNT_REQUEST_HEADER.upper().replace("-", "_"): "1"
+            "HTTP_" + get_account_request_header().upper().replace("-", "_"): "1"
         }
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "ACCOUNT_REQUEST_HEADER": "X-Acme-Account-Request",
+        }
+    )
+    def test_configured_header_replaces_the_default(self):
+        """A deployment that renames the header is gated on its own name, and
+        the shipped default stops working — otherwise the setting would only
+        widen what is accepted rather than move it."""
+        configured = self.factory.post("/", HTTP_X_ACME_ACCOUNT_REQUEST="1")
+        self.assertTrue(self.perm.has_permission(configured, self.view))
+
+        shipped_default = self.factory.post("/", HTTP_X_ONA_ACCOUNT_REQUEST="1")
+        self.assertFalse(self.perm.has_permission(shipped_default, self.view))
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "ACCOUNT_REQUEST_HEADER": "X-Acme-Account-Request",
+        }
+    )
+    def test_denial_message_names_the_configured_header(self):
+        """Pin: the message is resolved per request. As a class-level f-string
+        it would freeze the default at import and tell operators to send a
+        header the deployment no longer accepts."""
+        self.assertIn("X-Acme-Account-Request", self.perm.message)
+        self.assertNotIn("X-Ona-Account-Request", self.perm.message)
+
+    def test_defaults_to_the_shipped_header_when_unconfigured(self):
+        self.assertEqual(get_account_request_header(), "X-Ona-Account-Request")
 
     def test_safe_method_exempt(self):
         """GET/HEAD/OPTIONS need neither header nor origin."""
