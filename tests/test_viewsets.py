@@ -3,12 +3,14 @@ Tests for the OpenID Client
 """
 
 import json
+from types import SimpleNamespace
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 from django.test.utils import override_settings
+from django.urls import resolve
 from django.utils import timezone
 
 import jwt
@@ -16,6 +18,7 @@ from mock import MagicMock, patch
 from rest_framework.test import APIRequestFactory
 
 from oidc.client import OpenIDClient, TokenVerificationFailed, state_cache_key
+from oidc.permissions import ACCOUNT_REQUEST_HEADER, RequireAccountRequestHeader
 from oidc.viewsets import (
     DEFAULT_USERNAME_HELP_TEXT,
     DEFAULT_USERNAME_PATTERN,
@@ -1088,6 +1091,587 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         # End-session URL untouched — bare endpoint, no stray `?`/`&`.
         self.assertEqual(response.url, "http://localhost:3000")
 
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_account_update_no_session_token_returns_401(self):
+        """No stashed access_token → 401, never reach Keycloak."""
+        view = BaseOpenIDConnectViewset.as_view({"post": "account"})
+
+        request = self.factory.post(
+            "/", data={"email": "new@example.com"}, format="json"
+        )
+        request.session = {}
+        with patch("oidc.client.requests.request") as mock_request:
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 401)
+        # Critical: we never reached out to Keycloak.
+        mock_request.assert_not_called()
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_account_update_filters_disallowed_fields(self):
+        """Caller can only update ``firstName`` / ``lastName``; anything else —
+        including ``email`` (owned by the verified OnaData flow) — is dropped
+        before the request leaves our process."""
+        view = BaseOpenIDConnectViewset.as_view({"post": "account"})
+
+        request = self.factory.post(
+            "/",
+            data={
+                "firstName": "New",
+                "lastName": "Name",
+                "email": "new@example.com",
+                "username": "evil",
+                "enabled": False,
+                "realmRoles": ["admin"],
+            },
+            format="json",
+        )
+        request.session = {"oidc_access_token": "stashed.access.token"}
+
+        mock_response = MagicMock()
+        mock_response.status_code = 204
+        mock_response.content = b""
+        with patch(
+            "oidc.client.requests.request", return_value=mock_response
+        ) as mock_request:
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 200)
+        # Bearer auth uses the stashed token.
+        _args, kwargs = mock_request.call_args
+        self.assertEqual(
+            kwargs["headers"]["Authorization"], "Bearer stashed.access.token"
+        )
+        # Only ``firstName`` / ``lastName`` forwarded — email + the rest dropped.
+        self.assertEqual(kwargs["json"], {"firstName": "New", "lastName": "Name"})
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_account_update_no_allowed_fields_returns_400(self):
+        """Request body that's all-disallowed → 400, never reach Keycloak."""
+        view = BaseOpenIDConnectViewset.as_view({"post": "account"})
+
+        request = self.factory.post("/", data={"username": "evil"}, format="json")
+        request.session = {"oidc_access_token": "stashed.access.token"}
+
+        with patch("oidc.client.requests.request") as mock_request:
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 400)
+        mock_request.assert_not_called()
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_account_update_refreshes_on_401_and_retries(self):
+        """Keycloak 401 → refresh access_token via refresh_token → retry.
+        Session writeback so the next request uses the fresh token."""
+        view = BaseOpenIDConnectViewset.as_view({"post": "account"})
+
+        request = self.factory.post("/", data={"firstName": "New"}, format="json")
+        request.session = {
+            "oidc_access_token": "expired.access.token",
+            "oidc_refresh_token": "stashed.refresh.token",
+        }
+
+        first_call = MagicMock(status_code=401, content=b"{}")
+        first_call.json.return_value = {"error": "invalid_token"}
+        refresh_call = MagicMock(status_code=200)
+        refresh_call.json.return_value = {
+            "access_token": "fresh.access.token",
+            "refresh_token": "fresh.refresh.token",
+        }
+        refresh_call.raise_for_status = MagicMock()
+        second_call = MagicMock(status_code=204, content=b"")
+
+        with (
+            patch(
+                "oidc.client.requests.request",
+                side_effect=[first_call, second_call],
+            ) as mock_request,
+            patch("oidc.client.requests.post", return_value=refresh_call) as mock_post,
+        ):
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 200)
+        # Two account calls (POST 401 → POST 204) plus one token refresh
+        # POST against ``token_endpoint``.
+        self.assertEqual(mock_request.call_count, 2)
+        self.assertEqual(mock_post.call_count, 1)
+        # Retry used the fresh token.
+        _args, kwargs = mock_request.call_args_list[1]
+        self.assertEqual(
+            kwargs["headers"]["Authorization"], "Bearer fresh.access.token"
+        )
+        # Session was updated with the fresh tokens.
+        self.assertEqual(request.session["oidc_access_token"], "fresh.access.token")
+        self.assertEqual(request.session["oidc_refresh_token"], "fresh.refresh.token")
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_account_update_returns_503_when_endpoint_not_configured(self):
+        """Deployments that haven't wired ``ACCOUNT_ENDPOINT`` get a
+        clear 503 — never reach Keycloak with a half-baked URL."""
+        view = BaseOpenIDConnectViewset.as_view({"post": "account"})
+
+        request = self.factory.post(
+            "/", data={"email": "new@example.com"}, format="json"
+        )
+        request.session = {"oidc_access_token": "stashed.access.token"}
+
+        with patch("oidc.client.requests.post") as mock_post:
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 503)
+        mock_post.assert_not_called()
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_keycloak_account_request_get_passes_through_status_and_body(self):
+        """Shared helper round-trips method/path/body and surfaces upstream
+        (status, body). Refresh + retry exists already; this locks the
+        plain happy-path so the helper extraction is observably safe."""
+        viewset = BaseOpenIDConnectViewset()
+        client = OpenIDClient("default")
+        session = {"oidc_access_token": "stashed.access.token"}
+
+        upstream = MagicMock(status_code=200, content=b'{"hello":"world"}')
+        upstream.json.return_value = {"hello": "world"}
+        with patch(
+            "oidc.client.requests.request", return_value=upstream
+        ) as mock_request:
+            status, body = viewset._keycloak_account_request(
+                client, session, "GET", "/sessions/devices"
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"hello": "world"})
+        args, kwargs = mock_request.call_args
+        self.assertEqual(args[0], "GET")
+        self.assertEqual(
+            args[1],
+            "https://idp.example.com/realms/r/account/sessions/devices",
+        )
+        self.assertEqual(
+            kwargs["headers"]["Authorization"], "Bearer stashed.access.token"
+        )
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_sessions_list_flattens_devices_into_rows(self):
+        """Keycloak returns DeviceRepresentation[] with nested sessions[].
+        Proxy flattens to a per-session list so the SPA renders rows,
+        not nested device groups. NOTE: ``browser`` lives on each nested
+        session, while ``os`` is on the device — so the flattened row's
+        browser must come from the session, not the device."""
+        view = BaseOpenIDConnectViewset.as_view({"get": "sessions_list"})
+        request = self.factory.get("/")
+        request.session = {"oidc_access_token": "stashed.access.token"}
+
+        upstream = MagicMock(status_code=200)
+        upstream.content = b"[...]"
+        upstream.json.return_value = [
+            {
+                "os": "macOS",
+                "current": True,
+                "sessions": [
+                    {
+                        "id": "sess-1",
+                        "browser": "Chrome",
+                        "ipAddress": "1.2.3.4",
+                        "started": 1715520000,
+                        "lastAccess": 1715526000,
+                        "current": True,
+                        "clients": [{"clientId": "example"}],
+                    }
+                ],
+            },
+            {
+                "os": "Windows",
+                "current": False,
+                "sessions": [
+                    {
+                        "id": "sess-2",
+                        "browser": "Firefox",
+                        "ipAddress": "5.6.7.8",
+                        "started": 1715500000,
+                        "lastAccess": 1715505000,
+                        "current": False,
+                        "clients": [{"clientId": "example"}],
+                    }
+                ],
+            },
+        ]
+        with patch("oidc.client.requests.request", return_value=upstream):
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 200)
+        rows = response.data
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["id"], "sess-1")
+        self.assertEqual(rows[0]["browser"], "Chrome")
+        self.assertEqual(rows[0]["os"], "macOS")
+        self.assertTrue(rows[0]["current"])
+        self.assertEqual(rows[1]["id"], "sess-2")
+        self.assertEqual(rows[1]["browser"], "Firefox")
+        self.assertEqual(rows[1]["os"], "Windows")
+        self.assertFalse(rows[1]["current"])
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_sessions_list_marks_only_sid_match_current_when_grouped(self):
+        """Two browsers on one machine (e.g. normal + incognito on
+        localhost) collapse into a single device that Keycloak flags
+        ``current``, with both nested sessions flagged ``current`` too.
+        Only the session whose id matches the id_token ``sid`` should
+        render as current — not both."""
+        view = BaseOpenIDConnectViewset.as_view({"get": "sessions_list"})
+        request = self.factory.get("/")
+        request.session = {
+            "oidc_access_token": "stashed.access.token",
+            "oidc_id_token": "stashed.id.token",
+        }
+
+        upstream = MagicMock(status_code=200)
+        upstream.content = b"[...]"
+        upstream.json.return_value = [
+            {
+                "browser": "Chrome",
+                "os": "Mac OS X",
+                "current": True,
+                "sessions": [
+                    {"id": "sess-old", "current": True, "clients": []},
+                    {"id": "sess-current", "current": True, "clients": []},
+                ],
+            },
+        ]
+        with (
+            patch("oidc.viewsets._sid_from_id_token", return_value="sess-current"),
+            patch("oidc.client.requests.request", return_value=upstream),
+        ):
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 200)
+        by_id = {row["id"]: row for row in response.data}
+        self.assertFalse(by_id["sess-old"]["current"])
+        self.assertTrue(by_id["sess-current"]["current"])
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_sessions_revoke_one_forwards_id(self):
+        view = BaseOpenIDConnectViewset.as_view({"delete": "sessions_revoke_one"})
+        request = self.factory.delete("/")
+        request.session = {
+            "oidc_access_token": "stashed.access.token",
+            "oidc_id_token": "header.payload.sig",
+        }
+        upstream = MagicMock(status_code=204, content=b"")
+        with (
+            patch("oidc.viewsets._sid_from_id_token", return_value="current-sid"),
+            patch(
+                "oidc.client.requests.request", return_value=upstream
+            ) as mock_request,
+        ):
+            response = view(request, auth_server="default", session_id="other-sid")
+
+        self.assertEqual(response.status_code, 204)
+        args, _ = mock_request.call_args
+        self.assertEqual(args[0], "DELETE")
+        self.assertTrue(args[1].endswith("/sessions/other-sid"))
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_sessions_revoke_one_rejects_current_session(self):
+        view = BaseOpenIDConnectViewset.as_view({"delete": "sessions_revoke_one"})
+        request = self.factory.delete("/")
+        request.session = {
+            "oidc_access_token": "stashed.access.token",
+            "oidc_id_token": "header.payload.sig",
+        }
+        with (
+            patch("oidc.viewsets._sid_from_id_token", return_value="current-sid"),
+            patch("oidc.client.requests.request") as mock_request,
+        ):
+            response = view(request, auth_server="default", session_id="current-sid")
+
+        self.assertEqual(response.status_code, 409)
+        # Crucial: we never reach Keycloak.
+        mock_request.assert_not_called()
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_sessions_revoke_others_passes_current_false(self):
+        """DELETE /sessions revokes every session EXCEPT the current one."""
+        view = BaseOpenIDConnectViewset.as_view({"delete": "sessions_revoke_others"})
+        request = self.factory.delete("/")
+        request.session = {"oidc_access_token": "stashed.access.token"}
+
+        upstream = MagicMock(status_code=204, content=b"")
+        with patch(
+            "oidc.client.requests.request", return_value=upstream
+        ) as mock_request:
+            response = view(request, auth_server="default")
+
+        # 204 No Content is Keycloak's natural success code for DELETE;
+        # passed through verbatim so the SPA can treat `res.ok` uniformly.
+        self.assertEqual(response.status_code, 204)
+        args, _ = mock_request.call_args
+        self.assertEqual(args[0], "DELETE")
+        self.assertIn("/sessions?current=false", args[1])
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_linked_list_forwards_keycloak_body_verbatim(self):
+        view = BaseOpenIDConnectViewset.as_view({"get": "linked_list"})
+        request = self.factory.get("/")
+        request.session = {"oidc_access_token": "stashed.access.token"}
+
+        upstream = MagicMock(status_code=200)
+        upstream.content = b"[...]"
+        keycloak_body = [
+            {
+                "providerAlias": "google",
+                "providerName": "Google",
+                "displayName": "Google",
+                "connected": True,
+                "social": True,
+                "linkedUsername": "alice@gmail.com",
+            }
+        ]
+        upstream.json.return_value = keycloak_body
+        with patch("oidc.client.requests.request", return_value=upstream):
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, keycloak_body)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_linked_unlink_forwards_provider_alias(self):
+        view = BaseOpenIDConnectViewset.as_view({"delete": "linked_unlink"})
+        request = self.factory.delete("/")
+        request.session = {"oidc_access_token": "stashed.access.token"}
+        upstream = MagicMock(status_code=204, content=b"")
+        with patch(
+            "oidc.client.requests.request", return_value=upstream
+        ) as mock_request:
+            response = view(request, auth_server="default", provider="google")
+        self.assertEqual(response.status_code, 204)
+        args, _ = mock_request.call_args
+        self.assertTrue(args[1].endswith("/linked-accounts/google"))
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_linked_unlink_rejects_invalid_provider_alias(self):
+        view = BaseOpenIDConnectViewset.as_view({"delete": "linked_unlink"})
+        request = self.factory.delete("/")
+        request.session = {"oidc_access_token": "stashed.access.token"}
+        with patch("oidc.client.requests.request") as mock_request:
+            response = view(request, auth_server="default", provider="../etc/passwd")
+        self.assertEqual(response.status_code, 400)
+        mock_request.assert_not_called()
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_linked_link_url_forwards_body(self):
+        """The link-url action forwards Keycloak's linked-account
+        representation verbatim — the SPA extracts ``accountLinkUri``
+        client-side."""
+        view = BaseOpenIDConnectViewset.as_view({"get": "linked_link_url"})
+        request = self.factory.get("/")
+        request.session = {"oidc_access_token": "stashed.access.token"}
+
+        upstream = MagicMock(status_code=200)
+        upstream.content = b"{...}"
+        upstream.json.return_value = {
+            "accountLinkUri": "https://idp.example.com/realms/r/broker/google/link?nonce=n&hash=h",
+            "nonce": "n",
+            "hash": "h",
+        }
+        with patch("oidc.client.requests.request", return_value=upstream):
+            response = view(request, auth_server="default", provider="google")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.data,
+            {
+                "accountLinkUri": (
+                    "https://idp.example.com/realms/r/broker/google/link"
+                    "?nonce=n&hash=h"
+                ),
+                "nonce": "n",
+                "hash": "h",
+            },
+        )
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_credentials_list_forwards_body(self):
+        """The credentials action forwards Keycloak's nested
+        credential-metadata wire shape verbatim — reshaping for
+        rendering (flattening ``userCredentialMetadatas`` →
+        ``credential``) happens client-side in the SPA."""
+        view = BaseOpenIDConnectViewset.as_view({"get": "credentials_list"})
+        request = self.factory.get("/")
+        request.session = {"oidc_access_token": "stashed.access.token"}
+
+        upstream_body = [
+            {
+                "type": "otp",
+                "category": "two-factor",
+                "displayName": "otp-display-name",
+                "userCredentialMetadatas": [
+                    {
+                        "credential": {
+                            "id": "cred-1",
+                            "type": "otp",
+                            "userLabel": "iPhone",
+                            "createdDate": 1715000000000,
+                        }
+                    }
+                ],
+            },
+            {
+                "type": "password",
+                "category": "basic-authentication",
+                "displayName": "password-display-name",
+                "userCredentialMetadatas": [
+                    {"credential": {"id": "cred-pw", "type": "password"}}
+                ],
+            },
+        ]
+        upstream = MagicMock(status_code=200)
+        upstream.content = b"[...]"
+        upstream.json.return_value = upstream_body
+        with patch("oidc.client.requests.request", return_value=upstream):
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, upstream_body)
+
     @patch(
         "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
         MagicMock(
@@ -1792,6 +2376,62 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(cookie["max-age"], 0)
 
 
+class TestAccountRoutes(TestCase):
+    """URL→action wiring smoke test; per-action behaviour is covered
+    by the per-action tests above."""
+
+    ROUTES = (
+        ("/oidc/example/account", "post", "account", {}),
+        ("/oidc/example/sessions", "get", "sessions_list", {}),
+        ("/oidc/example/sessions", "delete", "sessions_revoke_others", {}),
+        (
+            "/oidc/example/sessions/abc-123",
+            "delete",
+            "sessions_revoke_one",
+            {"session_id": "abc-123"},
+        ),
+        ("/oidc/example/linked-accounts", "get", "linked_list", {}),
+        (
+            "/oidc/example/linked-accounts/google",
+            "delete",
+            "linked_unlink",
+            {"provider": "google"},
+        ),
+        (
+            "/oidc/example/linked-accounts/google/link-url",
+            "get",
+            "linked_link_url",
+            {"provider": "google"},
+        ),
+        ("/oidc/example/credentials", "get", "credentials_list", {}),
+    )
+
+    def test_routes_resolve_to_their_actions(self):
+        for path, method, action, url_kwargs in self.ROUTES:
+            with self.subTest(path=path, method=method):
+                match = resolve(path)
+                self.assertEqual(match.func.actions[method], action)
+                for key, value in url_kwargs.items():
+                    self.assertEqual(match.kwargs[key], value)
+
+    def test_account_proxy_routes_carry_the_csrf_permission(self):
+        """The gate is applied in ``urls.py``, not on the viewset, so a proxy
+        route added without ``_ACCOUNT_PROXY_VIEW_KWARGS`` would be unguarded.
+
+        Both keys matter: empty ``authentication_classes`` is what takes these
+        routes out of DRF's SessionAuthentication/CSRF path, and the permission
+        is what replaces it. Either one alone is a hole.
+        """
+        for path in {route[0] for route in self.ROUTES}:
+            with self.subTest(path=path):
+                initkwargs = resolve(path).func.initkwargs
+                self.assertIn(
+                    RequireAccountRequestHeader,
+                    initkwargs.get("permission_classes", []),
+                )
+                self.assertEqual(initkwargs.get("authentication_classes"), [])
+
+
 class TestLoginNextValidation(TestCase):
     def setUp(self):
         self.factory = APIRequestFactory()
@@ -2205,3 +2845,96 @@ class TestSessionAction(TestCase):
         )
         self.assertEqual(response.status_code, 401)
         self.assertFalse(response.has_header("WWW-Authenticate"))
+
+
+class AccountProxyCsrfTests(TestCase):
+    """CSRF gate on the state-changing account-proxy actions: unsafe methods
+    require a custom header AND a trusted Origin."""
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.perm = RequireAccountRequestHeader()
+        self.view = SimpleNamespace(kwargs={"auth_server": "default"})
+        self.header_kwarg = {
+            "HTTP_" + ACCOUNT_REQUEST_HEADER.upper().replace("-", "_"): "1"
+        }
+
+    def test_safe_method_exempt(self):
+        """GET/HEAD/OPTIONS need neither header nor origin."""
+        self.assertTrue(self.perm.has_permission(self.factory.get("/"), self.view))
+
+    def test_unsafe_without_header_denied(self):
+        """POST/DELETE without the header are refused by the permission."""
+        self.assertFalse(self.perm.has_permission(self.factory.post("/"), self.view))
+        self.assertFalse(self.perm.has_permission(self.factory.delete("/"), self.view))
+
+    def test_unsafe_with_header_no_origin_allowed(self):
+        """Header + no Origin (same-origin requests may omit it) → allowed."""
+        request = self.factory.post("/", **self.header_kwarg)
+        self.assertTrue(self.perm.has_permission(request, self.view))
+
+    def test_unsafe_same_origin_allowed(self):
+        """Header + the request's own origin → allowed."""
+        request = self.factory.post(
+            "/", HTTP_ORIGIN="http://testserver", **self.header_kwarg
+        )
+        self.assertTrue(self.perm.has_permission(request, self.view))
+
+    def test_unsafe_untrusted_origin_denied(self):
+        """Header present but a foreign Origin → refused. This is the layer
+        that holds even if the deployment's CORS is permissive."""
+        request = self.factory.post(
+            "/", HTTP_ORIGIN="https://evil.example", **self.header_kwarg
+        )
+        self.assertFalse(self.perm.has_permission(request, self.view))
+
+    def test_unsafe_null_origin_denied(self):
+        """Origin: null (sandboxed iframe / opaque origin) is host-less and
+        must not be treated as same-origin-safe."""
+        request = self.factory.post("/", HTTP_ORIGIN="null", **self.header_kwarg)
+        self.assertFalse(self.perm.has_permission(request, self.view))
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "LOGIN_REDIRECT_ALLOWED_HOSTS": ["app.example.com"],
+            },
+        }
+    )
+    def test_unsafe_allowlisted_cross_origin_allowed(self):
+        """A configured SPA origin (via LOGIN_REDIRECT_ALLOWED_HOSTS) → ok."""
+        request = self.factory.post(
+            "/", HTTP_ORIGIN="https://app.example.com", **self.header_kwarg
+        )
+        self.assertTrue(self.perm.has_permission(request, self.view))
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_permitted_request_reaches_the_action(self):
+        """Header + no cross-origin Origin: the permission passes and the
+        action runs through to a concrete success."""
+        view = BaseOpenIDConnectViewset.as_view(
+            {"post": "account"},
+            authentication_classes=[],
+            permission_classes=[RequireAccountRequestHeader],
+        )
+        request = self.factory.post(
+            "/", data={"firstName": "X"}, format="json", **self.header_kwarg
+        )
+        request.session = {"oidc_access_token": "t"}
+        mock_response = MagicMock()
+        mock_response.status_code = 204
+        mock_response.content = b""
+        with patch("oidc.client.requests.request", return_value=mock_response):
+            response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 200)
