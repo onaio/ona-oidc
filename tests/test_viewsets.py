@@ -1265,6 +1265,32 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         },
         OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
     )
+    def test_proxy_does_not_disguise_our_own_bugs_as_upstream_failures(self):
+        """Pin: only transport/config errors become 502. A defect in our own
+        response handling must surface as a 500 with a traceback, not as
+        'could not reach the identity provider' pointing at Keycloak."""
+        view = BaseOpenIDConnectViewset.as_view({"get": "credentials_list"})
+        request = self.factory.get("/")
+        request.session = {"oidc_access_token": "t"}
+
+        with patch.object(
+            BaseOpenIDConnectViewset,
+            "_keycloak_account_request",
+            side_effect=KeyError("bug in transform"),
+        ):
+            with self.assertRaises(KeyError):
+                view(request, auth_server="default")
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
     def test_account_update_refreshes_on_401_and_retries(self):
         """Keycloak 401 → refresh access_token via refresh_token → retry.
         Session writeback so the next request uses the fresh token."""

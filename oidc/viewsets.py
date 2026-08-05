@@ -24,6 +24,7 @@ from django.utils import timezone
 from django.utils.translation import gettext as _
 
 import jwt
+import requests
 from jwt.exceptions import PyJWTError
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
@@ -351,22 +352,25 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         """
         access_token = session.get("oidc_access_token")
         if not access_token:
-            return 401, {"error": "No active OIDC session."}
+            return status.HTTP_401_UNAUTHORIZED, {"error": "No active OIDC session."}
 
         status_code, body = client.request_keycloak_account(
             access_token, method, path_suffix, json_body
         )
-        if status_code != 401:
+        if status_code != status.HTTP_401_UNAUTHORIZED:
             return status_code, body
 
         refresh_token = session.get("oidc_refresh_token")
         if not refresh_token:
-            return 401, body
+            return status.HTTP_401_UNAUTHORIZED, body
 
         try:
             tokens = client.refresh_access_token(refresh_token)
         except TokenVerificationFailed:
-            return 401, {"error": "Session expired — please sign in again."}
+            return (
+                status.HTTP_401_UNAUTHORIZED,
+                {"error": "Session expired — please sign in again."},
+            )
 
         new_access = tokens.get("access_token")
         new_refresh = tokens.get("refresh_token")
@@ -375,7 +379,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         if new_refresh:
             session["oidc_refresh_token"] = new_refresh
         if not new_access:
-            return 401, body
+            return status.HTTP_401_UNAUTHORIZED, body
         return client.request_keycloak_account(
             new_access, method, path_suffix, json_body
         )
@@ -414,13 +418,18 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             status_code, body = self._keycloak_account_request(
                 client, session, method, path_suffix, json_body
             )
-        except Exception as exc:
+        except (requests.RequestException, ValueError) as exc:
+            # Only genuine upstream problems: a transport failure, or an
+            # unconfigured ACCOUNT_ENDPOINT. Catching bare Exception here
+            # would report a bug in our own transform/flatten code as
+            # "the IdP is unreachable" and send the investigation to
+            # Keycloak instead of to us.
             logger.exception(exc)
             return Response(
                 {"error": "Could not reach the identity provider."},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
-        if 200 <= status_code < 300:
+        if status.is_success(status_code):
             payload = transform(body) if transform else body
             return Response(payload, status=status_code)
         return Response(
@@ -669,14 +678,19 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             status_code, body = self._keycloak_account_request(
                 client, session, "POST", "", json_body=payload
             )
-        except Exception as exc:
+        except (requests.RequestException, ValueError) as exc:
+            # Only genuine upstream problems: a transport failure, or an
+            # unconfigured ACCOUNT_ENDPOINT. Catching bare Exception here
+            # would report a bug in our own transform/flatten code as
+            # "the IdP is unreachable" and send the investigation to
+            # Keycloak instead of to us.
             logger.exception(exc)
             return Response(
                 {"error": "Could not reach the identity provider."},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
-        if 200 <= status_code < 300:
+        if status.is_success(status_code):
             return Response({"success": True}, status=status.HTTP_200_OK)
 
         return Response(
