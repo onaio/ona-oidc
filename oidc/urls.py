@@ -4,6 +4,7 @@ URL Configuration file for ona-oidc
 
 from django.conf import settings
 from django.urls import re_path
+from django.utils.module_loading import import_string
 
 from rest_framework.renderers import JSONRenderer
 
@@ -13,11 +14,28 @@ from oidc.viewsets import RapidProOpenIDConnectViewset, UserModelOpenIDConnectVi
 
 app_name = "oidc"
 
-viewset_class = UserModelOpenIDConnectViewset
 
-config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
-if str_to_bool(config.get("USE_RAPIDPRO_VIEWSET", False)):
-    viewset_class = RapidProOpenIDConnectViewset
+def get_viewset_class():
+    """The viewset these URLs route to.
+
+    ``VIEWSET_CLASS`` (a dotted path) lets a deployment route to its own
+    subclass while still using ``include("oidc.urls")``. Without it, changing
+    this one name means copying the whole URLconf, and then mirroring every
+    route and every ``as_view()`` kwarg -- including the account-proxy CSRF
+    gate below -- by hand, forever.
+
+    ``USE_RAPIDPRO_VIEWSET`` is the older boolean form and still works.
+    """
+    config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
+    dotted_path = config.get("VIEWSET_CLASS")
+    if dotted_path:
+        return import_string(dotted_path)
+    if str_to_bool(config.get("USE_RAPIDPRO_VIEWSET", False)):
+        return RapidProOpenIDConnectViewset
+    return UserModelOpenIDConnectViewset
+
+
+viewset_class = get_viewset_class()
 
 # Every account-proxy route must use these. Dropping authentication_classes
 # without IsCsrfSafeAccountRequest leaves the route CSRF-open; see the

@@ -20,16 +20,20 @@ from rest_framework.test import APIRequestFactory
 
 from oidc.client import OpenIDClient, TokenVerificationFailed, state_cache_key
 from oidc.permissions import IsCsrfSafeAccountRequest, get_account_request_header
+from oidc.urls import get_viewset_class
+from tests.project_viewsets import InjectedViewset
 from oidc.viewsets import (
     DEFAULT_USERNAME_HELP_TEXT,
     DEFAULT_USERNAME_PATTERN,
     USERNAME_FORM_MARKER_FIELD,
     USERNAME_FORM_MARKER_VALUE,
     BaseOpenIDConnectViewset,
+    RapidProOpenIDConnectViewset,
     UserModelOpenIDConnectViewset,
 )
 
 User = get_user_model()
+
 
 OPENID_CONNECT_AUTH_SERVERS = {
     "default": {
@@ -2469,6 +2473,59 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(cookie["path"], "/admin")
         self.assertEqual(cookie["samesite"], "Strict")
         self.assertEqual(cookie["max-age"], 0)
+
+
+class TestViewsetClassInjection(TestCase):
+    """Which viewset ``oidc.urls`` routes to.
+
+    Without injection a deployment that needs its own subclass has to copy the
+    whole URLconf, then mirror every future route and view kwarg by hand.
+    """
+
+    def test_defaults_to_the_user_model_viewset(self):
+        self.assertIs(get_viewset_class(), UserModelOpenIDConnectViewset)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "USE_RAPIDPRO_VIEWSET": True,
+        }
+    )
+    def test_rapidpro_boolean_still_honoured(self):
+        """Back-compat: the older boolean form keeps working."""
+        self.assertIs(get_viewset_class(), RapidProOpenIDConnectViewset)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "VIEWSET_CLASS": "tests.project_viewsets.InjectedViewset",
+        }
+    )
+    def test_dotted_path_routes_to_a_project_subclass(self):
+        self.assertIs(get_viewset_class(), InjectedViewset)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "VIEWSET_CLASS": "tests.project_viewsets.InjectedViewset",
+            "USE_RAPIDPRO_VIEWSET": True,
+        }
+    )
+    def test_dotted_path_wins_over_the_boolean(self):
+        """Pin the precedence: a deployment that names a class means it."""
+        self.assertIs(get_viewset_class(), InjectedViewset)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "VIEWSET_CLASS": "tests.project_viewsets.NoSuchViewset",
+        }
+    )
+    def test_unimportable_path_fails_loudly(self):
+        """A typo must not silently fall back to the default viewset — that
+        would drop a subclass's access rules with nothing to notice it."""
+        with self.assertRaises(ImportError):
+            get_viewset_class()
 
 
 class TestAccountRoutes(TestCase):

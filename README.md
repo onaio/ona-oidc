@@ -246,6 +246,31 @@ check inherit their strength from Django's `ALLOWED_HOSTS`:
   `Host`, and unlike `Host` a page can set it on a `fetch`. A proxy that
   forwards it lets a caller nominate its own origin as trusted.
 
+### Routing to your own viewset (`VIEWSET_CLASS`)
+
+Deployments that subclass the viewset — to reject certain account types,
+adjust cookie handling, and so on — can keep using `include("oidc.urls")`
+by naming the subclass:
+
+```python
+OPENID_CONNECT_VIEWSET_CONFIG = {
+    ...,
+    "VIEWSET_CLASS": "myapp.oidc_viewsets.MyOpenIDConnectViewset",
+}
+```
+
+Every route then goes to that class, including the account-proxy routes
+and their CSRF configuration. Without this the only way to change the
+viewset is to copy `oidc/urls.py` into your project, which means
+mirroring every future route and every `as_view()` kwarg by hand.
+
+An unimportable path raises rather than falling back to the built-in
+viewset — a silent fallback would drop whatever access rules the
+subclass enforces.
+
+`USE_RAPIDPRO_VIEWSET` is the older boolean form and still works;
+`VIEWSET_CLASS` takes precedence when both are set.
+
 4. (Optional) If you'd like to use the default OpenID Connect Viewset register the urls located in `oidc.urls`.
 
 ```python

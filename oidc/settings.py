@@ -3,6 +3,9 @@ Settings Module for the oidc App
 """
 
 OPENID_CONNECT_VIEWSET_CONFIG = {
+    # Dotted path to the viewset oidc.urls routes to. Unset means the
+    # built-in one; set it to route to a project-owned subclass.
+    "VIEWSET_CLASS": None,
     "ACCOUNT_REQUEST_HEADER": "X-Ona-Account-Request",
     "REQUIRED_USER_CREATION_FIELDS": ["email", "first_name", "username"],
     "USER_CREATION_FIELDS": ["email", "first_name", "last_name", "username"],
