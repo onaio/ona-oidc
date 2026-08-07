@@ -20,6 +20,10 @@ class oidcConfig(AppConfig):
         # Imported here rather than at module scope: the check pulls in the
         # viewsets, which read settings, and that must not happen while the
         # app registry is still populating.
-        from oidc.checks import check_session_backend_can_hold_tokens
+        from oidc.checks import (
+            check_actions_survive_subclassing,
+            check_session_backend_can_hold_tokens,
+        )
 
         register(check_session_backend_can_hold_tokens, "security")
+        register(check_actions_survive_subclassing)

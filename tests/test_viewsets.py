@@ -19,7 +19,10 @@ import requests
 from mock import MagicMock, patch
 from rest_framework.test import APIRequestFactory
 
-from oidc.checks import check_session_backend_can_hold_tokens
+from oidc.checks import (
+    check_actions_survive_subclassing,
+    check_session_backend_can_hold_tokens,
+)
 from oidc.client import OpenIDClient, TokenVerificationFailed, state_cache_key
 from oidc.keycloak import KeycloakOpenIDConnectViewset
 from oidc.permissions import IsCsrfSafeAccountRequest, get_account_request_header
@@ -4770,3 +4773,56 @@ class TestTokensSurviveDjangoLogin(TestCase):
             session.get(token_session_key(ID_TOKEN_SESSION_KEY, "default")),
             "idp-id-token",
         )
+
+
+class TestOverriddenActionDeployCheck(TestCase):
+    """A subclass that overrides an ``@action`` without re-declaring it
+    silently loses the route: DRF's router reads the metadata off the
+    function, and a plain override replaces the function. The endpoint then
+    404s with nothing in either repo pointing at the cause, which is why it
+    is caught at ``manage.py check`` rather than left to a user."""
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "VIEWSET_CLASS": "tests.project_viewsets.PlainOverrideViewset",
+        }
+    )
+    def test_a_plain_override_is_reported(self):
+        errors = check_actions_survive_subclassing(None)
+        self.assertEqual([e.id for e in errors], ["oidc.E002"])
+        self.assertIn("login", errors[0].msg)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "VIEWSET_CLASS": "tests.project_viewsets.RedeclaredOverrideViewset",
+        }
+    )
+    def test_re_declaring_the_action_clears_it(self):
+        """The documented fix must actually satisfy the check."""
+        self.assertEqual(check_actions_survive_subclassing(None), [])
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "VIEWSET_CLASS": "oidc.keycloak.KeycloakOpenIDConnectViewset",
+        }
+    )
+    def test_the_shipped_viewsets_are_clean(self):
+        self.assertEqual(check_actions_survive_subclassing(None), [])
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "VIEWSET_CLASS": "tests.project_viewsets.PlainOverrideViewset",
+        }
+    )
+    def test_the_route_really_is_missing(self):
+        """Pins that the check describes a real consequence, not a style
+        rule -- the action is genuinely absent from the router's view."""
+        from tests.project_viewsets import PlainOverrideViewset
+
+        routed = {a.__name__ for a in PlainOverrideViewset.get_extra_actions()}
+        self.assertNotIn("login", routed)
+        self.assertIn("callback", routed)
