@@ -41,6 +41,7 @@ from oidc.client import (
     TokenVerificationFailed,
     state_cache_key,
 )
+from oidc.permissions import IsCsrfSafeAccountRequest
 from oidc.utils import (
     authenticate_sso,
     email_usename_to_url_safe,
@@ -223,7 +224,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             return bool(self.cookie_secure)
         return bool(getattr(settings, "SESSION_COOKIE_SECURE", False))
 
-    @action(methods=["GET"], detail=False)
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_name="openid_connect_login",
+    )
     def login(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         auth_server = kwargs.get("auth_server")
         client = self._get_client(auth_server=auth_server)
@@ -268,6 +273,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         detail=False,
         authentication_classes=[],
         renderer_classes=[JSONRenderer],
+        url_name="openid_connect_session",
     )
     def session(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         """Return the current SSO-backed browser session, without tokens.
@@ -304,7 +310,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         """Return the non-secret session payload for ``user``."""
         return {"username": user.username}
 
-    @action(methods=["GET"], detail=False)
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_name="openid_connect_logout",
+    )
     def logout(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         auth_server = kwargs.get("auth_server")
         client = self._get_client(auth_server=auth_server)
@@ -453,7 +463,15 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             status=status_code,
         )
 
-    @action(methods=["GET"], detail=False, url_path="sessions")
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path="sessions",
+        url_name="openid_connect_sessions",
+        authentication_classes=[],
+        permission_classes=[IsCsrfSafeAccountRequest],
+        renderer_classes=[JSONRenderer],
+    )
     def sessions_list(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         """
         List the user's active Keycloak sessions. Flattens
@@ -476,6 +494,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         methods=["DELETE"],
         detail=False,
         url_path=r"sessions/(?P<session_id>[a-zA-Z0-9._-]+)",
+        url_name="openid_connect_sessions_revoke_one",
+        authentication_classes=[],
+        permission_classes=[IsCsrfSafeAccountRequest],
+        renderer_classes=[JSONRenderer],
     )
     def sessions_revoke_one(
         self, request: HttpRequest, session_id: str = "", **kwargs: dict
@@ -501,7 +523,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             f"/sessions/{session_id}",
         )
 
-    @action(methods=["DELETE"], detail=False, url_path="sessions")
+    @sessions_list.mapping.delete
     def sessions_revoke_others(
         self, request: HttpRequest, **kwargs: dict
     ) -> HttpResponse:
@@ -513,7 +535,15 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             "/sessions?current=false",
         )
 
-    @action(methods=["GET"], detail=False, url_path="linked-accounts")
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path="linked-accounts",
+        url_name="openid_connect_linked_list",
+        authentication_classes=[],
+        permission_classes=[IsCsrfSafeAccountRequest],
+        renderer_classes=[JSONRenderer],
+    )
     def linked_list(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         """List broker IdPs configured on the realm with their connected
         state for the current user."""
@@ -528,6 +558,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         methods=["DELETE"],
         detail=False,
         url_path=r"linked-accounts/(?P<provider>[^/]+)",
+        url_name="openid_connect_linked_unlink",
+        authentication_classes=[],
+        permission_classes=[IsCsrfSafeAccountRequest],
+        renderer_classes=[JSONRenderer],
     )
     def linked_unlink(
         self, request: HttpRequest, provider: str = "", **kwargs: dict
@@ -549,6 +583,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         methods=["GET"],
         detail=False,
         url_path=r"linked-accounts/(?P<provider>[^/]+)/link-url",
+        url_name="openid_connect_linked_link_url",
+        authentication_classes=[],
+        permission_classes=[IsCsrfSafeAccountRequest],
+        renderer_classes=[JSONRenderer],
     )
     def linked_link_url(
         self, request: HttpRequest, provider: str = "", **kwargs: dict
@@ -569,7 +607,15 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             f"/linked-accounts/{provider}",
         )
 
-    @action(methods=["GET"], detail=False, url_path="credentials")
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path="credentials",
+        url_name="openid_connect_credentials",
+        authentication_classes=[],
+        permission_classes=[IsCsrfSafeAccountRequest],
+        renderer_classes=[JSONRenderer],
+    )
     def credentials_list(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         """List credential metadata (TOTP / password / recovery codes).
 
@@ -631,7 +677,14 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 )
         return rows
 
-    @action(methods=["POST"], detail=False)
+    @action(
+        methods=["POST"],
+        detail=False,
+        url_name="openid_connect_account",
+        authentication_classes=[],
+        permission_classes=[IsCsrfSafeAccountRequest],
+        renderer_classes=[JSONRenderer],
+    )
     def account(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         """
         Proxy a profile update from the SPA to Keycloak's Account REST
@@ -906,7 +959,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         if state:
             cache.delete(state_cache_key(state))
 
-    @action(methods=["POST", "GET"], detail=False)
+    @action(
+        methods=["POST", "GET"],
+        detail=False,
+        url_name="openid_connect_callback",
+    )
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
         auth_server = kwargs.get("auth_server")
         client = self._get_client(auth_server=auth_server)
