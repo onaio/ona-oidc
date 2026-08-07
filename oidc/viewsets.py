@@ -617,8 +617,13 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         # keeps the session data and only changes the key, so the pending
         # slots read below survive it.
         #
-        # Guarded: the dict rigs used by callback tests have no cycle_key.
-        if hasattr(session, "cycle_key"):
+        # Skipped under USE_AUTH_BACKEND: Django's ``login()`` has already
+        # run by this point and always cycles or flushes, so rotating again
+        # would only cost a second round trip to the session store.
+        #
+        # Guarded on hasattr: the dict rigs used by callback tests have no
+        # cycle_key. Every real backend does.
+        if not self.use_auth_backend and hasattr(session, "cycle_key"):
             session.cycle_key()
 
         tokens = user_tokens if isinstance(user_tokens, dict) else {}
@@ -918,16 +923,24 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         user.last_login = timezone.now()
                         user.save(update_fields=["last_login"])
                         self._clear_login_states(server_response)
-                        # Login accepted: the tokens are earned.
-                        self._persist_oidc_tokens(
-                            request, auth_server, id_token, user_tokens
-                        )
-                        return self.generate_successful_response(
+                        response = self.generate_successful_response(
                             request,
                             user,
                             redirect_after=redirect_after,
                             auth_server=auth_server,
                         )
+                        # After, not before: under USE_AUTH_BACKEND the call
+                        # above runs Django's ``login()``, which *flushes*
+                        # the session when a different user was already
+                        # authenticated in it. Tokens written first would be
+                        # silently discarded, leaving a browser that is
+                        # signed in but whose every proxy call 401s. The
+                        # session is saved by SessionMiddleware after the
+                        # view returns, so writing here still persists.
+                        self._persist_oidc_tokens(
+                            request, auth_server, id_token, user_tokens
+                        )
+                        return response
         auth_servers = list(settings.OPENID_CONNECT_AUTH_SERVERS.keys())
         default_auth_server = auth_servers[0] if auth_servers else "default"
         return Response(
