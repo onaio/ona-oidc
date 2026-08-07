@@ -160,12 +160,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             getattr(settings, "SESSION_ENGINE", "")
             == "django.contrib.sessions.backends.signed_cookies"
         ):
-            # Signed-cookie sessions are signed but *not encrypted*: the
-            # contents ride in a client-readable cookie and stay replayable
-            # after logout, because there is no server-side record to delete.
-            # Fine for the id_token this viewset family stashed before, which
-            # the browser already held; not fine for the access and refresh
-            # tokens a proxy-enabled viewset keeps.
+            # Signed but not encrypted: client-readable, and replayable
+            # after logout since there is no server-side record to delete.
             raise ImproperlyConfigured(
                 "The Keycloak account proxy stores access and refresh tokens "
                 "in request.session, which the signed_cookies backend would "
@@ -313,31 +309,19 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             # without middleware. Treat missing session as "no stashed
             # token" — same fallback as the legacy bare end-session URL.
             session = getattr(request, "session", None)
-            # Everything this provider stashed goes, not just the hint. The
-            # response below is a *redirect* the user may never complete —
-            # closed tab, declined confirm screen, unreachable IdP — so this
-            # is the only point in the flow we control. Left behind, the pair
-            # keeps a logged-out session calling the account proxy as the
-            # user, and leaves a refresh token at rest in the session store.
-            #
-            # Scoped to this provider throughout: logging out of A must not
-            # sign the user out of B, and replaying A's id_token to B as
-            # ``id_token_hint`` would disclose sub/email/name to the wrong IdP.
+            # Everything this provider stashed, not just the hint: the
+            # redirect below may never be completed, so this is the only
+            # point we control. Scoped per provider — logging out of A must
+            # not sign the user out of B.
             id_token_hint = None
             if session is not None:
                 for base_key in TOKEN_SESSION_BASE_KEYS:
                     value = session.pop(token_session_key(base_key, auth_server), None)
                     if base_key == ID_TOKEN_SESSION_KEY:
                         id_token_hint = value
-                    # Pending slots too: a login abandoned at the username
-                    # form leaves a pair there, and nothing else clears it.
                     session.pop(pending_token_session_key(base_key, auth_server), None)
-                    # And the pre-namespacing key. This is a *write*-side
-                    # cleanup only -- it does not reinstate the fallback read
-                    # that ``token_session_key`` deliberately refuses, so it
-                    # cannot bring back the cross-provider path. Without it a
-                    # token stashed before the rename outlives every logout,
-                    # since the session is only flushed under USE_AUTH_BACKEND.
+                    # Pre-namespacing key: a write-side sweep only, so it does
+                    # not reinstate the fallback read.
                     session.pop(base_key, None)
             if id_token_hint:
                 extra_params["id_token_hint"] = id_token_hint
@@ -587,42 +571,18 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     ) -> None:
         """Write the IdP's tokens into the session. Success exit only.
 
-        The id_token is kept so ``logout`` can replay it as
-        ``id_token_hint`` on the end-session URL; without it Keycloak 18+
-        shows the logout-confirm screen even when ``client_id`` and a
-        whitelisted ``post_logout_redirect_uri`` are passed. The
-        access/refresh pair is kept only by viewsets that call the IdP on
-        the user's behalf (``stash_oidc_tokens``).
-
-        Everything is keyed by ``auth_server``: the route selects the
-        provider, so a global key would let another provider's route spend
-        these — see ``token_session_key``.
-
-        ``session`` is attached by ``SessionMiddleware``; absent in callback
-        rigs that build requests via ``APIRequestFactory`` without
-        middleware, so guard the write the way ``logout`` guards the read.
+        The id_token is kept for ``logout``'s ``id_token_hint``; the
+        access/refresh pair only by viewsets that call the IdP on the user's
+        behalf (``stash_oidc_tokens``). Keyed by ``auth_server`` — see
+        ``token_session_key``.
         """
         session = getattr(request, "session", None)
         if session is None:
             return
 
-        # Rotate the session id at the anonymous -> authenticated boundary.
-        # Django's ``login()`` would do this, but it only runs under
-        # USE_AUTH_BACKEND, which is off by default -- so without this the
-        # tokens land in whatever session id the request arrived with. An
-        # attacker who can plant one (subdomain cookie-tossing, or any XSS
-        # on a sibling host under a shared SESSION_COOKIE_DOMAIN) would then
-        # hold a session carrying the victim's access *and* refresh tokens,
-        # and the proxy's refresh loop keeps renewing them. ``cycle_key``
-        # keeps the session data and only changes the key, so the pending
-        # slots read below survive it.
-        #
-        # Skipped under USE_AUTH_BACKEND: Django's ``login()`` has already
-        # run by this point and always cycles or flushes, so rotating again
-        # would only cost a second round trip to the session store.
-        #
-        # Guarded on hasattr: the dict rigs used by callback tests have no
-        # cycle_key. Every real backend does.
+        # Session fixation: rotate before storing credentials. Skipped under
+        # USE_AUTH_BACKEND, where Django's ``login()`` has already cycled.
+        # ``cycle_key`` keeps the data, so the pending slots below survive.
         if not self.use_auth_backend and hasattr(session, "cycle_key"):
             session.cycle_key()
 
@@ -763,15 +723,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 try:
                     id_token = id_token or user_tokens.get("id_token")
                     decoded_id_token = client.verify_and_decode_id_token(id_token)
-                    # Nothing is written to the session here. The IdP
-                    # vouching for this user is not the platform accepting
-                    # them, and several refusal exits still lie below —
-                    # tokens written now would leave every one of them
-                    # looking like a signed-in session to the account proxy,
-                    # and would leave a refused caller's refresh token at
-                    # rest with nothing that will ever clear it. The success
-                    # exit calls ``_persist_oidc_tokens``; the username-form
-                    # exits park the pair via ``stash_pending_tokens``.
+                    # Nothing is stored yet: refusal exits still lie below,
+                    # and a refused caller must not end up with a session the
+                    # proxy treats as signed in. The success exit persists.
                     user_claims = client.tokens_to_user_info(
                         self.map_claims_to_model_field(decoded_id_token),
                         id_token,
@@ -861,12 +815,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                                     "id_token": id_token,
                                     "error": f"{field.capitalize()} field is already in use.",
                                 }
-                                # Log the conflicting field, never ``data``:
-                                # it carries the raw id_token, and callback
-                                # accepts an id_token straight from the POST
-                                # body on the username-form path. Anyone who
-                                # can read the logs could replay it and sign
-                                # in as that user.
+                                # The field, never ``data`` -- it carries the
+                                # id_token, which callback accepts from the
+                                # POST body and is therefore replayable.
                                 logger.info("Field already in use: %r", field)
                                 return self._username_form_response(
                                     data,
@@ -929,14 +880,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             redirect_after=redirect_after,
                             auth_server=auth_server,
                         )
-                        # After, not before: under USE_AUTH_BACKEND the call
-                        # above runs Django's ``login()``, which *flushes*
-                        # the session when a different user was already
-                        # authenticated in it. Tokens written first would be
-                        # silently discarded, leaving a browser that is
-                        # signed in but whose every proxy call 401s. The
-                        # session is saved by SessionMiddleware after the
-                        # view returns, so writing here still persists.
+                        # After, not before: the call above runs Django's
+                        # ``login()``, which flushes the session when a
+                        # different user was authenticated in it.
                         self._persist_oidc_tokens(
                             request, auth_server, id_token, user_tokens
                         )

@@ -39,33 +39,15 @@ from oidc.viewsets import UserModelOpenIDConnectViewset
 logger = logging.getLogger(__name__)
 
 
-#: Keycloak identity-provider aliases routinely look like hostnames
-#: (``idp.acme.com`` — Keycloak itself builds ``brokerUserId`` as
-#: ``alias + "." + federatedUserId``) and are case-sensitive, so both the dot
-#: and uppercase belong in the charset. A lowercase-only allowlist without the
-#: dot silently 400s a correctly configured realm's IdP.
-#:
-#: ``/`` deliberately stays out. These values are interpolated into the
-#: upstream URL and ``requests`` resolves dot segments before sending, so a
-#: separator would let an alias form path segments of its own. With no
-#: separator available the only traversal left is an alias that is *entirely*
-#: a dot segment, rejected below.
-#:
-#: Aliases outside this charset (spaces, unicode) are refused rather than
-#: percent-encoded: they are vanishingly rare, and every character here is
-#: URL-unreserved, so encoding would be a no-op that only obscured the rule.
-#:
-#: Matched with ``fullmatch`` and deliberately unanchored: with ``^…$`` and
-#: ``match``, Python's ``$`` also matches *before a trailing newline*, so
-#: ``"..\n"`` passed the charset test and then missed ``_DOT_SEGMENTS``
-#: (which compares whole strings) — smuggling a dot segment through the one
-#: check that exists to stop it. ``[^/]+`` in the route matches newlines too,
-#: so this was reachable as ``/linked-accounts/..%0A``.
+#: Keycloak aliases are hostname-shaped (``idp.acme.com``) and case-sensitive.
+#: ``/`` stays out: these are interpolated into the upstream URL and
+#: ``requests`` resolves dot segments, so a separator would let an alias form
+#: path segments of its own. ``fullmatch`` rather than ``^…$``, which also
+#: matches before a trailing newline.
 _PROVIDER_ALIAS_RE = re.compile(r"[a-zA-Z0-9._-]+")
 
 #: Segments ``requests`` would normalise away, walking the request out of
-#: ``/linked-accounts/`` and issuing it against the account root instead.
-#: Only meaningful as a *whole* alias — ``a..b`` is an ordinary segment.
+#: ``/linked-accounts/``. Only as a *whole* alias — ``a..b`` is ordinary.
 _DOT_SEGMENTS = frozenset({".", ".."})
 
 
@@ -74,13 +56,8 @@ def _is_valid_provider_alias(alias: str) -> bool:
     return bool(_PROVIDER_ALIAS_RE.fullmatch(alias)) and alias not in _DOT_SEGMENTS
 
 
-#: Keycloak session ids are UUIDs. The dot is deliberately excluded: these
-#: values are interpolated into the upstream URL, and ``requests`` resolves
-#: dot segments before sending, so a ``..`` here would walk out of
-#: ``/sessions/`` and issue the request against the account root instead.
-#: ``fullmatch`` for the same trailing-newline reason as the alias regex —
-#: harmless here (``.`` is outside the charset) but the two should not
-#: differ in rigour.
+#: Keycloak session ids are UUIDs. The dot is excluded for the same reason as
+#: above: a ``..`` here would walk out of ``/sessions/``.
 _SESSION_ID_RE = re.compile(r"[a-zA-Z0-9_-]+")
 
 

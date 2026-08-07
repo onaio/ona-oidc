@@ -186,16 +186,8 @@ class OpenIDClient:
                 "NONCE_CACHE_TIMEOUT", default_config["NONCE_CACHE_TIMEOUT"]
             )
         )
-        # ``requests`` waits forever by default, so an IdP that accepts a
-        # connection and then stalls pins the worker handling it — no error,
-        # no recovery. Every account-proxy call and every callback goes
-        # through this client, so a handful of stalled requests is enough to
-        # exhaust the pool. Tuple form: (connect, read).
-        # Coerced, like every other setting here: ``requests`` accepts only
-        # a number or a 2-tuple, so a string from an env var or a list from
-        # JSON/YAML settings -- the natural serialised form of the documented
-        # value -- would raise on every login and every proxy call, from deep
-        # inside urllib3 and naming neither this setting nor ona-oidc.
+        # ``requests`` waits forever without this, so a stalled IdP pins the
+        # worker. Coerced because it accepts only a number or a 2-tuple.
         self.request_timeout = _coerce_request_timeout(
             config[auth_server].get(
                 "REQUEST_TIMEOUT", default_config["REQUEST_TIMEOUT"]

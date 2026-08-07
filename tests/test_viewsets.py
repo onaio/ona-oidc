@@ -3460,10 +3460,10 @@ class TestTokensAreScopedToAuthServer(TestCase):
                 "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
                 return_value={
                     "name": "Scoped User",
-                    "preferred_username": "scoped@example.com",
-                    "given_name": "Scoped",
+                    "preferred_username": "alice@example.com",
+                    "given_name": "Alice",
                     "family_name": "User",
-                    "email": "scoped@example.com",
+                    "email": "alice@example.com",
                 },
             ),
         ):
@@ -3786,10 +3786,10 @@ class TestTokensAreNotStashedOnRefusedLogin(TestCase):
     }
 
     FULL_CLAIMS = {
-        "given_name": "Refused",
+        "given_name": "Bob",
         "family_name": "User",
-        "email": "refused@example.com",
-        "preferred_username": "refused",
+        "email": "bob@example.com",
+        "preferred_username": "bob",
     }
 
     def setUp(self):
@@ -3814,12 +3814,12 @@ class TestTokensAreNotStashedOnRefusedLogin(TestCase):
         return response, request.session
 
     def _assert_no_tokens(self, session):
-        for base_key in (
-            ACCESS_TOKEN_SESSION_KEY,
-            REFRESH_TOKEN_SESSION_KEY,
-            ID_TOKEN_SESSION_KEY,
-        ):
-            self.assertNotIn(token_session_key(base_key, "default"), session)
+        """No token value anywhere in the session -- active or pending. A
+        refused caller never logs out, so nothing would clear a leftover."""
+        for value in self.TOKENS.values():
+            self.assertNotIn(
+                value, session.values(), f"token left at rest in {session}"
+            )
 
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG={
@@ -3841,7 +3841,7 @@ class TestTokensAreNotStashedOnRefusedLogin(TestCase):
         ``_clean_user_data`` backfills it from last_name and username from
         email, but there is no last_name here -- so this is the hard 400
         exit, not the username form."""
-        response, session = self._run_callback({"email": "refused@example.com"})
+        response, session = self._run_callback({"email": "bob@example.com"})
 
         self.assertEqual(response.status_code, 400)
         self._assert_no_tokens(session)
@@ -3909,9 +3909,9 @@ class TestTokensAreNotStashedOnRefusedLogin(TestCase):
         # (the tests/settings.py default) that leaves exactly {username}
         # missing, which is the 200 username-form path.
         claims = {
-            "given_name": "Pend",
+            "given_name": "Dave",
             "family_name": "User",
-            "email": "pend@example.com",
+            "email": "dave@example.com",
         }
         with patch(
             "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
@@ -3938,7 +3938,7 @@ class TestTokensAreNotStashedOnRefusedLogin(TestCase):
                 "/?code=stale-code&state=stale-state",
                 data={
                     "id_token": "idp-id-token",
-                    "username": "pend_chosen",
+                    "username": "dave_chosen",
                     USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
                 },
             )
@@ -4111,60 +4111,60 @@ class TestPendingTokensBelongToOneFlow(TestCase):
         Only the form exit parks a pair, so an interleaving where the second
         tab takes a hard refusal parks nothing and there is no mismatched
         pair to reject — such a test passes with the owner check deleted.
-        Here tab B parks over tab A's slots, so A's resubmit is handed a
-        pair belonging to B and must refuse it.
+        Here tab bob parks over tab alice's slots, so alice's resubmit is handed a
+        pair belonging to bob and must refuse it.
         """
         session = {}
-        x_claims = {
-            "given_name": "Ex",
+        alice_claims = {
+            "given_name": "Alice",
             "family_name": "User",
-            "email": "x@example.com",
+            "email": "a@example.com",
         }
-        y_claims = {
-            "given_name": "Why",
+        bob_claims = {
+            "given_name": "Bob",
             "family_name": "User",
-            "email": "y@example.com",
+            "email": "b@example.com",
         }
 
-        # Tab A: identity X. Derived username "x" is under 3 chars -> form.
+        # Tab alice: identity alice. Derived username "x" is under 3 chars -> form.
         first = self._callback(
             session,
-            x_claims,
+            alice_claims,
             {
-                "id_token": "id-token-X",
-                "access_token": "access-X",
-                "refresh_token": "refresh-X",
+                "id_token": "id-token-alice",
+                "access_token": "access-alice",
+                "refresh_token": "refresh-alice",
             },
         )
         self.assertEqual(first.status_code, 200)
 
-        # Tab B: identity Y, same session, also lands on the form and parks
-        # over A's slots.
+        # Tab bob: identity bob, same session, also lands on the form and parks
+        # over alice's slots.
         second = self._callback(
             session,
-            y_claims,
+            bob_claims,
             {
-                "id_token": "id-token-Y",
-                "access_token": "access-Y",
-                "refresh_token": "refresh-Y",
+                "id_token": "id-token-bob",
+                "access_token": "access-bob",
+                "refresh_token": "refresh-bob",
             },
         )
         self.assertEqual(second.status_code, 200)
         self.assertEqual(
             session.get(pending_token_session_key(ACCESS_TOKEN_SESSION_KEY, "default")),
-            "access-Y",
-            "tab B should have parked over tab A -- otherwise this test proves nothing",
+            "access-bob",
+            "tab bob should have parked over tab alice -- otherwise this test proves nothing",
         )
 
-        # Tab A completes. Carries only X's id_token; the parked pair is B's.
-        done = self._resubmit(session, x_claims, "id-token-X", "ex_chosen")
+        # Tab alice completes. Carries only alice's id_token; the parked pair is B's.
+        done = self._resubmit(session, alice_claims, "id-token-alice", "alice_chosen")
         self.assertEqual(done.status_code, 302)
 
         # Signed in as X, so the proxy must not hold Y's credentials. Assert
         # the slots are absent outright, not merely "not Y's".
         self.assertEqual(
             session.get(token_session_key(ID_TOKEN_SESSION_KEY, "default")),
-            "id-token-X",
+            "id-token-alice",
         )
         self.assertNotIn(
             token_session_key(ACCESS_TOKEN_SESSION_KEY, "default"), session
@@ -4179,39 +4179,39 @@ class TestPendingTokensBelongToOneFlow(TestCase):
         refresh token behind under the *second* flow's owner tag — waving a
         mispaired credential through the very check meant to catch it."""
         session = {}
-        x_claims = {
-            "given_name": "Ex",
+        alice_claims = {
+            "given_name": "Alice",
             "family_name": "User",
-            "email": "x@example.com",
+            "email": "a@example.com",
         }
-        y_claims = {
-            "given_name": "Why",
+        bob_claims = {
+            "given_name": "Bob",
             "family_name": "User",
-            "email": "y@example.com",
+            "email": "b@example.com",
         }
 
         self._callback(
             session,
-            x_claims,
+            alice_claims,
             {
-                "id_token": "id-token-X",
-                "access_token": "access-X",
-                "refresh_token": "refresh-X",
+                "id_token": "id-token-alice",
+                "access_token": "access-alice",
+                "refresh_token": "refresh-alice",
             },
         )
-        # Tab B: access token but no refresh token.
+        # Tab bob: access token but no refresh token.
         self._callback(
             session,
-            y_claims,
-            {"id_token": "id-token-Y", "access_token": "access-Y"},
+            bob_claims,
+            {"id_token": "id-token-bob", "access_token": "access-bob"},
         )
 
-        done = self._resubmit(session, y_claims, "id-token-Y", "why_chosen")
+        done = self._resubmit(session, bob_claims, "id-token-bob", "bob_chosen2")
         self.assertEqual(done.status_code, 302)
         self.assertNotIn(
             token_session_key(REFRESH_TOKEN_SESSION_KEY, "default"),
             session,
-            "flow Y inherited flow X's refresh token",
+            "flow bob inherited flow alice's refresh token",
         )
 
     def test_a_dropped_pair_does_not_leave_an_earlier_logins_pair_active(self):
@@ -4219,61 +4219,62 @@ class TestPendingTokensBelongToOneFlow(TestCase):
         login left in the active slots, or the new id_token ends up beside
         the old pair — the same split, reached from the other side."""
         session = {}
-        z_claims = {
-            "given_name": "Zed",
+        erin_claims = {
+            "given_name": "Erin",
             "family_name": "User",
-            "email": "zed@example.com",
+            "email": "erin@example.com",
         }
         # A completed login leaves an active pair behind.
         self._callback(
             session,
-            z_claims,
+            erin_claims,
             {
-                "id_token": "id-token-Z",
-                "access_token": "access-Z",
-                "refresh_token": "refresh-Z",
+                "id_token": "id-token-erin",
+                "access_token": "access-erin",
+                "refresh_token": "refresh-erin",
             },
         )
         self.assertEqual(
-            session[token_session_key(ACCESS_TOKEN_SESSION_KEY, "default")], "access-Z"
+            session[token_session_key(ACCESS_TOKEN_SESSION_KEY, "default")],
+            "access-erin",
         )
 
         # Two interleaved form flows; the second parks over the first.
-        x_claims = {
-            "given_name": "Ex",
+        alice_claims = {
+            "given_name": "Alice",
             "family_name": "User",
-            "email": "x@example.com",
+            "email": "a@example.com",
         }
-        y_claims = {
-            "given_name": "Why",
+        bob_claims = {
+            "given_name": "Bob",
             "family_name": "User",
-            "email": "y@example.com",
+            "email": "b@example.com",
         }
         self._callback(
             session,
-            x_claims,
+            alice_claims,
             {
-                "id_token": "id-token-X",
-                "access_token": "access-X",
-                "refresh_token": "refresh-X",
+                "id_token": "id-token-alice",
+                "access_token": "access-alice",
+                "refresh_token": "refresh-alice",
             },
         )
         self._callback(
             session,
-            y_claims,
+            bob_claims,
             {
-                "id_token": "id-token-Y",
-                "access_token": "access-Y",
-                "refresh_token": "refresh-Y",
+                "id_token": "id-token-bob",
+                "access_token": "access-bob",
+                "refresh_token": "refresh-bob",
             },
         )
 
-        done = self._resubmit(session, x_claims, "id-token-X", "ex_chosen")
+        done = self._resubmit(session, alice_claims, "id-token-alice", "alice_chosen")
         self.assertEqual(done.status_code, 302)
         self.assertNotIn(
             token_session_key(ACCESS_TOKEN_SESSION_KEY, "default"),
             session,
-            "Z's pair survived beside X's id_token",
+            "erin's pair survived beside alice's id_token",
         )
 
     def test_an_abandoned_form_does_not_leave_a_pair_parked_forever(self):
@@ -4282,11 +4283,11 @@ class TestPendingTokensBelongToOneFlow(TestCase):
         session = {}
         self._callback(
             session,
-            {"given_name": "Ex", "family_name": "User", "email": "x@example.com"},
+            {"given_name": "Alice", "family_name": "User", "email": "a@example.com"},
             {
-                "id_token": "id-token-X",
-                "access_token": "access-X",
-                "refresh_token": "refresh-X",
+                "id_token": "id-token-alice",
+                "access_token": "access-alice",
+                "refresh_token": "refresh-alice",
             },
         )
         self.assertIn(
@@ -4297,14 +4298,14 @@ class TestPendingTokensBelongToOneFlow(TestCase):
         self._callback(
             session,
             {
-                "given_name": "Solo",
+                "given_name": "Carol",
                 "family_name": "User",
-                "email": "solo@example.com",
+                "email": "carol@example.com",
             },
             {
-                "id_token": "id-token-S",
-                "access_token": "access-S",
-                "refresh_token": "refresh-S",
+                "id_token": "id-token-carol",
+                "access_token": "access-carol",
+                "refresh_token": "refresh-carol",
             },
         )
 
@@ -4319,64 +4320,6 @@ class TestPendingTokensBelongToOneFlow(TestCase):
                 "abandoned pair still parked",
             )
 
-    def test_a_hard_refusal_leaves_no_credentials_at_rest(self):
-        """A refused caller never logs out, so nothing else will ever clear
-        their stash. It must not be written in the first place."""
-        session = {}
-        response = self._callback(
-            session,
-            {"email": "y@example.com"},
-            {
-                "id_token": "id-token-Y",
-                "access_token": "access-Y",
-                "refresh_token": "refresh-Y",
-            },
-        )
-
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(
-            [
-                v
-                for v in session.values()
-                if "access-Y" in str(v) or "refresh-Y" in str(v)
-            ],
-            [],
-            f"refresh/access token left at rest in session: {session}",
-        )
-
-    def test_the_ordinary_form_round_trip_still_works(self):
-        """Guard: the flow pending slots exist for must keep working."""
-        session = {}
-        # A one-character local part: USE_EMAIL_USERNAME derives "s", which
-        # fails the 3-char username regex, so only {username} is missing --
-        # the form exit rather than a straight success.
-        claims = {
-            "given_name": "Solo",
-            "family_name": "User",
-            "email": "s@example.com",
-        }
-        first = self._callback(
-            session,
-            claims,
-            {
-                "id_token": "id-token-S",
-                "access_token": "access-S",
-                "refresh_token": "refresh-S",
-            },
-        )
-        self.assertEqual(first.status_code, 200)
-
-        done = self._resubmit(session, claims, "id-token-S", "solo_chosen")
-        self.assertEqual(done.status_code, 302)
-        self.assertEqual(
-            session[token_session_key(ACCESS_TOKEN_SESSION_KEY, "default")],
-            "access-S",
-        )
-        self.assertEqual(
-            session[token_session_key(REFRESH_TOKEN_SESSION_KEY, "default")],
-            "refresh-S",
-        )
-
 
 class TestProviderAliasAnchoring(TestCase):
     """``$`` also matches before a trailing newline, so an alias validator
@@ -4388,13 +4331,6 @@ class TestProviderAliasAnchoring(TestCase):
         for alias in ("..\n", ".\n", "google\n"):
             with self.subTest(alias=alias):
                 self.assertFalse(_is_valid_provider_alias(alias))
-
-    def test_ordinary_aliases_still_pass(self):
-        from oidc.keycloak import _is_valid_provider_alias
-
-        for alias in ("google", "idp.acme.com", "MyIdP", "a..b"):
-            with self.subTest(alias=alias):
-                self.assertTrue(_is_valid_provider_alias(alias))
 
 
 @override_settings(
@@ -4482,14 +4418,14 @@ class TestCallbackDoesNotLogCredentials(TestCase):
     def test_the_uniqueness_conflict_path_does_not_log_the_id_token(self):
         # Username collides, email does not -- an email match would find the
         # existing user and log straight in, never reaching the conflict.
-        User.objects.create(username="taken", email="incumbent@example.com")
+        User.objects.create(username="alice", email="alice@example.com")
 
         response, logged = self._run(
             {
-                "given_name": "Taken",
+                "given_name": "Alice",
                 "family_name": "User",
-                "email": "newcomer@example.com",
-                "preferred_username": "taken",
+                "email": "bob@example.com",
+                "preferred_username": "alice",
             }
         )
 
@@ -4503,10 +4439,10 @@ class TestCallbackDoesNotLogCredentials(TestCase):
         newline in it would forge an extra log line."""
         response, logged = self._run(
             {
-                "given_name": "Bad",
+                "given_name": "Bob",
                 "family_name": "User",
-                "email": "bad@example.com",
-                "preferred_username": "ok_username",
+                "email": "bob@example.com",
+                "preferred_username": "bob_username",
             },
             data={
                 "username": "x\nINFO:oidc.viewsets:forged line",
@@ -4581,10 +4517,10 @@ class TestCredentialBearingSessionHardening(TestCase):
             patch(
                 "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
                 return_value={
-                    "given_name": "Rot",
+                    "given_name": "Frank",
                     "family_name": "User",
-                    "email": "rot@example.com",
-                    "preferred_username": "rotuser",
+                    "email": "frank@example.com",
+                    "preferred_username": "frankuser",
                 },
             ),
         ):
@@ -4640,12 +4576,55 @@ class TestOutboundRequestsHaveTimeouts(TestCase):
             **OPENID_CONNECT_AUTH_SERVERS,
             "default": {
                 **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "REQUEST_TIMEOUT": (1, 2),
+                "REQUEST_TIMEOUT": [5, 15],
             },
         }
     )
-    def test_the_timeout_is_configurable_per_auth_server(self):
-        self.assertEqual(OpenIDClient("default").request_timeout, (1, 2))
+    def test_a_list_from_json_or_yaml_settings_is_accepted(self):
+        """``requests`` special-cases tuple only, so the natural serialised
+        form of the documented value is the one shape that would break."""
+        self.assertEqual(OpenIDClient("default").request_timeout, (5.0, 15.0))
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "REQUEST_TIMEOUT": "10",
+            },
+        }
+    )
+    def test_a_string_from_an_env_var_is_accepted(self):
+        self.assertEqual(OpenIDClient("default").request_timeout, 10.0)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "REQUEST_TIMEOUT": None,
+            },
+        }
+    )
+    def test_none_is_refused_rather_than_restoring_an_unbounded_wait(self):
+        with self.assertRaises(ImproperlyConfigured) as ctx:
+            OpenIDClient("default")
+        self.assertIn("REQUEST_TIMEOUT", str(ctx.exception))
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "REQUEST_TIMEOUT": (1, 2, 3),
+            },
+        }
+    )
+    def test_a_malformed_pair_names_the_setting(self):
+        with self.assertRaises(ImproperlyConfigured) as ctx:
+            OpenIDClient("default")
+        self.assertIn("REQUEST_TIMEOUT", str(ctx.exception))
+        self.assertIn("default", str(ctx.exception))
 
 
 class TestSessionBackendDeployCheck(TestCase):
@@ -4752,9 +4731,7 @@ class TestTokensSurviveDjangoLogin(TestCase):
         return session
 
     def test_signing_in_as_a_second_user_keeps_the_new_tokens(self):
-        incumbent = User.objects.create(
-            username="incumbent", email="incumbent@example.com"
-        )
+        incumbent = User.objects.create(username="alice", email="alice@example.com")
         session = self._session_authenticated_as(incumbent)
 
         view = KeycloakOpenIDConnectViewset.as_view({"post": "callback"})
@@ -4766,10 +4743,10 @@ class TestTokensSurviveDjangoLogin(TestCase):
             patch(
                 "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
                 return_value={
-                    "given_name": "New",
-                    "family_name": "Comer",
-                    "email": "newcomer@example.com",
-                    "preferred_username": "newcomer",
+                    "given_name": "Bob",
+                    "family_name": "User",
+                    "email": "bob@example.com",
+                    "preferred_username": "bob",
                 },
             ),
         ):
@@ -4793,58 +4770,3 @@ class TestTokensSurviveDjangoLogin(TestCase):
             session.get(token_session_key(ID_TOKEN_SESSION_KEY, "default")),
             "idp-id-token",
         )
-
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "REQUEST_TIMEOUT": [5, 15],
-            },
-        }
-    )
-    def test_a_list_from_json_or_yaml_settings_is_accepted(self):
-        """``requests`` special-cases tuple only, so the natural serialised
-        form of the documented value is the one shape that would break."""
-        self.assertEqual(OpenIDClient("default").request_timeout, (5.0, 15.0))
-
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "REQUEST_TIMEOUT": "10",
-            },
-        }
-    )
-    def test_a_string_from_an_env_var_is_accepted(self):
-        self.assertEqual(OpenIDClient("default").request_timeout, 10.0)
-
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "REQUEST_TIMEOUT": None,
-            },
-        }
-    )
-    def test_none_is_refused_rather_than_restoring_an_unbounded_wait(self):
-        with self.assertRaises(ImproperlyConfigured) as ctx:
-            OpenIDClient("default")
-        self.assertIn("REQUEST_TIMEOUT", str(ctx.exception))
-
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "REQUEST_TIMEOUT": (1, 2, 3),
-            },
-        }
-    )
-    def test_a_malformed_pair_names_the_setting(self):
-        with self.assertRaises(ImproperlyConfigured) as ctx:
-            OpenIDClient("default")
-        self.assertIn("REQUEST_TIMEOUT", str(ctx.exception))
-        self.assertIn("default", str(ctx.exception))

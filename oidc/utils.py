@@ -79,23 +79,13 @@ ID_TOKEN_SESSION_KEY = "oidc_id_token"
 def token_session_key(base_key: str, auth_server: Optional[str]) -> str:
     """Session key for ``base_key``, namespaced to the issuing ``auth_server``.
 
-    ``OPENID_CONNECT_AUTH_SERVERS`` is a keyed dict and every key gets its own
-    routes, so the URL picks the provider while the session holds the tokens.
-    Stored under one global name, those tokens are readable from *every*
-    provider's route: a request to provider B replays provider A's access
-    token against B's account endpoint, and — because B answers a foreign
-    token with 401, which the retry path reads as "expired" — goes on to POST
-    A's long-lived refresh token to B's token endpoint. The same applies to
-    the id_token, which logout replays as ``id_token_hint``.
+    The URL selects the provider while the session holds the tokens, so a
+    global key would let a request to provider B spend provider A's tokens
+    against B's endpoints. Namespacing makes that unrepresentable: B's slot
+    is simply empty, which callers already treat as "no session".
 
-    Namespacing makes that structurally impossible rather than merely
-    checked: B's slot is empty, which every caller already treats as "no
-    session". A guard would work too, but only for as long as each new call
-    site remembers it.
-
-    Deliberately no fallback to the un-namespaced key — reading it would
-    reinstate the very path this closes. Sessions predating this take one
-    401 and sign in again, the same fallback legacy sessions already hit.
+    No fallback to the un-namespaced key — reading it would reinstate the
+    path this closes. Older sessions take one 401 and sign in again.
     """
     return f"{base_key}:{auth_server}"
 
@@ -112,20 +102,10 @@ TOKEN_SESSION_BASE_KEYS = (
 def pending_token_session_key(base_key: str, auth_server: Optional[str]) -> str:
     """Session key for a token parked across the username-form round trip.
 
-    This exists for exactly one flow. When the IdP's claims carry no usable
-    username, ``callback`` answers with an entry form and the browser
-    re-POSTs it carrying only the ``id_token`` — so the access/refresh pair
-    the first request obtained from the token endpoint has to survive in the
-    session until the resubmit, where it is finally earned.
-
-    Nothing else uses pending slots: every other path writes the active
-    slots directly on the success exit. That is deliberate. Writing pending
-    on *every* callback and clearing it on the refusal exits would mean a
-    cleanup call each future exit has to remember, and a forgotten one
-    leaves a live refresh token at rest in the session store belonging to a
-    caller the deployment refused — who, never having signed in, will never
-    log out to clear it. Writing it only where it is needed removes the
-    obligation instead of distributing it.
+    Used by that flow alone: the form re-POSTs only the ``id_token``, so the
+    pair the first request obtained has to survive until the resubmit. Every
+    other path writes the active slots directly on success, which is what
+    keeps a refused caller from leaving a refresh token at rest.
     """
     return f"{token_session_key(base_key, auth_server)}:pending"
 
@@ -139,15 +119,10 @@ def stash_pending_tokens(
 ) -> None:
     """Park a token pair for the username-form round trip.
 
-    ``id_token`` is stored alongside as the pair's owner — see
-    ``take_pending_tokens`` for why that matters.
-
-    All three slots are written as a unit, clearing rather than skipping an
-    absent value. Skipping would break the owner tag's whole guarantee: a
-    second flow whose token response carries no refresh token would
-    overwrite the id and access slots while *inheriting* the first flow's
-    refresh token, and the tag — now naming the second flow — would wave
-    the mismatched pair straight through.
+    ``id_token`` is stored alongside as the pair's owner; see
+    ``take_pending_tokens``. All three slots are written as a unit, clearing
+    rather than skipping an absent value — otherwise a flow with no refresh
+    token would inherit the previous flow's under its own owner tag.
     """
     if session is None or not access_token:
         return
@@ -166,22 +141,12 @@ def stash_pending_tokens(
 def take_pending_tokens(session, auth_server: Optional[str], id_token: Optional[str]):
     """Pop the parked pair, but only if it belongs to ``id_token``.
 
-    Pending slots are keyed per provider, while a single Django session can
-    be running two logins at once — two tabs, same cookie. Both write the
-    same slots, so the pair sitting there when a form is submitted is not
-    necessarily the one that flow started with.
-
-    Handing back a mismatched pair would sign the browser in as one identity
-    while the account proxy authenticated to Keycloak as another: the SPA
-    would show identity X, and ``sessions_list`` / ``credentials_list`` /
-    ``sessions_revoke_one`` would all operate on identity Y's Keycloak
-    account. So a mismatch is dropped rather than used — the login still
-    completes, and the proxy answers 401 until the next full sign-in.
-
-    Always drains all three slots, match or not: a pair that has been
-    refused once must not sit there to be offered to the next login. That
-    also makes the success exit self-cleaning for a login abandoned at the
-    form, whose pair nothing else would ever remove.
+    One session can be running two logins at once (two tabs), and both write
+    the same per-provider slots. Pairing one login's id_token with another's
+    tokens would sign the browser in as one identity while the proxy acted
+    on the other's Keycloak account, so a mismatch is dropped rather than
+    used. Drains all three slots either way, which also clears the pair left
+    by a login abandoned at the form.
 
     Returns ``(access_token, refresh_token)``, either of which may be None.
     """
