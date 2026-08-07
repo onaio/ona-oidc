@@ -5,8 +5,7 @@ URL Configuration file for ona-oidc
 from django.conf import settings
 from django.utils.module_loading import import_string
 
-from rest_framework.routers import SimpleRouter
-
+from oidc.routers import UnprefixedNameRouter
 from oidc.utils import str_to_bool
 from oidc.viewsets import RapidProOpenIDConnectViewset, UserModelOpenIDConnectViewset
 
@@ -32,37 +31,16 @@ def get_viewset_class():
     return UserModelOpenIDConnectViewset
 
 
-viewset_class = get_viewset_class()
-
-
-# Routes are generated from the @action decorators on the viewset, so each
-# action carries its own url_path, url_name and view kwargs -- including the
-# account-proxy CSRF gate, which previously had to be repeated per route here
-# and mirrored by every consumer that declared its own URLconf.
+# Routes come from the @action decorators, so each action carries its own
+# url_path, url_name and view kwargs — including the account-proxy CSRF gate,
+# which previously had to be repeated per route here and re-mirrored by every
+# consumer that declared its own URLconf.
 #
-# trailing_slash=False keeps the existing paths (/oidc/<server>/login, not
-# /login/). The auth_server capture lives in the prefix; SimpleRouter
-# interpolates it into every generated pattern.
-class _NameKeepingRouter(SimpleRouter):
-    """SimpleRouter without the ``{basename}-`` prefix on route names.
-
-    These URLs were hand-declared with explicit ``name=`` values before, and
-    ``reverse("oidc:openid_connect_login")`` is part of this package's surface
-    — used by the unrecoverable-error template and by consumers. A stock
-    router would rename every route to ``oidc-openid_connect_login``.
-    """
-
-    routes = [
-        (
-            route._replace(name=route.name.replace("{basename}-", ""))
-            if hasattr(route, "name")
-            else route
-        )
-        for route in SimpleRouter.routes
-    ]
-
-
-router = _NameKeepingRouter(trailing_slash=False)
-router.register(r"oidc/(?P<auth_server>\w+)", viewset_class, basename="oidc")
+# trailing_slash=False keeps paths as /oidc/<server>/login rather than
+# /login/; the entry-point actions opt back into an optional trailing slash
+# individually. auth_server is captured by the prefix, which the router
+# interpolates into every generated pattern.
+router = UnprefixedNameRouter(trailing_slash=False)
+router.register(r"oidc/(?P<auth_server>\w+)", get_viewset_class(), basename="oidc")
 
 urlpatterns = router.urls

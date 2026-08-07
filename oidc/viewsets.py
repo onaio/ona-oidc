@@ -227,6 +227,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     @action(
         methods=["GET"],
         detail=False,
+        url_path=r"login/?",
         url_name="openid_connect_login",
     )
     def login(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
@@ -313,6 +314,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     @action(
         methods=["GET"],
         detail=False,
+        url_path=r"logout/?",
         url_name="openid_connect_logout",
     )
     def logout(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
@@ -523,6 +525,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             f"/sessions/{session_id}",
         )
 
+    # Shares ``sessions_list``'s route rather than declaring its own: two
+    # actions on the same path would generate two identical patterns, and
+    # Django would resolve the first — leaving DELETE with a silent 405.
+    # Note this also inherits sessions_list's view kwargs, so the CSRF gate
+    # on this endpoint is configured there, not here.
     @sessions_list.mapping.delete
     def sessions_revoke_others(
         self, request: HttpRequest, **kwargs: dict
@@ -962,6 +969,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     @action(
         methods=["POST", "GET"],
         detail=False,
+        url_path=r"callback/?",
         url_name="openid_connect_callback",
     )
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
