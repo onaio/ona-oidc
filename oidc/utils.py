@@ -1,8 +1,10 @@
+import logging
 from typing import Iterable, Optional
+from urllib.parse import urlparse
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.core.exceptions import ImproperlyConfigured
+from django.core.exceptions import DisallowedHost, ImproperlyConfigured
 from django.http import HttpRequest
 from django.utils.http import url_has_allowed_host_and_scheme
 
@@ -10,6 +12,8 @@ import jwt
 from jwt.exceptions import InvalidSignatureError
 
 import oidc.settings as default
+
+logger = logging.getLogger(__name__)
 
 
 def authenticate_sso(request, unique_user_field: str = "email"):
@@ -65,6 +69,140 @@ def get_viewset_config():
     return getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", default_config)
 
 
+#: Base names of the OIDC tokens ``callback`` stashes in the Django session.
+#: Never used as session keys directly — see ``token_session_key``.
+ACCESS_TOKEN_SESSION_KEY = "oidc_access_token"
+REFRESH_TOKEN_SESSION_KEY = "oidc_refresh_token"
+ID_TOKEN_SESSION_KEY = "oidc_id_token"
+
+
+def token_session_key(base_key: str, auth_server: Optional[str]) -> str:
+    """Session key for ``base_key``, namespaced to the issuing ``auth_server``.
+
+    ``OPENID_CONNECT_AUTH_SERVERS`` is a keyed dict and every key gets its own
+    routes, so the URL picks the provider while the session holds the tokens.
+    Stored under one global name, those tokens are readable from *every*
+    provider's route: a request to provider B replays provider A's access
+    token against B's account endpoint, and — because B answers a foreign
+    token with 401, which the retry path reads as "expired" — goes on to POST
+    A's long-lived refresh token to B's token endpoint. The same applies to
+    the id_token, which logout replays as ``id_token_hint``.
+
+    Namespacing makes that structurally impossible rather than merely
+    checked: B's slot is empty, which every caller already treats as "no
+    session". A guard would work too, but only for as long as each new call
+    site remembers it.
+
+    Deliberately no fallback to the un-namespaced key — reading it would
+    reinstate the very path this closes. Sessions predating this take one
+    401 and sign in again, the same fallback legacy sessions already hit.
+    """
+    return f"{base_key}:{auth_server}"
+
+
+#: The three slots ``callback`` fills and ``logout`` clears, in one place so
+#: the two cannot drift.
+TOKEN_SESSION_BASE_KEYS = (
+    ACCESS_TOKEN_SESSION_KEY,
+    REFRESH_TOKEN_SESSION_KEY,
+    ID_TOKEN_SESSION_KEY,
+)
+
+
+def pending_token_session_key(base_key: str, auth_server: Optional[str]) -> str:
+    """Session key for a token parked across the username-form round trip.
+
+    This exists for exactly one flow. When the IdP's claims carry no usable
+    username, ``callback`` answers with an entry form and the browser
+    re-POSTs it carrying only the ``id_token`` — so the access/refresh pair
+    the first request obtained from the token endpoint has to survive in the
+    session until the resubmit, where it is finally earned.
+
+    Nothing else uses pending slots: every other path writes the active
+    slots directly on the success exit. That is deliberate. Writing pending
+    on *every* callback and clearing it on the refusal exits would mean a
+    cleanup call each future exit has to remember, and a forgotten one
+    leaves a live refresh token at rest in the session store belonging to a
+    caller the deployment refused — who, never having signed in, will never
+    log out to clear it. Writing it only where it is needed removes the
+    obligation instead of distributing it.
+    """
+    return f"{token_session_key(base_key, auth_server)}:pending"
+
+
+def stash_pending_tokens(
+    session,
+    auth_server: Optional[str],
+    id_token: Optional[str],
+    access_token: Optional[str],
+    refresh_token: Optional[str],
+) -> None:
+    """Park a token pair for the username-form round trip.
+
+    ``id_token`` is stored alongside as the pair's owner — see
+    ``take_pending_tokens`` for why that matters.
+
+    All three slots are written as a unit, clearing rather than skipping an
+    absent value. Skipping would break the owner tag's whole guarantee: a
+    second flow whose token response carries no refresh token would
+    overwrite the id and access slots while *inheriting* the first flow's
+    refresh token, and the tag — now naming the second flow — would wave
+    the mismatched pair straight through.
+    """
+    if session is None or not access_token:
+        return
+    for base_key, value in (
+        (ID_TOKEN_SESSION_KEY, id_token),
+        (ACCESS_TOKEN_SESSION_KEY, access_token),
+        (REFRESH_TOKEN_SESSION_KEY, refresh_token),
+    ):
+        key = pending_token_session_key(base_key, auth_server)
+        if value:
+            session[key] = value
+        else:
+            session.pop(key, None)
+
+
+def take_pending_tokens(session, auth_server: Optional[str], id_token: Optional[str]):
+    """Pop the parked pair, but only if it belongs to ``id_token``.
+
+    Pending slots are keyed per provider, while a single Django session can
+    be running two logins at once — two tabs, same cookie. Both write the
+    same slots, so the pair sitting there when a form is submitted is not
+    necessarily the one that flow started with.
+
+    Handing back a mismatched pair would sign the browser in as one identity
+    while the account proxy authenticated to Keycloak as another: the SPA
+    would show identity X, and ``sessions_list`` / ``credentials_list`` /
+    ``sessions_revoke_one`` would all operate on identity Y's Keycloak
+    account. So a mismatch is dropped rather than used — the login still
+    completes, and the proxy answers 401 until the next full sign-in.
+
+    Always drains all three slots, match or not: a pair that has been
+    refused once must not sit there to be offered to the next login. That
+    also makes the success exit self-cleaning for a login abandoned at the
+    form, whose pair nothing else would ever remove.
+
+    Returns ``(access_token, refresh_token)``, either of which may be None.
+    """
+    if session is None:
+        return None, None
+    owner = session.pop(
+        pending_token_session_key(ID_TOKEN_SESSION_KEY, auth_server), None
+    )
+    access_token = session.pop(
+        pending_token_session_key(ACCESS_TOKEN_SESSION_KEY, auth_server), None
+    )
+    refresh_token = session.pop(
+        pending_token_session_key(REFRESH_TOKEN_SESSION_KEY, auth_server), None
+    )
+    if not owner or owner != id_token or not access_token:
+        # A lone refresh token is never usable on its own, and handing one
+        # back would write an active refresh with no matching access token.
+        return None, None
+    return access_token, refresh_token
+
+
 def _coerce_string_iterable(value, key: str, auth_server: str) -> Iterable[str]:
     """Reject string configs for list-typed settings.
 
@@ -80,6 +218,17 @@ def _coerce_string_iterable(value, key: str, auth_server: str) -> Iterable[str]:
     return value
 
 
+def _server_setting_values(auth_server: str, key: str) -> Iterable[str]:
+    """Validated string values of ``key`` for ``auth_server``; empty when unset.
+
+    Keeps ``key`` named once per call site — it is otherwise repeated as both
+    the lookup and the error label, which drift apart under rename.
+    """
+    config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
+    server_config = config.get(auth_server, {})
+    return _coerce_string_iterable(server_config.get(key, ()), key, auth_server)
+
+
 def get_login_query_param_allowlist(auth_server: str) -> frozenset[str]:
     """
     Return the set of query parameter names that the login view is allowed to
@@ -90,15 +239,7 @@ def get_login_query_param_allowlist(auth_server: str) -> frozenset[str]:
     Defaults to an empty set so unknown query params are dropped at the
     viewset boundary.
     """
-    config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
-    server_config = config.get(auth_server, {})
-    return frozenset(
-        _coerce_string_iterable(
-            server_config.get("LOGIN_QUERY_PARAM_ALLOWLIST", ()),
-            "LOGIN_QUERY_PARAM_ALLOWLIST",
-            auth_server,
-        )
-    )
+    return frozenset(_server_setting_values(auth_server, "LOGIN_QUERY_PARAM_ALLOWLIST"))
 
 
 def get_logout_query_param_allowlist(auth_server: str) -> frozenset[str]:
@@ -111,15 +252,38 @@ def get_logout_query_param_allowlist(auth_server: str) -> frozenset[str]:
     Defaults to an empty set so unknown query params are dropped at the
     viewset boundary — matches the ``LOGIN_QUERY_PARAM_ALLOWLIST`` shape.
     """
-    config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
-    server_config = config.get(auth_server, {})
     return frozenset(
-        _coerce_string_iterable(
-            server_config.get("LOGOUT_QUERY_PARAM_ALLOWLIST", ()),
-            "LOGOUT_QUERY_PARAM_ALLOWLIST",
+        _server_setting_values(auth_server, "LOGOUT_QUERY_PARAM_ALLOWLIST")
+    )
+
+
+def _trusted_spa_hosts(auth_server: str, request: HttpRequest) -> set:
+    """Hosts trusted as the first-party SPA for ``auth_server``.
+
+    The request's own host plus any listed in
+    ``OPENID_CONNECT_AUTH_SERVERS[<server>]["LOGIN_REDIRECT_ALLOWED_HOSTS"]``.
+    One definition of "our SPA", reused by the login-redirect and the
+    account-proxy origin checks so they can't drift.
+
+    The own-host entry is a convenience so same-origin deployments need no
+    extra config. When the Host header isn't one Django will vouch for,
+    ``get_host()`` raises and we simply leave it out: the configured
+    allowlist is the static trust root and stands on its own, so a caller
+    with a forged Host is judged against that alone rather than crashing
+    the check.
+    """
+    allowed_hosts = set(
+        _server_setting_values(auth_server, "LOGIN_REDIRECT_ALLOWED_HOSTS")
+    )
+    try:
+        allowed_hosts.add(request.get_host())
+    except DisallowedHost:
+        logger.warning(
+            "Host header rejected by ALLOWED_HOSTS; judging %r against the "
+            "configured allowlist only.",
             auth_server,
         )
-    )
+    return allowed_hosts
 
 
 def is_safe_login_redirect(
@@ -141,18 +305,30 @@ def is_safe_login_redirect(
     """
     if not url:
         return False
-    config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
-    server_config = config.get(auth_server, {})
-    allowed_hosts = set(
-        _coerce_string_iterable(
-            server_config.get("LOGIN_REDIRECT_ALLOWED_HOSTS", ()),
-            "LOGIN_REDIRECT_ALLOWED_HOSTS",
-            auth_server,
-        )
-    )
-    allowed_hosts.add(request.get_host())
     return url_has_allowed_host_and_scheme(
         url,
-        allowed_hosts=allowed_hosts,
+        allowed_hosts=_trusted_spa_hosts(auth_server, request),
+        require_https=request.is_secure(),
+    )
+
+
+def is_allowed_account_origin(auth_server: str, request: HttpRequest) -> bool:
+    """
+    Whether ``request``'s ``Origin`` header is a trusted first-party SPA for
+    account-proxy calls. A missing ``Origin`` is allowed — same-origin
+    requests may omit it, and the custom-header requirement still gates those.
+    """
+    origin = request.headers.get("Origin")
+    if not origin:
+        return True
+
+    # Require an explicit scheme + host.
+    parsed = urlparse(origin)
+    if not parsed.scheme or not parsed.netloc:
+        return False
+
+    return url_has_allowed_host_and_scheme(
+        origin,
+        allowed_hosts=_trusted_spa_hosts(auth_server, request),
         require_https=request.is_secure(),
     )
