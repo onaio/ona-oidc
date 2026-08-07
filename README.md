@@ -326,15 +326,20 @@ choices stop being neutral:
   Pairing that backend with a proxy-enabled viewset is a deploy check
   (`oidc.E001`), so `manage.py check` fails rather than the first user who
   tries to sign in; the viewset also refuses at request time as a backstop.
-  Viewsets that keep only the id_token (which the browser already holds)
-  are unaffected.
+  The check resolves the viewset through `VIEWSET_CLASS`, so a project that
+  routes the viewset from a hand-written URLconf instead is covered only by
+  that request-time backstop. Viewsets that keep only the id_token (which
+  the browser already holds) are unaffected.
 * **The session id is rotated when the tokens are written.** Django's
   `login()` would do this, but only runs under `USE_AUTH_BACKEND`, so the
   proxy calls `cycle_key()` itself — otherwise a planted session id would
   end up holding the victim's tokens.
 
 Outbound calls to the IdP carry a `(connect, read)` timeout, default
-`(5, 15)`, configurable per auth server:
+`(5, 15)`, configurable per auth server. It must be a two-item pair or a
+single number — a list from JSON/YAML settings and a string from an env
+var are both coerced; `None` is refused, since that is `requests`' "wait
+forever":
 
 ```python
 OPENID_CONNECT_AUTH_SERVERS = {
