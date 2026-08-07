@@ -34,7 +34,7 @@ from oidc.utils import (
     pending_token_session_key,
     token_session_key,
 )
-from tests.project_viewsets import InjectedViewset
+from tests.project_viewsets import InjectedViewset, RefusingViewset
 from oidc.viewsets import (
     DEFAULT_USERNAME_HELP_TEXT,
     DEFAULT_USERNAME_PATTERN,
@@ -4826,3 +4826,78 @@ class TestOverriddenActionDeployCheck(TestCase):
         routed = {a.__name__ for a in PlainOverrideViewset.get_extra_actions()}
         self.assertNotIn("login", routed)
         self.assertIn("callback", routed)
+
+
+@override_settings(
+    OPENID_CONNECT_AUTH_SERVERS={
+        **OPENID_CONNECT_AUTH_SERVERS,
+        "default": {
+            **OPENID_CONNECT_AUTH_SERVERS["default"],
+            "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+        },
+    },
+    OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+)
+class TestSubclassRefusalLeavesNoTokens(TestCase):
+    """A subclass can refuse a login the library itself would have accepted
+    -- overriding ``generate_successful_response`` is the documented way,
+    and the real consumer uses it to reject organization accounts. That
+    refusal must be as final as the library's own: tokens are what the
+    account proxy treats as proof of a session."""
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+
+    def _callback(self):
+        view = RefusingViewset.as_view({"post": "callback"})
+        with (
+            patch(
+                "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code",
+                return_value={
+                    "id_token": "idp-id-token",
+                    "access_token": "idp-access-token",
+                    "refresh_token": "idp-refresh-token",
+                },
+            ),
+            patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+                return_value={
+                    "given_name": "Alice",
+                    "family_name": "User",
+                    "email": "alice@example.com",
+                    "preferred_username": "alice",
+                },
+            ),
+        ):
+            request = self.factory.post("/", data={"code": "auth-code"})
+            request.session = {}
+            response = view(request, auth_server="default")
+        return response, request.session
+
+    def test_a_refused_subclass_login_stores_no_tokens(self):
+        response, session = self._callback()
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            [v for v in session.values() if str(v).startswith("idp-")],
+            [],
+            f"refused login left credentials in the session: {session}",
+        )
+
+    def test_the_proxy_refuses_that_session(self):
+        """The consequence: without this the refused caller can list and
+        revoke their Keycloak sessions through the proxy."""
+        _, session = self._callback()
+
+        proxy = RefusingViewset.as_view({"get": "linked_list"})
+        request = self.factory.get("/")
+        request.session = session
+        unreached = MagicMock(status_code=200, content=b"[]")
+        unreached.json.return_value = []
+        with patch(
+            "oidc.client.requests.request", return_value=unreached
+        ) as mock_request:
+            response = proxy(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 401)
+        mock_request.assert_not_called()

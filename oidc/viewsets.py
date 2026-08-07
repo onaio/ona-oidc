@@ -883,9 +883,20 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         # After, not before: the call above runs Django's
                         # ``login()``, which flushes the session when a
                         # different user was authenticated in it.
-                        self._persist_oidc_tokens(
-                            request, auth_server, id_token, user_tokens
-                        )
+                        #
+                        # Only on a response that actually signed the user
+                        # in. Overriding ``generate_successful_response`` to
+                        # refuse a login the library accepted is the
+                        # documented extension point, and the tokens are
+                        # what the account proxy reads as proof of a
+                        # session -- so a subclass's refusal has to be as
+                        # final as one of our own.
+                        if status.is_success(
+                            response.status_code
+                        ) or status.is_redirect(response.status_code):
+                            self._persist_oidc_tokens(
+                                request, auth_server, id_token, user_tokens
+                            )
                         return response
         auth_servers = list(settings.OPENID_CONNECT_AUTH_SERVERS.keys())
         default_auth_server = auth_servers[0] if auth_servers else "default"

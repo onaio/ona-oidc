@@ -9,8 +9,11 @@ a subclass module that reached back into ``oidc.urls`` would deadlock on a
 circular import.
 """
 
+from rest_framework import status
 from rest_framework.decorators import action
+from rest_framework.response import Response
 
+from oidc.keycloak import KeycloakAccountMixin
 from oidc.viewsets import UserModelOpenIDConnectViewset
 
 
@@ -37,3 +40,15 @@ class RedeclaredOverrideViewset(UserModelOpenIDConnectViewset):
     )
     def login(self, request, **kwargs):
         return super().login(request, **kwargs)
+
+
+class RefusingViewset(KeycloakAccountMixin, UserModelOpenIDConnectViewset):
+    """Mirrors onadata's org-account rejection: the login is refused by
+    overriding ``generate_successful_response``, which is the documented
+    extension point for exactly that."""
+
+    def generate_successful_response(self, request, user, *args, **kwargs):
+        return Response(
+            {"error": "Organization accounts cannot sign in via SSO."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
