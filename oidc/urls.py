@@ -34,6 +34,7 @@ def get_viewset_class():
 
 viewset_class = get_viewset_class()
 
+
 # Routes are generated from the @action decorators on the viewset, so each
 # action carries its own url_path, url_name and view kwargs -- including the
 # account-proxy CSRF gate, which previously had to be repeated per route here
@@ -42,7 +43,26 @@ viewset_class = get_viewset_class()
 # trailing_slash=False keeps the existing paths (/oidc/<server>/login, not
 # /login/). The auth_server capture lives in the prefix; SimpleRouter
 # interpolates it into every generated pattern.
-router = SimpleRouter(trailing_slash=False)
+class _NameKeepingRouter(SimpleRouter):
+    """SimpleRouter without the ``{basename}-`` prefix on route names.
+
+    These URLs were hand-declared with explicit ``name=`` values before, and
+    ``reverse("oidc:openid_connect_login")`` is part of this package's surface
+    — used by the unrecoverable-error template and by consumers. A stock
+    router would rename every route to ``oidc-openid_connect_login``.
+    """
+
+    routes = [
+        (
+            route._replace(name=route.name.replace("{basename}-", ""))
+            if hasattr(route, "name")
+            else route
+        )
+        for route in SimpleRouter.routes
+    ]
+
+
+router = _NameKeepingRouter(trailing_slash=False)
 router.register(r"oidc/(?P<auth_server>\w+)", viewset_class, basename="oidc")
 
 urlpatterns = router.urls
