@@ -4706,3 +4706,145 @@ class TestSessionBackendDeployCheck(TestCase):
         """Not this check's job to report a broken VIEWSET_CLASS, and it
         must not mask it by raising from here."""
         self.assertEqual(check_session_backend_can_hold_tokens(None), [])
+
+
+@override_settings(
+    OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
+    OPENID_CONNECT_VIEWSET_CONFIG={
+        **OPENID_CONNECT_VIEWSET_CONFIG,
+        "USE_AUTH_BACKEND": True,
+    },
+)
+class TestTokensSurviveDjangoLogin(TestCase):
+    """Django's ``login()`` flushes the session when a *different* user was
+    already authenticated in it. Anything written before that call is gone.
+
+    Reachable without any misuse: a browser still holding a session for one
+    account runs the OIDC flow and picks another at the IdP. The sign-in
+    succeeds, so nothing looks wrong -- but the proxy answers 401 to every
+    call and logout has no ``id_token_hint``, and only a full sign-out
+    clears it. ``USE_AUTH_BACKEND`` is off in the library default but on in
+    the deployment this proxy was built for.
+    """
+
+    TOKENS = {
+        "id_token": "idp-id-token",
+        "access_token": "idp-access-token",
+        "refresh_token": "idp-refresh-token",
+    }
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+
+    def _session_authenticated_as(self, user):
+        from django.contrib.auth import (
+            BACKEND_SESSION_KEY,
+            HASH_SESSION_KEY,
+            SESSION_KEY,
+        )
+        from django.contrib.sessions.backends.db import SessionStore
+
+        session = SessionStore()
+        session[SESSION_KEY] = str(user.pk)
+        session[BACKEND_SESSION_KEY] = "django.contrib.auth.backends.ModelBackend"
+        session[HASH_SESSION_KEY] = user.get_session_auth_hash()
+        session.save()
+        return session
+
+    def test_signing_in_as_a_second_user_keeps_the_new_tokens(self):
+        incumbent = User.objects.create(
+            username="incumbent", email="incumbent@example.com"
+        )
+        session = self._session_authenticated_as(incumbent)
+
+        view = KeycloakOpenIDConnectViewset.as_view({"post": "callback"})
+        with (
+            patch(
+                "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code",
+                return_value=dict(self.TOKENS),
+            ),
+            patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+                return_value={
+                    "given_name": "New",
+                    "family_name": "Comer",
+                    "email": "newcomer@example.com",
+                    "preferred_username": "newcomer",
+                },
+            ),
+        ):
+            request = self.factory.post("/", data={"code": "auth-code"})
+            request.session = session
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            session.get(token_session_key(ACCESS_TOKEN_SESSION_KEY, "default")),
+            "idp-access-token",
+            "login() flushed the session after the tokens were written",
+        )
+        self.assertEqual(
+            session.get(token_session_key(REFRESH_TOKEN_SESSION_KEY, "default")),
+            "idp-refresh-token",
+        )
+        # Without this, logout falls back to a bare end-session URL and
+        # Keycloak shows its confirm screen.
+        self.assertEqual(
+            session.get(token_session_key(ID_TOKEN_SESSION_KEY, "default")),
+            "idp-id-token",
+        )
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "REQUEST_TIMEOUT": [5, 15],
+            },
+        }
+    )
+    def test_a_list_from_json_or_yaml_settings_is_accepted(self):
+        """``requests`` special-cases tuple only, so the natural serialised
+        form of the documented value is the one shape that would break."""
+        self.assertEqual(OpenIDClient("default").request_timeout, (5.0, 15.0))
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "REQUEST_TIMEOUT": "10",
+            },
+        }
+    )
+    def test_a_string_from_an_env_var_is_accepted(self):
+        self.assertEqual(OpenIDClient("default").request_timeout, 10.0)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "REQUEST_TIMEOUT": None,
+            },
+        }
+    )
+    def test_none_is_refused_rather_than_restoring_an_unbounded_wait(self):
+        with self.assertRaises(ImproperlyConfigured) as ctx:
+            OpenIDClient("default")
+        self.assertIn("REQUEST_TIMEOUT", str(ctx.exception))
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "REQUEST_TIMEOUT": (1, 2, 3),
+            },
+        }
+    )
+    def test_a_malformed_pair_names_the_setting(self):
+        with self.assertRaises(ImproperlyConfigured) as ctx:
+            OpenIDClient("default")
+        self.assertIn("REQUEST_TIMEOUT", str(ctx.exception))
+        self.assertIn("default", str(ctx.exception))
