@@ -41,14 +41,22 @@ from oidc.client import (
     state_cache_key,
 )
 from oidc.utils import (
+    ACCESS_TOKEN_SESSION_KEY,
+    ID_TOKEN_SESSION_KEY,
+    REFRESH_TOKEN_SESSION_KEY,
+    TOKEN_SESSION_BASE_KEYS,
     authenticate_sso,
     email_usename_to_url_safe,
     get_login_query_param_allowlist,
     get_logout_query_param_allowlist,
     get_viewset_config,
     is_safe_login_redirect,
+    pending_token_session_key,
     replace_characters_in_username,
+    stash_pending_tokens,
     str_to_bool,
+    take_pending_tokens,
+    token_session_key,
 )
 
 default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
@@ -82,6 +90,13 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     permission_classes = [permissions.AllowAny]
     renderer_classes = [JSONRenderer, TemplateHTMLRenderer]
     user_model = None
+
+    #: Whether ``callback`` keeps the access/refresh pair in the session.
+    #: Off by default: only a subclass that later calls the IdP on the
+    #: user's behalf needs them, and a stashed refresh token is long-lived
+    #: credential material at rest in the session store. Subclasses that
+    #: need it turn it on -- see ``oidc.keycloak.KeycloakAccountMixin``.
+    stash_oidc_tokens = False
 
     def perform_authentication(self, request):
         if getattr(self, "action", None) == "session":
@@ -141,6 +156,22 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 "SSO_COOKIE_SAMESITE='None' requires Secure=True; "
                 "set SSO_COOKIE_SECURE=True or SESSION_COOKIE_SECURE=True."
             )
+        if self.stash_oidc_tokens and (
+            getattr(settings, "SESSION_ENGINE", "")
+            == "django.contrib.sessions.backends.signed_cookies"
+        ):
+            # Signed-cookie sessions are signed but *not encrypted*: the
+            # contents ride in a client-readable cookie and stay replayable
+            # after logout, because there is no server-side record to delete.
+            # Fine for the id_token this viewset family stashed before, which
+            # the browser already held; not fine for the access and refresh
+            # tokens a proxy-enabled viewset keeps.
+            raise ImproperlyConfigured(
+                "The Keycloak account proxy stores access and refresh tokens "
+                "in request.session, which the signed_cookies backend would "
+                "expose to the client and leave replayable after logout. Use "
+                "a server-side SESSION_ENGINE (db, cache, cached_db, file)."
+            )
         self.use_auth_backend = str_to_bool(config.get("USE_AUTH_BACKEND", False))
         self.auth_backend = config.get(
             "AUTH_BACKEND", "django.contrib.auth.backends.ModelBackend"
@@ -174,7 +205,12 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             return bool(self.cookie_secure)
         return bool(getattr(settings, "SESSION_COOKIE_SECURE", False))
 
-    @action(methods=["GET"], detail=False)
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path=r"login/?",
+        url_name="openid_connect_login",
+    )
     def login(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         auth_server = kwargs.get("auth_server")
         client = self._get_client(auth_server=auth_server)
@@ -219,6 +255,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         detail=False,
         authentication_classes=[],
         renderer_classes=[JSONRenderer],
+        url_name="openid_connect_session",
     )
     def session(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         """Return the current SSO-backed browser session, without tokens.
@@ -255,23 +292,53 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         """Return the non-secret session payload for ``user``."""
         return {"username": user.username}
 
-    @action(methods=["GET"], detail=False)
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path=r"logout/?",
+        url_name="openid_connect_logout",
+    )
     def logout(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         auth_server = kwargs.get("auth_server")
         client = self._get_client(auth_server=auth_server)
         if client:
-            # Pop (not get) so the token doesn't outlive the session
-            # it belonged to. If absent (legacy session predating the
-            # callback storing it), the end-session URL falls back to
-            # the bare ``client_id`` + ``post_logout_redirect_uri``
-            # baked into ``END_SESSION_ENDPOINT``.
+            # Pop (not get) so the tokens don't outlive the session they
+            # belonged to. If absent (legacy session predating the callback
+            # storing them), the end-session URL falls back to the bare
+            # ``client_id`` + ``post_logout_redirect_uri`` baked into
+            # ``END_SESSION_ENDPOINT``.
             extra_params: dict[str, str] = {}
             # ``session`` is attached by ``SessionMiddleware``; absent in
             # test rigs that build requests via ``APIRequestFactory``
             # without middleware. Treat missing session as "no stashed
             # token" — same fallback as the legacy bare end-session URL.
             session = getattr(request, "session", None)
-            id_token_hint = session.pop("oidc_id_token", None) if session else None
+            # Everything this provider stashed goes, not just the hint. The
+            # response below is a *redirect* the user may never complete —
+            # closed tab, declined confirm screen, unreachable IdP — so this
+            # is the only point in the flow we control. Left behind, the pair
+            # keeps a logged-out session calling the account proxy as the
+            # user, and leaves a refresh token at rest in the session store.
+            #
+            # Scoped to this provider throughout: logging out of A must not
+            # sign the user out of B, and replaying A's id_token to B as
+            # ``id_token_hint`` would disclose sub/email/name to the wrong IdP.
+            id_token_hint = None
+            if session is not None:
+                for base_key in TOKEN_SESSION_BASE_KEYS:
+                    value = session.pop(token_session_key(base_key, auth_server), None)
+                    if base_key == ID_TOKEN_SESSION_KEY:
+                        id_token_hint = value
+                    # Pending slots too: a login abandoned at the username
+                    # form leaves a pair there, and nothing else clears it.
+                    session.pop(pending_token_session_key(base_key, auth_server), None)
+                    # And the pre-namespacing key. This is a *write*-side
+                    # cleanup only -- it does not reinstate the fallback read
+                    # that ``token_session_key`` deliberately refuses, so it
+                    # cannot bring back the cross-provider path. Without it a
+                    # token stashed before the rename outlives every logout,
+                    # since the session is only flushed under USE_AUTH_BACKEND.
+                    session.pop(base_key, None)
             if id_token_hint:
                 extra_params["id_token_hint"] = id_token_hint
 
@@ -319,6 +386,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         data: dict,
         *,
         state: Optional[str] = None,
+        request: Optional[HttpRequest] = None,
+        auth_server: Optional[str] = None,
+        user_tokens=None,
         **response_kwargs,
     ) -> Response:
         """
@@ -330,7 +400,24 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         state once via the kwarg; the helper guarantees it's emitted on
         every render so `_clear_login_states` can drop the PKCE cache
         entry on the success path that follows.
+
+        This is also the one place that parks the access/refresh pair for
+        the round trip: the form re-POSTs only the id_token, so a pair kept
+        in locals would be lost. Parking here rather than at each caller
+        means the three form exits cannot disagree, and a future one that
+        forgets to pass ``user_tokens`` fails closed — the user completes
+        login without a pair and the account proxy answers 401, rather than
+        a credential being left somewhere it should not be.
         """
+        if request is not None and self.stash_oidc_tokens:
+            tokens = user_tokens if isinstance(user_tokens, dict) else {}
+            stash_pending_tokens(
+                getattr(request, "session", None),
+                auth_server,
+                data.get("id_token"),
+                tokens.get("access_token"),
+                tokens.get("refresh_token"),
+            )
         regex, help_text = self._username_field_config()
         merged = {
             **data,
@@ -434,7 +521,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 field_validation_regex = self.field_validation_regex[k]
                 regex = re.compile(field_validation_regex.get("regex"))
                 if regex and not regex.search(data[k]):
-                    logger.info(f"Invalid `{k}` value `{data[k]}`")
+                    # %r, not an f-string: the value is caller-supplied, and
+                    # interpolating it raw lets a newline forge extra log
+                    # lines. Matches the style used at the ?next= rejection.
+                    logger.info("Invalid %r value %r", k, data[k])
                     raise ValueError(
                         field_validation_regex.get("help_text")
                         or f"Invalid `{k}` value `{data[k]}`"
@@ -488,6 +578,84 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
         return user_data, missing_fields
 
+    def _persist_oidc_tokens(
+        self,
+        request: HttpRequest,
+        auth_server: Optional[str],
+        id_token: Optional[str],
+        user_tokens,
+    ) -> None:
+        """Write the IdP's tokens into the session. Success exit only.
+
+        The id_token is kept so ``logout`` can replay it as
+        ``id_token_hint`` on the end-session URL; without it Keycloak 18+
+        shows the logout-confirm screen even when ``client_id`` and a
+        whitelisted ``post_logout_redirect_uri`` are passed. The
+        access/refresh pair is kept only by viewsets that call the IdP on
+        the user's behalf (``stash_oidc_tokens``).
+
+        Everything is keyed by ``auth_server``: the route selects the
+        provider, so a global key would let another provider's route spend
+        these — see ``token_session_key``.
+
+        ``session`` is attached by ``SessionMiddleware``; absent in callback
+        rigs that build requests via ``APIRequestFactory`` without
+        middleware, so guard the write the way ``logout`` guards the read.
+        """
+        session = getattr(request, "session", None)
+        if session is None:
+            return
+
+        # Rotate the session id at the anonymous -> authenticated boundary.
+        # Django's ``login()`` would do this, but it only runs under
+        # USE_AUTH_BACKEND, which is off by default -- so without this the
+        # tokens land in whatever session id the request arrived with. An
+        # attacker who can plant one (subdomain cookie-tossing, or any XSS
+        # on a sibling host under a shared SESSION_COOKIE_DOMAIN) would then
+        # hold a session carrying the victim's access *and* refresh tokens,
+        # and the proxy's refresh loop keeps renewing them. ``cycle_key``
+        # keeps the session data and only changes the key, so the pending
+        # slots read below survive it.
+        #
+        # Guarded: the dict rigs used by callback tests have no cycle_key.
+        if hasattr(session, "cycle_key"):
+            session.cycle_key()
+
+        tokens = user_tokens if isinstance(user_tokens, dict) else {}
+        access_token = tokens.get("access_token")
+        refresh_token = tokens.get("refresh_token")
+
+        # Drained unconditionally, even when a pair is already in hand: a
+        # login abandoned at the username form parks a pair that nothing
+        # else would ever remove, so the next success in this session is the
+        # only thing positioned to clear it.
+        parked_access, parked_refresh = take_pending_tokens(
+            session, auth_server, id_token
+        )
+        if not access_token:
+            # Nothing in hand means this is the form resubmit, which carries
+            # only the id_token — the pair came from the first callback, and
+            # is handed back only if it belongs to this id_token.
+            access_token, refresh_token = parked_access, parked_refresh
+
+        if id_token:
+            session[token_session_key(ID_TOKEN_SESSION_KEY, auth_server)] = id_token
+        if not self.stash_oidc_tokens:
+            return
+        # Written as a unit with the id_token above, clearing rather than
+        # skipping. Skipping would let an earlier login's pair survive beside
+        # this login's id_token — precisely the cross-identity split the
+        # owner tag exists to prevent, arrived at from the other direction.
+        for base_key, value in (
+            (ACCESS_TOKEN_SESSION_KEY, access_token),
+            (REFRESH_TOKEN_SESSION_KEY, refresh_token),
+        ):
+            key = token_session_key(base_key, auth_server)
+            if value:
+                session[key] = value
+            else:
+                session.pop(key, None)
+
     def _clear_login_states(self, server_response: dict) -> None:
         """Clear cached login states
 
@@ -497,7 +665,12 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         if state:
             cache.delete(state_cache_key(state))
 
-    @action(methods=["POST", "GET"], detail=False)
+    @action(
+        methods=["POST", "GET"],
+        detail=False,
+        url_path=r"callback/?",
+        url_name="openid_connect_callback",
+    )
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
         auth_server = kwargs.get("auth_server")
         client = self._get_client(auth_server=auth_server)
@@ -585,19 +758,15 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 try:
                     id_token = id_token or user_tokens.get("id_token")
                     decoded_id_token = client.verify_and_decode_id_token(id_token)
-                    # Stash the raw id_token in the Django session so
-                    # the logout action below can replay it as
-                    # `id_token_hint` on the Keycloak end-session URL.
-                    # Without it, Keycloak 18+ shows the logout-confirm
-                    # screen even when `client_id` + a whitelisted
-                    # `post_logout_redirect_uri` are passed.
-                    # ``session`` is attached by ``SessionMiddleware``;
-                    # absent in callback rigs that build requests via
-                    # ``APIRequestFactory`` without middleware, so guard
-                    # the write the same way ``logout`` guards the read.
-                    callback_session = getattr(request, "session", None)
-                    if id_token and callback_session is not None:
-                        callback_session["oidc_id_token"] = id_token
+                    # Nothing is written to the session here. The IdP
+                    # vouching for this user is not the platform accepting
+                    # them, and several refusal exits still lie below —
+                    # tokens written now would leave every one of them
+                    # looking like a signed-in session to the account proxy,
+                    # and would leave a refused caller's refresh token at
+                    # rest with nothing that will ever clear it. The success
+                    # exit calls ``_persist_oidc_tokens``; the username-form
+                    # exits park the pair via ``stash_pending_tokens``.
                     user_claims = client.tokens_to_user_info(
                         self.map_claims_to_model_field(decoded_id_token),
                         id_token,
@@ -655,9 +824,17 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                                 and list(missing_fields)[0] == "username"
                             ):
                                 data = {"id_token": id_token}
-                                logger.info("missing_fields: ", missing_fields)
+                                # %-style, not a second positional: passing
+                                # an arg to a format string with no
+                                # placeholder raises inside logging and the
+                                # record is dropped, so this never logged.
+                                logger.info("missing_fields: %r", missing_fields)
                                 return self._username_form_response(
-                                    data, state=server_response.get("state")
+                                    data,
+                                    state=server_response.get("state"),
+                                    request=request,
+                                    auth_server=auth_server,
+                                    user_tokens=user_tokens,
                                 )
                             else:
                                 missing_fields = ", ".join(missing_fields)
@@ -679,9 +856,19 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                                     "id_token": id_token,
                                     "error": f"{field.capitalize()} field is already in use.",
                                 }
-                                logger.info(data)
+                                # Log the conflicting field, never ``data``:
+                                # it carries the raw id_token, and callback
+                                # accepts an id_token straight from the POST
+                                # body on the username-form path. Anyone who
+                                # can read the logs could replay it and sign
+                                # in as that user.
+                                logger.info("Field already in use: %r", field)
                                 return self._username_form_response(
-                                    data, state=server_response.get("state")
+                                    data,
+                                    state=server_response.get("state"),
+                                    request=request,
+                                    auth_server=auth_server,
+                                    user_tokens=user_tokens,
                                 )
 
                         self.validate_fields(user_data)
@@ -699,6 +886,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     return self._username_form_response(
                         {"error": str(e), "id_token": id_token},
                         state=server_response.get("state"),
+                        request=request,
+                        auth_server=auth_server,
+                        user_tokens=user_tokens,
                         status=status.HTTP_400_BAD_REQUEST,
                     )
                 except jwt.exceptions.DecodeError:
@@ -728,6 +918,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         user.last_login = timezone.now()
                         user.save(update_fields=["last_login"])
                         self._clear_login_states(server_response)
+                        # Login accepted: the tokens are earned.
+                        self._persist_oidc_tokens(
+                            request, auth_server, id_token, user_tokens
+                        )
                         return self.generate_successful_response(
                             request,
                             user,
