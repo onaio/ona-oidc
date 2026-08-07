@@ -10,7 +10,7 @@ A pluggable django application that implements OpenID Connect client functionali
 pip install -e git+https://github.com/onaio/ona-oidc.git#egg=ona-oidc
 ```
 
-2. Add `oidc` to the list of `INSTALLED_APPS`
+1. Add `oidc` to the list of `INSTALLED_APPS`
 
 ```python
 ...
@@ -25,7 +25,7 @@ INSTALLED_APPS = [
 
 ```
 
-3. Set `OPENID_CONNECT_VIEWSET_CONFIG` and `OPENID_CONNECT_AUTH_SERVERS` settings
+1. Set `OPENID_CONNECT_VIEWSET_CONFIG` and `OPENID_CONNECT_AUTH_SERVERS` settings
 
 ```python
 ...
@@ -53,7 +53,7 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     "AUTH_BACKEND": "",  # Defaults to django.contrib.auth.backends.ModelBackend
     "REDIRECT_AFTER_AUTH": "http://localhost:3000",
     "USE_RAPIDPRO_VIEWSET": False,
-    "REPLACE_USERNAME_CHARACTERS": "-.",  # A string of characters to replace if found within the captured username when using the `USE_EMAIL_USERNAME` functionality
+    "REPLACE_USERNAME_CHARACTERS": "-.",  # characters to replace in the captured username when using `USE_EMAIL_USERNAME`
     "USERNAME_REPLACEMENT_CHARACTER": "_", # The character used to replace the characters within the `REPLACE_USERNAME_CHARACTERS` string
     # A map containing a field as a key and a map containing the regex and optional help_text strings as it's value
     # that's used to validate all field inputs retrieved for the particular key
@@ -189,10 +189,11 @@ key — no IdP-side nonce verification is performed.
 ### Keycloak Account REST proxy (`ACCOUNT_ENDPOINT`)
 
 The account-proxy actions (sessions, linked accounts, credentials) forward
-to Keycloak's Account REST API, and are read-and-revoke only — there is no
-profile-update endpoint. Being Keycloak-specific, they live in
-`KeycloakAccountMixin` rather than in the base viewset, and a deployment
-opts in by routing to a viewset that mixes them in:
+to Keycloak's Account REST API, and are read-and-revoke only (there is no
+profile-update endpoint). Being Keycloak-specific, they live in
+`KeycloakAccountMixin` rather than in the base viewset
+(`BaseOpenIDConnectViewset`), and a deployment opts in by routing to a
+viewset that mixes them in:
 
 ```python
 # Ready-made: the default viewset plus the proxy.
@@ -225,25 +226,22 @@ OPENID_CONNECT_AUTH_SERVERS = {
 
 The setting is optional; with the mixin in place but `ACCOUNT_ENDPOINT`
 unset, the proxy actions return `503`. Calls are made with the signed-in user's own `access_token`, so
-they need the `manage-account` role — granted to every realm user by
+they need the `manage-account` role which is granted to every realm user by
 default.
 
-The proxy also requires a **token-producing flow**: the access/refresh
-pair it spends is only ever obtained by the authorization-code exchange
-at callback time. That means, for the auth server used with the proxy:
+The proxy calls Keycloak with the user's access token, and the only way to
+obtain one is the authorization-code exchange at callback time. The auth
+server it runs against therefore needs two settings:
 
-* `RESPONSE_TYPE: "code"` — the repository default is `"id_token"`
-  (implicit flow), which returns an id_token only. With it, login works
-  but nothing is stashed, and every proxy action answers `401` even
-  though `ACCOUNT_ENDPOINT` is set — a symptom worth recognising.
-* `TOKEN_ENDPOINT` set — used for the code exchange and again for the
-  refresh-on-401 retry. Unset, it breaks the callback itself: the exchange
-  posts to `None` and the login ends on the `401` error page, so you never
-  reach the proxy. The `503` case is the refresh path only.
-
-A hybrid `RESPONSE_TYPE` such as `"code id_token"` does not work either —
-the callback short-circuits the code exchange whenever an `id_token` is
-already present, so no access token is ever obtained.
+- `RESPONSE_TYPE: "code"`. The repository default is `"id_token"`, which
+  returns no access token: login still succeeds, but nothing is stashed
+  and every proxy action answers `401` despite a correct
+  `ACCOUNT_ENDPOINT`. Hybrid values like `"code id_token"` fail the same
+  way, because the callback skips the exchange whenever an `id_token` is
+  already present.
+- `TOKEN_ENDPOINT`, used for that exchange and again for the
+  refresh-on-`401` retry. Unset, login itself fails and you never reach
+  the proxy; it only surfaces as a proxy `503` on the refresh path.
 
 These routes take identity from the OIDC tokens in `request.session`
 rather than `request.user`, and so run with DRF authentication
@@ -276,70 +274,21 @@ tokens. They are therefore stored under provider-scoped session keys —
 `oidc_access_token:<auth_server>`, `oidc_refresh_token:<auth_server>` and
 `oidc_id_token:<auth_server>` — rather than one global name.
 
-This matters only in multi-provider deployments, where a single global key
-would be readable from *every* provider's route: a request to provider B
-would spend provider A's access token against B's account endpoint and,
-because B answers a foreign token with `401` (which the retry path reads as
-"expired"), go on to POST A's long-lived refresh token to B's token
-endpoint. Logout would likewise replay A's `id_token` to B as
-`id_token_hint`. Scoping makes those unrepresentable rather than merely
-checked.
+`logout` clears this provider's keys; other providers' tokens are
+untouched.
 
-There is deliberately no fallback read of the old un-scoped keys — that
-would reinstate the cross-provider path. Sessions established before this
-change get one `401` and sign in again, the same fallback sessions
-predating the token stash already hit.
-
-`logout` clears all three of this provider's keys before redirecting to
-the end-session endpoint. That redirect may never be completed — closed
-tab, declined confirm screen, unreachable IdP — so it is the only point
-in the flow the server controls; leaving the pair behind would let a
-logged-out session keep calling the account proxy as the user. Other
-providers' tokens are untouched, since logout is per-provider.
-
-The tokens are also only written once the login is *accepted*. The IdP
-vouching for a user is not the platform accepting them — the callback can
-still refuse (`AUTO_CREATE_USER` off, required claims missing, validation
-failures) — so nothing touches the session until the success exit. A
-refused caller's session therefore gets a `401` from the proxy, and no
-credential is left at rest for a caller who, never having signed in, will
-never log out to clear it.
-
-One flow needs more than that: when the claims carry no usable username
-the callback answers with an entry form, and the browser re-POSTs only
-the `id_token` — so the access/refresh pair obtained by the first request
-is parked in `<name>:<auth_server>:pending` until the resubmit. Those
-slots are written on that path alone. The parked pair is tagged with the
-`id_token` it belongs to and handed back only on a match, because one
-session can be running two logins at once (two tabs): pairing one login's
-`id_token` with another's tokens would sign the browser in as one
-identity while the proxy acted on the other's Keycloak account. A
-mismatch is dropped, so login completes and the proxy answers `401` until
-the next full sign-in.
-
-Because that session now carries a refresh token, two Django-level
-choices stop being neutral:
-
-* **A server-side `SESSION_ENGINE` is required.** Signed-cookie sessions
-  are signed but not encrypted — the contents are client-readable and stay
-  replayable after logout, since there is no server-side record to delete.
-  Pairing that backend with a proxy-enabled viewset is a deploy check
-  (`oidc.E001`), so `manage.py check` fails rather than the first user who
-  tries to sign in; the viewset also refuses at request time as a backstop.
-  The check resolves the viewset through `VIEWSET_CLASS`, so a project that
-  routes the viewset from a hand-written URLconf instead is covered only by
-  that request-time backstop. Viewsets that keep only the id_token (which
-  the browser already holds) are unaffected.
-* **The session id is rotated when the tokens are written.** Django's
-  `login()` would do this, but only runs under `USE_AUTH_BACKEND`, so the
-  proxy calls `cycle_key()` itself — otherwise a planted session id would
-  end up holding the victim's tokens.
+Because that session carries a refresh token, a **server-side
+`SESSION_ENGINE` is required** — signed-cookie sessions are not encrypted.
+A deploy check (`oidc.E001`) fails `manage.py check` when the two are
+paired, and the viewset refuses at request time as a backstop. The check
+resolves the viewset through `VIEWSET_CLASS`, so a project routing it from
+a hand-written URLconf gets only the backstop. Viewsets that keep just the
+id_token are unaffected. The session id is also rotated when the tokens
+are written.
 
 Outbound calls to the IdP carry a `(connect, read)` timeout, default
 `(5, 15)`, configurable per auth server. It must be a two-item pair or a
-single number — a list from JSON/YAML settings and a string from an env
-var are both coerced; `None` is refused, since that is `requests`' "wait
-forever":
+single number; `None` is refused:
 
 ```python
 OPENID_CONNECT_AUTH_SERVERS = {
@@ -352,7 +301,7 @@ OPENID_CONNECT_AUTH_SERVERS = {
 
 `logout` also removes the pre-namespacing `oidc_id_token` /
 `oidc_access_token` / `oidc_refresh_token` keys. That is a write-side
-sweep only — it does not reinstate the fallback *read*, so it cannot
+sweep only — it does not reinstate the fallback _read_, so it cannot
 bring back the cross-provider path. Without it, a token stashed before
 the rename would outlive every sign-out, since the session is flushed
 only under `USE_AUTH_BACKEND`.
@@ -363,7 +312,7 @@ The trusted-host set is `LOGIN_REDIRECT_ALLOWED_HOSTS` plus the request's
 own host, so both the `next` validation and the account-proxy `Origin`
 check inherit their strength from Django's `ALLOWED_HOSTS`:
 
-* **Scope `ALLOWED_HOSTS` to the hosts you serve.** The request host is
+- **Scope `ALLOWED_HOSTS` to the hosts you serve.** The request host is
   read via `request.get_host()`, which Django rejects with a `400`
   unless it matches `ALLOWED_HOSTS`. That validation is what keeps an
   attacker-supplied `Host` out of the trusted set. With
@@ -371,7 +320,7 @@ check inherit their strength from Django's `ALLOWED_HOSTS`:
   echoed back verbatim, and both checks degrade to comparing one
   request header against another.
 
-* **With `USE_X_FORWARDED_HOST = True`, the proxy must strip any
+- **With `USE_X_FORWARDED_HOST = True`, the proxy must strip any
   client-supplied `X-Forwarded-Host`.** Django prefers that header over
   `Host`, and unlike `Host` a page can set it on a `fetch`. A proxy that
   forwards it lets a caller nominate its own origin as trusted.
@@ -401,7 +350,7 @@ subclass enforces.
 `USE_RAPIDPRO_VIEWSET` is the older boolean form and still works;
 `VIEWSET_CLASS` takes precedence when both are set.
 
-4. (Optional) If you'd like to use the default OpenID Connect Viewset register the urls located in `oidc.urls`.
+1. (Optional) If you'd like to use the default OpenID Connect Viewset register the urls located in `oidc.urls`.
 
 ```python
 # urls.py file
