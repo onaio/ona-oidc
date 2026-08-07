@@ -3,6 +3,10 @@ Settings Module for the oidc App
 """
 
 OPENID_CONNECT_VIEWSET_CONFIG = {
+    # Dotted path to the viewset oidc.urls routes to. Unset means the
+    # built-in one; set it to route to a project-owned subclass.
+    "VIEWSET_CLASS": None,
+    "ACCOUNT_REQUEST_HEADER": "X-Ona-Account-Request",
     "REQUIRED_USER_CREATION_FIELDS": ["email", "first_name", "username"],
     "USER_CREATION_FIELDS": ["email", "first_name", "last_name", "username"],
     "USER_DEFAULTS": {},
@@ -41,6 +45,8 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "VERIFY_ACCESS_TOKEN": True,
         "NONCE_CACHE_TIMEOUT": 1800,
         "USE_PKCE": False,
+        # (connect, read) seconds for every outbound call to this IdP.
+        "REQUEST_TIMEOUT": (5, 15),
         "PKCE_CODE_CHALLENGE_METHOD": "S256",
         "PKCE_CODE_CHALLENGE_TIMEOUT": 600,
         "PKCE_CODE_VERIFIER_LENGTH": 64,

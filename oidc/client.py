@@ -106,6 +106,17 @@ class TokenVerificationFailed(Exception):
     pass
 
 
+class EndpointNotConfigured(ValueError):
+    """A required ``*_ENDPOINT`` is missing for this auth server.
+
+    Distinct from a transport failure so callers can tell "we never
+    configured this" from "the IdP is down" -- ``requests`` raises
+    ``JSONDecodeError``, which is *both* a ``ValueError`` and a
+    ``RequestException``, so catching bare ``ValueError`` would sweep up a
+    malformed IdP response and report it as our own misconfiguration.
+    """
+
+
 class OpenIDClient:
     """
     OpenID connect client class
@@ -126,6 +137,7 @@ class OpenIDClient:
         self.scope = config[auth_server].get("SCOPE") or default_config["SCOPE"]
         self.token_endpoint = config[auth_server].get("TOKEN_ENDPOINT")
         self.end_session_endpoint = config[auth_server].get("END_SESSION_ENDPOINT")
+        self.account_endpoint = config[auth_server].get("ACCOUNT_ENDPOINT")
         self.redirect_uri = config[auth_server].get("REDIRECT_URI")
         self.response_type = config[auth_server].get(
             "RESPONSE_TYPE", default_config["RESPONSE_TYPE"]
@@ -145,6 +157,14 @@ class OpenIDClient:
             config[auth_server].get(
                 "NONCE_CACHE_TIMEOUT", default_config["NONCE_CACHE_TIMEOUT"]
             )
+        )
+        # ``requests`` waits forever by default, so an IdP that accepts a
+        # connection and then stalls pins the worker handling it — no error,
+        # no recovery. Every account-proxy call and every callback goes
+        # through this client, so a handful of stalled requests is enough to
+        # exhaust the pool. Tuple form: (connect, read).
+        self.request_timeout = config[auth_server].get(
+            "REQUEST_TIMEOUT", default_config["REQUEST_TIMEOUT"]
         )
         self.use_pkce = str_to_bool(
             config[auth_server].get("USE_PKCE", default_config["USE_PKCE"])
@@ -172,7 +192,7 @@ class OpenIDClient:
         Retrieves a JSON Web Key Set that can be used to verify a
         JSON web token issued by an authentication server.
         """
-        response = requests.get(self.jwks_endpoint)
+        response = requests.get(self.jwks_endpoint, timeout=self.request_timeout)
         if response.status_code == 200:
             jwks = response.json()
             for jwk in jwks.get("keys"):
@@ -185,7 +205,9 @@ class OpenIDClient:
         Given an access_token, retrieve user profile claims
         """
         response = requests.get(
-            self.user_info_endpoint, headers={"Authorization": f"Bearer {access_token}"}
+            self.user_info_endpoint,
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=self.request_timeout,
         )
         return response.json()
 
@@ -348,6 +370,7 @@ class OpenIDClient:
                 data=data if self.request_mode == "form_post" else None,
                 params=data if self.request_mode == "query" else None,
                 headers=headers,
+                timeout=self.request_timeout,
             )
             response.raise_for_status()
 
@@ -466,3 +489,87 @@ class OpenIDClient:
         separator = "&" if "?" in url else "?"
         query = urlencode(filtered, quote_via=quote, safe=_AUTHORIZE_URL_SAFE_CHARS)
         return HttpResponseRedirect(f"{url}{separator}{query}")
+
+    def refresh_access_token(self, refresh_token: str) -> dict:
+        """
+        Exchange a refresh_token for a fresh token pair at the
+        configured ``TOKEN_ENDPOINT``. Returns the parsed token
+        response (``access_token``, ``refresh_token``, ``expires_in``,
+        usually a new ``id_token`` too).
+
+        :raises EndpointNotConfigured: ``TOKEN_ENDPOINT`` is unset.
+        :raises TokenVerificationFailed: the IdP answered and refused.
+        :raises requests.RequestException: the IdP could not be reached.
+        """
+        if not self.token_endpoint:
+            raise EndpointNotConfigured(
+                f"TOKEN_ENDPOINT is not configured for auth_server "
+                f"{self.auth_server!r}."
+            )
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        data = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+        }
+        try:
+            response = requests.post(
+                self.token_endpoint,
+                data=data,
+                headers=headers,
+                timeout=self.request_timeout,
+            )
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            # The IdP answered and refused: the refresh token is spent,
+            # revoked, or issued to another client. That is a genuinely
+            # dead session, so the caller turns this into a 401.
+            logger.exception(exc)
+            raise TokenVerificationFailed(
+                f"Failed to refresh access token: {exc}"
+            ) from exc
+        # Transport failures (DNS, timeout) are left to propagate, as is a
+        # non-JSON body. Reporting an unreachable IdP as "session expired" would
+        # send the user through a re-login that cannot fix it; the proxy maps
+        # RequestException to 502 instead.
+        return response.json()
+
+    def request_keycloak_account(
+        self,
+        access_token: str,
+        method: str,
+        path_suffix: str,
+    ) -> tuple[int, Optional[dict]]:
+        """
+        Issue a generic ``method`` request to ``account_endpoint + path_suffix``
+        on behalf of ``access_token``. Returns ``(status_code, body|None)``.
+
+        This is the single entry point for every Account REST proxy call
+        (sessions, linked-accounts, credentials).
+        """
+        if not self.account_endpoint:
+            raise EndpointNotConfigured(
+                f"ACCOUNT_ENDPOINT is not configured for auth_server "
+                f"{self.auth_server!r}."
+            )
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+        }
+        url = f"{self.account_endpoint}{path_suffix}"
+        try:
+            response = requests.request(
+                method, url, headers=headers, timeout=self.request_timeout
+            )
+        except requests.RequestException as exc:
+            logger.exception(exc)
+            raise
+
+        body: Optional[dict] = None
+        if response.content:
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+        return response.status_code, body

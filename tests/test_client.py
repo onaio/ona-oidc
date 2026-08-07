@@ -570,6 +570,7 @@ class OpenIDClientTestCase(TestCase):
             },
             params=None,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=(5, 15),
         )
 
     @override_settings(
@@ -616,6 +617,7 @@ class OpenIDClientTestCase(TestCase):
                 "code_verifier": "123",
             },
             headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=(5, 15),
         )
 
     @override_settings(
@@ -648,6 +650,7 @@ class OpenIDClientTestCase(TestCase):
         mock_requests_get.assert_called_once_with(
             "https://example.com/oauth2/userinfo",
             headers={"Authorization": "Bearer access_token_value"},
+            timeout=(5, 15),
         )
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
