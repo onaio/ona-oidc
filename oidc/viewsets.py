@@ -251,6 +251,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         detail=False,
         authentication_classes=[],
         renderer_classes=[JSONRenderer],
+        # ``session/?`` like the other three: the router anchors patterns, so
+        # without it a configured probe URL with a trailing slash 404s.
+        url_path=r"session/?",
         url_name="openid_connect_session",
     )
     def session(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:

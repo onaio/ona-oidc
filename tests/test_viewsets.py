@@ -25,7 +25,7 @@ from oidc.checks import (
 )
 from oidc.keycloak import _sid_from_id_token
 from oidc.client import OpenIDClient, TokenVerificationFailed, state_cache_key
-from oidc.keycloak import KeycloakOpenIDConnectViewset
+from oidc.keycloak import KeycloakAccountMixin, KeycloakOpenIDConnectViewset
 from oidc.permissions import IsCsrfSafeAccountRequest, get_account_request_header
 from oidc.urls import get_viewset_class
 from oidc.utils import (
@@ -4883,3 +4883,32 @@ class TestRemainingTokenLifecycleGuards(TestCase):
         with patch("oidc.client.requests.get", return_value=upstream) as mock_get:
             client._retrieve_jwks_related_to_kid("some-kid")
         self.assertIsNotNone(mock_get.call_args.kwargs.get("timeout"))
+
+
+class TestRouteTrailingSlashSymmetry(TestCase):
+    """The router anchors patterns, so each action opts back into an
+    optional trailing slash. ``session`` originally did not, while the other
+    three did -- a configured probe URL ending in ``/`` then 404s and the
+    SPA silently falls through to a full IdP redirect."""
+
+    @override_settings(ROOT_URLCONF="tests.keycloak_urls")
+    def test_all_four_base_routes_accept_a_trailing_slash(self):
+        for path in (
+            "/oidc/default/login/",
+            "/oidc/default/logout/",
+            "/oidc/default/callback/",
+            "/oidc/default/session/",
+        ):
+            with self.subTest(path=path):
+                resolve(path)  # raises Resolver404 if the route is anchored
+
+    @override_settings(ROOT_URLCONF="tests.keycloak_urls")
+    def test_they_all_resolve_without_one_too(self):
+        for path in (
+            "/oidc/default/login",
+            "/oidc/default/logout",
+            "/oidc/default/callback",
+            "/oidc/default/session",
+        ):
+            with self.subTest(path=path):
+                resolve(path)
