@@ -4912,3 +4912,30 @@ class TestRouteTrailingSlashSymmetry(TestCase):
         ):
             with self.subTest(path=path):
                 resolve(path)
+
+
+class TestMixinOrderIsEnforced(TestCase):
+    """Listing the mixin after the base viewset resolves
+    ``stash_oidc_tokens`` to False. Every route is still generated and login
+    still succeeds, so the only symptom is that the proxy 401s forever --
+    which is why it has to fail at class definition instead."""
+
+    def test_the_wrong_order_is_refused_at_class_definition(self):
+        with self.assertRaises(ImproperlyConfigured) as ctx:
+
+            class WrongOrder(  # noqa: F841
+                UserModelOpenIDConnectViewset, KeycloakAccountMixin
+            ):
+                pass
+
+        self.assertIn("KeycloakAccountMixin", str(ctx.exception))
+        self.assertIn("stash_oidc_tokens", str(ctx.exception))
+
+    def test_the_right_order_is_accepted(self):
+        class RightOrder(KeycloakAccountMixin, UserModelOpenIDConnectViewset):
+            pass
+
+        self.assertTrue(RightOrder.stash_oidc_tokens)
+
+    def test_the_shipped_composition_still_builds(self):
+        self.assertTrue(KeycloakOpenIDConnectViewset.stash_oidc_tokens)

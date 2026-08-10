@@ -16,6 +16,7 @@ import logging
 import re
 from typing import Any, Callable, Optional, Tuple
 
+from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpRequest, HttpResponse
 from django.utils.translation import gettext as _
 
@@ -122,6 +123,24 @@ class KeycloakAccountMixin:
     #: These actions call Keycloak as the signed-in user, so they need the
     #: token pair ``callback`` would otherwise drop.
     stash_oidc_tokens = True
+
+    def __init_subclass__(cls, **kwargs):
+        """Refuse a subclass that lists the mixin after the base viewset.
+
+        ``class V(UserModelOpenIDConnectViewset, KeycloakAccountMixin)`` is
+        the natural habit, and it resolves ``stash_oidc_tokens`` to the
+        base's ``False``. Every route is still generated and login still
+        succeeds, so the only symptom is that all proxy calls 401 forever.
+        Raising here makes it a startup error at class definition.
+        """
+        super().__init_subclass__(**kwargs)
+        if not cls.stash_oidc_tokens:
+            raise ImproperlyConfigured(
+                f"{cls.__name__} lists KeycloakAccountMixin after the base "
+                f"viewset, so stash_oidc_tokens resolves to False and the "
+                f"account proxy would answer 401 to everything. Put the "
+                f"mixin first: class {cls.__name__}(KeycloakAccountMixin, ...)."
+            )
 
     def _keycloak_account_request(
         self,
