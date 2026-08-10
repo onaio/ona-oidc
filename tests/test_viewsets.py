@@ -4940,6 +4940,21 @@ class TestMixinOrderIsEnforced(TestCase):
     def test_the_shipped_composition_still_builds(self):
         self.assertTrue(KeycloakOpenIDConnectViewset.stash_oidc_tokens)
 
+    def test_an_explicit_opt_out_is_not_told_to_reorder(self):
+        """Refusing is right -- proxy routes that always 401 are worse --
+        but the mixin is already first here, so "put the mixin first" would
+        send the reader chasing a problem they do not have."""
+        with self.assertRaises(ImproperlyConfigured) as ctx:
+
+            class OptOut(  # noqa: F841
+                KeycloakAccountMixin, UserModelOpenIDConnectViewset
+            ):
+                stash_oidc_tokens = False
+
+        message = str(ctx.exception)
+        self.assertIn("stash_oidc_tokens = False", message)
+        self.assertNotIn("Put the mixin first", message)
+
 
 @WITH_ACCOUNT_ENDPOINT
 class TestRefusalDrainsParkedTokens(TestCase):

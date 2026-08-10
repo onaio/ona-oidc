@@ -134,13 +134,31 @@ class KeycloakAccountMixin:
         Raising here makes it a startup error at class definition.
         """
         super().__init_subclass__(**kwargs)
-        if not cls.stash_oidc_tokens:
-            raise ImproperlyConfigured(
-                f"{cls.__name__} lists KeycloakAccountMixin after the base "
-                f"viewset, so stash_oidc_tokens resolves to False and the "
-                f"account proxy would answer 401 to everything. Put the "
-                f"mixin first: class {cls.__name__}(KeycloakAccountMixin, ...)."
+        if cls.stash_oidc_tokens:
+            return
+        # Two ways to get here, and they need different advice: the mixin
+        # sitting after a base that defines the attribute (so the base wins),
+        # or someone setting it False outright.
+        mro = cls.__mro__
+        shadowed = any(
+            "stash_oidc_tokens" in vars(klass)
+            for klass in mro[1 : mro.index(KeycloakAccountMixin)]
+        )
+        if shadowed:
+            remedy = (
+                f"Put the mixin first: "
+                f"class {cls.__name__}(KeycloakAccountMixin, ...)."
             )
+        else:
+            remedy = (
+                "Drop the explicit stash_oidc_tokens = False, or drop the "
+                "mixin if this viewset should not serve the proxy."
+            )
+        raise ImproperlyConfigured(
+            f"{cls.__name__} mixes in KeycloakAccountMixin but resolves "
+            f"stash_oidc_tokens to False, so the account proxy would answer "
+            f"401 to everything. {remedy}"
+        )
 
     def _keycloak_account_request(
         self,
