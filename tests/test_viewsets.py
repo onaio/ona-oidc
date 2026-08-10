@@ -4939,3 +4939,70 @@ class TestMixinOrderIsEnforced(TestCase):
 
     def test_the_shipped_composition_still_builds(self):
         self.assertTrue(KeycloakOpenIDConnectViewset.stash_oidc_tokens)
+
+
+@WITH_ACCOUNT_ENDPOINT
+class TestRefusalDrainsParkedTokens(TestCase):
+    """A login refused *at the username form* parks a pair on the way in.
+    ``_persist_oidc_tokens`` is the only thing that drains the pending
+    slots, and the success guard skips it on refusal -- so the pair stays.
+    A refused caller never reaches logout, so nothing else clears it."""
+
+    TOKENS = {
+        "id_token": "idp-id-token",
+        "access_token": "idp-access-token",
+        "refresh_token": "idp-refresh-token",
+    }
+    FORM_CLAIMS = {
+        "given_name": "Alice",
+        "family_name": "User",
+        "email": "a@example.com",
+    }
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+
+    def _parked_session(self):
+        """Drive the first leg so the pair is parked, then hand back the
+        session mid-flow."""
+        view = RefusingViewset.as_view({"post": "callback"})
+        with (
+            patch(
+                "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code",
+                return_value=dict(self.TOKENS),
+            ),
+            patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+                return_value=self.FORM_CLAIMS,
+            ),
+        ):
+            request = self.factory.post("/", data={"code": "auth-code"})
+            request.session = {}
+            response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 200, "expected the username form")
+        return request.session
+
+    def test_a_refused_resubmit_drains_the_parked_pair(self):
+        session = self._parked_session()
+        view = RefusingViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+            return_value={**self.FORM_CLAIMS, "preferred_username": "alice_chosen"},
+        ):
+            request = self.factory.post(
+                "/",
+                data={
+                    "id_token": "idp-id-token",
+                    "username": "alice_chosen",
+                    USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+                },
+            )
+            request.session = session
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            [v for v in session.values() if str(v).startswith("idp-")],
+            [],
+            f"a refused login left credentials parked: {session}",
+        )

@@ -900,6 +900,17 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             self._persist_oidc_tokens(
                                 request, auth_server, id_token, user_tokens
                             )
+                        else:
+                            # Persisting is also what drains the pending
+                            # slots, so a refusal has to do it explicitly --
+                            # otherwise a login refused at the username form
+                            # leaves its parked pair behind, and a refused
+                            # caller never reaches logout to clear it.
+                            take_pending_tokens(
+                                getattr(request, "session", None),
+                                auth_server,
+                                id_token,
+                            )
                         return response
         auth_servers = list(settings.OPENID_CONNECT_AUTH_SERVERS.keys())
         default_auth_server = auth_servers[0] if auth_servers else "default"
