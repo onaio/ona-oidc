@@ -5006,3 +5006,36 @@ class TestRefusalDrainsParkedTokens(TestCase):
             [],
             f"a refused login left credentials parked: {session}",
         )
+
+
+@WITH_ACCOUNT_ENDPOINT
+class TestUnexpectedUpstreamShapeIsNotA500(TestCase):
+    """``transform`` normalises Keycloak's body. A 2xx carrying something
+    else -- a gateway answering 200 with an error object, or an upstream
+    shape change -- must not surface as a traceback."""
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+
+    def _sessions_with(self, body):
+        view = KeycloakOpenIDConnectViewset.as_view({"get": "sessions_list"})
+        request = self.factory.get("/")
+        request.session = {token_session_key(ACCESS_TOKEN_SESSION_KEY, "default"): "t"}
+        upstream = MagicMock(status_code=200, content=b"x")
+        upstream.json.return_value = body
+        with patch("oidc.client.requests.request", return_value=upstream):
+            return view(request, auth_server="default")
+
+    def test_a_json_error_object_under_a_200_is_a_502(self):
+        response = self._sessions_with({"error": "realm not found"})
+        self.assertEqual(response.status_code, 502)
+
+    def test_an_unexpected_device_shape_is_a_502(self):
+        response = self._sessions_with([{"os": "mac", "sessions": {"id": "a"}}])
+        self.assertEqual(response.status_code, 502)
+
+    def test_the_expected_shape_still_flattens(self):
+        response = self._sessions_with(
+            [{"os": "mac", "sessions": [{"id": "a", "current": True}]}]
+        )
+        self.assertEqual(response.status_code, 200)

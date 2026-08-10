@@ -252,7 +252,19 @@ class KeycloakAccountMixin:
                 status=status.HTTP_502_BAD_GATEWAY,
             )
         if status.is_success(status_code):
-            payload = transform(body) if transform else body
+            try:
+                payload = transform(body) if transform else body
+            except (AttributeError, TypeError, KeyError) as exc:
+                # A 2xx whose body isn't the shape we normalise -- a gateway
+                # answering 200 with an error object, or an upstream shape
+                # change. Narrow on purpose: a defect in our own transform
+                # should still surface as a 500 with a traceback rather than
+                # be reported as the IdP misbehaving.
+                logger.exception(exc)
+                return Response(
+                    {"error": "Unexpected response from the identity provider."},
+                    status=status.HTTP_502_BAD_GATEWAY,
+                )
             return Response(payload, status=status_code)
         return Response(
             {"error": "Identity provider rejected the request.", "upstream": body},
