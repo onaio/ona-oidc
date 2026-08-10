@@ -25,6 +25,11 @@ INSTALLED_APPS = [
 
 ```
 
+The username-entry form and the error page extend `base.html`, and the
+package ships a plain one so a fresh install renders. To use your own,
+put it on `TEMPLATES["DIRS"]` or in an app listed before `oidc`; it only
+needs `title` and `content` blocks.
+
 1. Set `OPENID_CONNECT_VIEWSET_CONFIG` and `OPENID_CONNECT_AUTH_SERVERS` settings
 
 ```python
