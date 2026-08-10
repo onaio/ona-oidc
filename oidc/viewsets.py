@@ -927,13 +927,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         user.last_login = timezone.now()
                         user.save(update_fields=["last_login"])
                         self._clear_login_states(server_response)
-                        # Before, not after: the call below runs Django's
-                        # ``login()``, which flushes the session when a
-                        # different user was authenticated in it -- taking
-                        # the parked slots with it. A pair the code exchange
-                        # returned is already in locals and survives that;
-                        # this puts the form path's pair in locals too, so
-                        # both paths reach the write below the same way.
+                        # Before the call below, which runs Django's
+                        # ``login()`` -- and that flushes the session when a
+                        # different user was authenticated in it.
                         user_tokens = self._reunite_with_parked_pair(
                             request, auth_server, id_token, user_tokens
                         )
@@ -943,22 +939,19 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             redirect_after=redirect_after,
                             auth_server=auth_server,
                         )
-                        #
-                        # Only on a response that actually signed the user
-                        # in. Overriding ``generate_successful_response`` to
-                        # refuse a login the library accepted is the
-                        # documented extension point, and the tokens are
-                        # what the account proxy reads as proof of a
-                        # session -- so a subclass's refusal has to be as
-                        # final as one of our own.
+                        # Only on a response that actually signed the user in.
+                        # Overriding ``generate_successful_response`` to refuse
+                        # a login is the documented extension point, and the
+                        # tokens are what the proxy reads as proof of a session
+                        # -- so a subclass's refusal has to be as final as one
+                        # of our own. It stores nothing; ``callback`` takes the
+                        # parked pair back on the way out.
                         if status.is_success(
                             response.status_code
                         ) or status.is_redirect(response.status_code):
                             self._persist_oidc_tokens(
                                 request, auth_server, id_token, user_tokens
                             )
-                        # A refusal stores nothing; ``callback`` takes the
-                        # parked pair back on the way out.
                         return response
         auth_servers = list(settings.OPENID_CONNECT_AUTH_SERVERS.keys())
         default_auth_server = auth_servers[0] if auth_servers else "default"

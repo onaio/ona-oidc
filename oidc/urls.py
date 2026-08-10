@@ -31,15 +31,10 @@ def get_viewset_class():
     return UserModelOpenIDConnectViewset
 
 
-# Routes come from the @action decorators, so each action carries its own
-# url_path, url_name and view kwargs — including the account-proxy CSRF gate,
-# which previously had to be repeated per route here and re-mirrored by every
-# consumer that declared its own URLconf.
-#
+# Every route's url_path, url_name and view kwargs — including the
+# account-proxy CSRF gate — come from the @action decorators.
 # trailing_slash=False keeps paths as /oidc/<server>/login rather than
-# /login/; the entry-point actions opt back into an optional trailing slash
-# individually. auth_server is captured by the prefix, which the router
-# interpolates into every generated pattern.
+# /login/; each action opts back into an optional trailing slash itself.
 router = UnprefixedNameRouter(trailing_slash=False)
 router.register(r"oidc/(?P<auth_server>\w+)", get_viewset_class(), basename="oidc")
 
