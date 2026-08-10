@@ -42,8 +42,15 @@ def authenticate_sso(request, unique_user_field: str = "email"):
 
 
 def str_to_bool(val):
+    """Coerce a settings value that may have come from the environment.
+
+    Only the exact literal ``"False"`` was falsy, so ``"false"`` -- what
+    ``os.getenv("X", "false")`` yields -- read as True. Several settings
+    fail open that way: ``AUTO_CREATE_USER`` and the admin import switch
+    both turn *on* when spelled off.
+    """
     if isinstance(val, str):
-        val = 0 if val == "False" else 1
+        return val.strip().lower() not in ("false", "0", "", "no", "off")
     return val
 
 

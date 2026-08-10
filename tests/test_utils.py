@@ -9,6 +9,7 @@ from rest_framework.test import APIRequestFactory
 from oidc.utils import (
     get_login_query_param_allowlist,
     is_safe_login_redirect,
+    str_to_bool,
 )
 
 
@@ -26,9 +27,7 @@ class TestGetLoginQueryParamAllowlist(TestCase):
             frozenset({"prompt", "ui_locales"}),
         )
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={"default": {"CLIENT_ID": "client"}}
-    )
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS={"default": {"CLIENT_ID": "client"}})
     def test_returns_empty_when_key_missing(self):
         self.assertEqual(get_login_query_param_allowlist("default"), frozenset())
 
@@ -100,9 +99,7 @@ class TestIsSafeLoginRedirect(TestCase):
 
     def test_javascript_scheme_is_unsafe(self):
         self.assertFalse(
-            is_safe_login_redirect(
-                "javascript:alert(1)", "default", self._request()
-            )
+            is_safe_login_redirect("javascript:alert(1)", "default", self._request())
         )
 
     def test_protocol_relative_url_is_unsafe(self):
@@ -122,3 +119,26 @@ class TestIsSafeLoginRedirect(TestCase):
             is_safe_login_redirect(
                 "https://spa.example.com/x", "default", self._request()
             )
+
+
+class TestStrToBool(TestCase):
+    """Settings arrive from the environment as strings. Only the exact
+    literal ``"False"`` used to be falsy, so the spelling ``os.getenv``
+    hands you turned several switches *on*: ``AUTO_CREATE_USER`` created
+    the users it was set to refuse, ``USE_SSO_COOKIE`` issued the identity
+    cookie anyway, and the admin's user-import screen enabled itself."""
+
+    def test_the_spellings_of_off_are_all_false(self):
+        for value in ("False", "false", "FALSE", "0", "", "no", "off", " false "):
+            with self.subTest(value=value):
+                self.assertFalse(str_to_bool(value))
+
+    def test_the_spellings_of_on_stay_true(self):
+        for value in ("True", "true", "1", "yes", "on"):
+            with self.subTest(value=value):
+                self.assertTrue(str_to_bool(value))
+
+    def test_non_strings_pass_through(self):
+        self.assertIs(str_to_bool(True), True)
+        self.assertIs(str_to_bool(False), False)
+        self.assertIsNone(str_to_bool(None))
