@@ -41,6 +41,7 @@ from oidc.viewsets import (
     DEFAULT_USERNAME_PATTERN,
     USERNAME_FORM_MARKER_FIELD,
     USERNAME_FORM_MARKER_VALUE,
+    USERNAME_FORM_TEMPLATE,
     BaseOpenIDConnectViewset,
     RapidProOpenIDConnectViewset,
     UserModelOpenIDConnectViewset,
@@ -4070,31 +4071,39 @@ class TestPendingTokensBelongToOneFlow(TestCase):
             "erin's pair survived beside alice's id_token",
         )
 
-    def test_an_abandoned_form_does_not_leave_a_pair_parked_forever(self):
-        """Nothing else clears a parked pair for a login that was never
-        finished, so the next success in the session has to."""
-        session = {}
+    def _park(self, session, name="alice"):
+        """Leave a tab sitting on the username form. The email's local part
+        is too short to pass FIELD_VALIDATION_REGEX, which is what sends
+        USE_EMAIL_USERNAME to the form."""
         self._callback(
             session,
-            {"given_name": "Alice", "family_name": "User", "email": "a@example.com"},
+            {"given_name": name.title(), "family_name": "User", "email": "a@x.io"},
             {
-                "id_token": "id-token-alice",
-                "access_token": "access-alice",
-                "refresh_token": "refresh-alice",
+                "id_token": f"id-token-{name}",
+                "access_token": f"access-{name}",
+                "refresh_token": f"refresh-{name}",
             },
         )
         self.assertIn(
             pending_token_session_key(REFRESH_TOKEN_SESSION_KEY, "default"), session
         )
 
+    def _assert_still_parked(self, session, name):
+        self.assertEqual(
+            session.get(pending_token_session_key(ACCESS_TOKEN_SESSION_KEY, "default")),
+            f"access-{name}",
+            f"{name}'s tab was stranded: its parked pair is gone, so completing "
+            "that login leaves the proxy answering 401 for the whole session",
+        )
+
+    def test_another_tabs_success_does_not_strand_a_tab_at_the_form(self):
+        session = {}
+        self._park(session)
+
         # A different, complete login in the same session.
         self._callback(
             session,
-            {
-                "given_name": "Carol",
-                "family_name": "User",
-                "email": "carol@example.com",
-            },
+            {"given_name": "Carol", "family_name": "User", "email": "carol@x.io"},
             {
                 "id_token": "id-token-carol",
                 "access_token": "access-carol",
@@ -4102,16 +4111,103 @@ class TestPendingTokensBelongToOneFlow(TestCase):
             },
         )
 
-        for base_key in (
-            ID_TOKEN_SESSION_KEY,
-            ACCESS_TOKEN_SESSION_KEY,
-            REFRESH_TOKEN_SESSION_KEY,
+        self._assert_still_parked(session, "alice")
+
+    def test_a_refused_login_does_not_strand_a_tab_at_the_form(self):
+        """A refusal is the likelier of the two to meet a live second tab,
+        and drains explicitly rather than as a side effect of storing."""
+        session = {}
+        self._park(session)
+
+        view = RefusingViewset.as_view({"post": "callback"})
+        with (
+            patch(
+                "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code",
+                return_value={
+                    "id_token": "id-token-carol",
+                    "access_token": "access-carol",
+                },
+            ),
+            patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+                return_value={
+                    "given_name": "Carol",
+                    "family_name": "User",
+                    "email": "carol@x.io",
+                    "preferred_username": "carol",
+                },
+            ),
         ):
-            self.assertNotIn(
-                pending_token_session_key(base_key, "default"),
-                session,
-                "abandoned pair still parked",
+            request = self.factory.post("/", data={"code": "auth-code"})
+            request.session = session
+            self.assertEqual(view(request, auth_server="default").status_code, 403)
+
+        self._assert_still_parked(session, "alice")
+
+    def test_a_resubmit_that_fails_takes_its_own_pair_back(self):
+        """Storing the pair is what used to drain it, so every exit that
+        stores nothing left a refresh token at rest for someone who never
+        signed in and so never reaches logout. Here the id_token no longer
+        decodes; an expired PKCE entry and AUTO_CREATE_USER=False are the
+        same shape."""
+        session = {}
+        self._park(session)
+
+        view = KeycloakOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+            side_effect=jwt.DecodeError("not a token"),
+        ):
+            request = self.factory.post(
+                "/",
+                data={
+                    "id_token": "id-token-alice",
+                    "username": "alice_chosen",
+                    USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+                },
             )
+            request.session = session
+            self.assertEqual(view(request, auth_server="default").status_code, 401)
+
+        self.assertEqual(
+            [k for k in session if k.endswith(":pending")],
+            [],
+            "a failed resubmit left its own pair parked",
+        )
+
+    def test_a_second_try_at_the_username_keeps_the_pair(self):
+        """Picking a username that is taken re-renders the form. That exit
+        has to keep the pair parked -- it is the one exit that does -- or
+        the user completes login on their second try with no pair, and the
+        account proxy 401s for the rest of the session."""
+        session = {}
+        self._park(session)
+        User.objects.create(username="taken_name", email="someone@x.io")
+        claims = {"given_name": "Alice", "family_name": "User", "email": "a@x.io"}
+
+        again = self._resubmit(session, claims, "id-token-alice", "taken_name")
+        self.assertEqual(again.template_name, USERNAME_FORM_TEMPLATE)
+
+        done = self._resubmit(session, claims, "id-token-alice", "alice_chosen")
+        self.assertEqual(done.status_code, 302)
+        self.assertEqual(
+            session.get(token_session_key(ACCESS_TOKEN_SESSION_KEY, "default")),
+            "access-alice",
+        )
+
+    def test_logout_clears_a_pair_abandoned_at_the_form(self):
+        """Nothing can tell an abandoned pair from one whose tab is still on
+        the form, so the parked pair outlives the flow. Logout is what
+        collects it."""
+        session = {}
+        self._park(session)
+
+        logout = KeycloakOpenIDConnectViewset.as_view({"get": "logout"})
+        request = self.factory.get("/")
+        request.session = session
+        logout(request, auth_server="default")
+
+        self.assertEqual([k for k in session if k.endswith(":pending")], [])
 
 
 class TestProviderAliasAnchoring(TestCase):

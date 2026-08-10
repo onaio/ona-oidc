@@ -72,6 +72,10 @@ SSO_COOKIE_NAME = "SSO"
 USERNAME_FORM_MARKER_FIELD = "from_username_form"
 USERNAME_FORM_MARKER_VALUE = "1"
 
+# Rendering this template is the one callback exit allowed to leave a token
+# pair parked in the session; see ``callback``.
+USERNAME_FORM_TEMPLATE = "oidc/oidc_user_data_entry.html"
+
 # Defaults used when FIELD_VALIDATION_REGEX has no "username" entry.
 # Kept conservative so the rendered form matches the legacy template
 # behaviour for deployments that haven't customized validation.
@@ -414,7 +418,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         }
         return Response(
             merged,
-            template_name="oidc/oidc_user_data_entry.html",
+            template_name=USERNAME_FORM_TEMPLATE,
             **response_kwargs,
         )
 
@@ -593,10 +597,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         access_token = tokens.get("access_token")
         refresh_token = tokens.get("refresh_token")
 
-        # Drained unconditionally, even when a pair is already in hand: a
-        # login abandoned at the username form parks a pair that nothing
-        # else would ever remove, so the next success in this session is the
-        # only thing positioned to clear it.
+        # Drained even when a pair is already in hand, so this login's own
+        # parked pair cannot outlive it. Scoped to our id_token: a pair
+        # parked by a second tab still at the username form is left alone.
         parked_access, parked_refresh = take_pending_tokens(
             session, auth_server, id_token
         )
@@ -639,7 +642,31 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         url_path=r"callback/?",
         url_name="openid_connect_callback",
     )
-    def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
+    def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
+        """Handle the IdP's redirect back, and the username form's re-POST.
+
+        Wraps the flow so a parked token pair outlives exactly one round
+        trip. ``_username_form_response`` parks one because the form
+        re-POSTs only the id_token; every other way out -- an expired PKCE
+        entry, an id_token that will not decode, AUTO_CREATE_USER off, a
+        subclass refusing the login, success -- has to take it back, or a
+        refresh token stays at rest in the session of someone who never
+        signed in and so never reaches logout to clear it.
+
+        Scoped to the id_token this request carries, which is the only pair
+        that can be ours: a first callback that fails has parked nothing,
+        and clearing the slots wholesale would strand a second tab.
+        """
+        response = self._callback(request, **kwargs)
+        if getattr(response, "template_name", None) != USERNAME_FORM_TEMPLATE:
+            take_pending_tokens(
+                getattr(request, "session", None),
+                kwargs.get("auth_server"),
+                request.data.get("id_token"),
+            )
+        return response
+
+    def _callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
         auth_server = kwargs.get("auth_server")
         client = self._get_client(auth_server=auth_server)
         user = redirect_after = code_verifier = None
@@ -900,17 +927,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             self._persist_oidc_tokens(
                                 request, auth_server, id_token, user_tokens
                             )
-                        else:
-                            # Persisting is also what drains the pending
-                            # slots, so a refusal has to do it explicitly --
-                            # otherwise a login refused at the username form
-                            # leaves its parked pair behind, and a refused
-                            # caller never reaches logout to clear it.
-                            take_pending_tokens(
-                                getattr(request, "session", None),
-                                auth_server,
-                                id_token,
-                            )
+                        # A refusal stores nothing; ``callback`` takes the
+                        # parked pair back on the way out.
                         return response
         auth_servers = list(settings.OPENID_CONNECT_AUTH_SERVERS.keys())
         default_auth_server = auth_servers[0] if auth_servers else "default"

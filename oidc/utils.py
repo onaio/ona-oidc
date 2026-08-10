@@ -139,29 +139,35 @@ def stash_pending_tokens(
 
 
 def take_pending_tokens(session, auth_server: Optional[str], id_token: Optional[str]):
-    """Pop the parked pair, but only if it belongs to ``id_token``.
+    """Pop the parked pair, but only the one ``id_token`` owns.
 
     One session can be running two logins at once (two tabs), and both write
     the same per-provider slots. Pairing one login's id_token with another's
-    tokens would sign the browser in as one identity while the proxy acted
-    on the other's Keycloak account, so a mismatch is dropped rather than
-    used. Drains all three slots either way, which also clears the pair left
-    by a login abandoned at the form.
+    tokens would sign the browser in as one identity while the proxy acted on
+    the other's Keycloak account -- and simply clearing whatever is parked is
+    no better: the other tab then finishes its login with no pair, leaving a
+    proxy that answers 401 for the rest of that session with nothing to say
+    why. So a pair that belongs to someone else is left exactly where it is.
+
+    The cost is that a login abandoned at the username form stays parked
+    until logout clears it, because nothing can tell an abandoned pair from
+    one whose tab is still sitting on the form.
 
     Returns ``(access_token, refresh_token)``, either of which may be None.
     """
-    if session is None:
+    if session is None or not id_token:
         return None, None
-    owner = session.pop(
-        pending_token_session_key(ID_TOKEN_SESSION_KEY, auth_server), None
-    )
+    owner_key = pending_token_session_key(ID_TOKEN_SESSION_KEY, auth_server)
+    if session.get(owner_key) != id_token:
+        return None, None
+    session.pop(owner_key, None)
     access_token = session.pop(
         pending_token_session_key(ACCESS_TOKEN_SESSION_KEY, auth_server), None
     )
     refresh_token = session.pop(
         pending_token_session_key(REFRESH_TOKEN_SESSION_KEY, auth_server), None
     )
-    if not owner or owner != id_token or not access_token:
+    if not access_token:
         # A lone refresh token is never usable on its own, and handing one
         # back would write an active refresh with no matching access token.
         return None, None
