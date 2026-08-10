@@ -225,7 +225,8 @@ OPENID_CONNECT_AUTH_SERVERS = {
 ```
 
 The setting is optional; with the mixin in place but `ACCOUNT_ENDPOINT`
-unset, the proxy actions return `503`. Calls are made with the signed-in user's own `access_token`, so
+unset, the proxy actions return `503` to a caller who has a session and
+`401` to one who does not. Calls are made with the signed-in user's own `access_token`, so
 they need the `manage-account` role which is granted to every realm user by
 default.
 
