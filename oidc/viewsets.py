@@ -672,15 +672,22 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         Scoped to the id_token this request carries, which is the only pair
         that can be ours: a first callback that fails has parked nothing,
         and clearing the slots wholesale would strand a second tab.
+
+        In a ``finally``: an id_token this library has no handler for raises
+        past every ``except`` below and becomes a 500, which is an exit like
+        any other and must not be the one that gets to keep a pair.
         """
-        response = self._callback(request, **kwargs)
-        if getattr(response, "template_name", None) != USERNAME_FORM_TEMPLATE:
-            take_pending_tokens(
-                getattr(request, "session", None),
-                kwargs.get("auth_server"),
-                request.data.get("id_token"),
-            )
-        return response
+        response = None
+        try:
+            response = self._callback(request, **kwargs)
+            return response
+        finally:
+            if getattr(response, "template_name", None) != USERNAME_FORM_TEMPLATE:
+                take_pending_tokens(
+                    getattr(request, "session", None),
+                    kwargs.get("auth_server"),
+                    request.data.get("id_token"),
+                )
 
     def _callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
         auth_server = kwargs.get("auth_server")

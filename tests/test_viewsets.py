@@ -4197,6 +4197,32 @@ class TestPendingTokensBelongToOneFlow(TestCase):
             "access-alice",
         )
 
+    def test_a_callback_that_raises_still_gives_the_pair_up(self):
+        """An id_token shape this library has no handler for raises past
+        every ``except`` and becomes a 500. That is an exit too, and the
+        caller behind it never signed in, so never reaches logout."""
+        session = {}
+        self._park(session)
+
+        view = KeycloakOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+            side_effect=TokenVerificationFailed("no email claim"),
+        ):
+            request = self.factory.post(
+                "/",
+                data={
+                    "id_token": "id-token-alice",
+                    "username": "alice_chosen",
+                    USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+                },
+            )
+            request.session = session
+            with self.assertRaises(TokenVerificationFailed):
+                view(request, auth_server="default")
+
+        self.assertEqual([k for k in session if k.endswith(":pending")], [])
+
     def test_logout_clears_a_pair_abandoned_at_the_form(self):
         """Nothing can tell an abandoned pair from one whose tab is still on
         the form, so the parked pair outlives the flow. Logout is what
@@ -5216,9 +5242,9 @@ class TestParkedPairSurvivesTheLoginFlush(TestCase):
 @WITH_ACCOUNT_ENDPOINT
 class TestRefusalDrainsParkedTokens(TestCase):
     """A login refused *at the username form* parks a pair on the way in.
-    Storing the tokens is what drains the pending slots, and the success
-    guard skips it on refusal -- so the pair stays. A refused caller never
-    reaches logout, so nothing else clears it."""
+    Nothing on the refusal path stores tokens, so nothing on it would clear
+    them either -- and a refused caller never reaches logout. ``callback``
+    takes the pair back on the way out for exactly this reason."""
 
     TOKENS = {
         "id_token": "idp-id-token",
