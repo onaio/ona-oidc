@@ -10,7 +10,7 @@ A pluggable django application that implements OpenID Connect client functionali
 pip install -e git+https://github.com/onaio/ona-oidc.git#egg=ona-oidc
 ```
 
-1. Add `oidc` to the list of `INSTALLED_APPS`
+2. Add `oidc` to the list of `INSTALLED_APPS`
 
 ```python
 ...
@@ -25,12 +25,12 @@ INSTALLED_APPS = [
 
 ```
 
-The username-entry form and the error page extend `base.html`, and the
-package ships a plain one so a fresh install renders. To use your own,
-put it on `TEMPLATES["DIRS"]` or in an app listed before `oidc`; it only
-needs `title` and `content` blocks.
+   Note: the username-entry form and the error page extend `base.html`.
+   The package ships a plain one so a fresh install renders; a project's
+   own wins from `TEMPLATES["DIRS"]` or from an app listed before `oidc`,
+   and only needs `title` and `content` blocks.
 
-1. Set `OPENID_CONNECT_VIEWSET_CONFIG` and `OPENID_CONNECT_AUTH_SERVERS` settings
+3. Set `OPENID_CONNECT_VIEWSET_CONFIG` and `OPENID_CONNECT_AUTH_SERVERS` settings
 
 ```python
 ...
@@ -356,7 +356,7 @@ subclass enforces.
 `USE_RAPIDPRO_VIEWSET` is the older boolean form and still works;
 `VIEWSET_CLASS` takes precedence when both are set.
 
-1. (Optional) If you'd like to use the default OpenID Connect Viewset register the urls located in `oidc.urls`.
+4. (Optional) If you'd like to use the default OpenID Connect Viewset register the urls located in `oidc.urls`.
 
 ```python
 # urls.py file
