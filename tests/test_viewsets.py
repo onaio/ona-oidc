@@ -5060,6 +5060,35 @@ class TestRouteTrailingSlashSymmetry(TestCase):
             with self.subTest(path=path):
                 resolve(path)
 
+    @override_settings(ROOT_URLCONF="tests.keycloak_urls")
+    def test_the_account_routes_accept_one_without_shadowing_each_other(self):
+        """An optional slash on a prefix route could swallow the sibling it
+        prefixes -- ``sessions/`` eating ``sessions/<id>``, ``linked-
+        accounts/`` eating ``linked-accounts/<provider>``. Each path is
+        checked against the route it must land on, not merely that it
+        resolves."""
+        expected = {
+            "/oidc/default/sessions": "openid_connect_sessions",
+            "/oidc/default/sessions/": "openid_connect_sessions",
+            "/oidc/default/sessions/abc-123": "openid_connect_sessions_revoke_one",
+            "/oidc/default/sessions/abc-123/": "openid_connect_sessions_revoke_one",
+            "/oidc/default/credentials": "openid_connect_credentials",
+            "/oidc/default/credentials/": "openid_connect_credentials",
+            "/oidc/default/linked-accounts": "openid_connect_linked_list",
+            "/oidc/default/linked-accounts/": "openid_connect_linked_list",
+            "/oidc/default/linked-accounts/ga": "openid_connect_linked_unlink",
+            "/oidc/default/linked-accounts/ga/": "openid_connect_linked_unlink",
+            "/oidc/default/linked-accounts/ga/link-url": (
+                "openid_connect_linked_link_url"
+            ),
+            "/oidc/default/linked-accounts/ga/link-url/": (
+                "openid_connect_linked_link_url"
+            ),
+        }
+        for path, url_name in expected.items():
+            with self.subTest(path=path):
+                self.assertEqual(resolve(path).url_name, url_name)
+
 
 class TestMixinOrderIsEnforced(TestCase):
     """Listing the mixin after the base viewset resolves

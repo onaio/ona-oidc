@@ -319,7 +319,7 @@ class KeycloakAccountMixin:
     @action(
         methods=["GET"],
         detail=False,
-        url_path="sessions",
+        url_path=r"sessions/?",
         url_name="openid_connect_sessions",
         authentication_classes=[],
         permission_classes=[IsCsrfSafeAccountRequest],
@@ -346,7 +346,7 @@ class KeycloakAccountMixin:
     @action(
         methods=["DELETE"],
         detail=False,
-        url_path=r"sessions/(?P<session_id>[a-zA-Z0-9._-]+)",
+        url_path=r"sessions/(?P<session_id>[a-zA-Z0-9._-]+)/?",
         url_name="openid_connect_sessions_revoke_one",
         authentication_classes=[],
         permission_classes=[IsCsrfSafeAccountRequest],
@@ -401,7 +401,7 @@ class KeycloakAccountMixin:
     @action(
         methods=["GET"],
         detail=False,
-        url_path="linked-accounts",
+        url_path=r"linked-accounts/?",
         url_name="openid_connect_linked_list",
         authentication_classes=[],
         permission_classes=[IsCsrfSafeAccountRequest],
@@ -421,7 +421,7 @@ class KeycloakAccountMixin:
     @action(
         methods=["DELETE"],
         detail=False,
-        url_path=r"linked-accounts/(?P<provider>[^/]+)",
+        url_path=r"linked-accounts/(?P<provider>[^/]+)/?",
         url_name="openid_connect_linked_unlink",
         authentication_classes=[],
         permission_classes=[IsCsrfSafeAccountRequest],
@@ -446,7 +446,7 @@ class KeycloakAccountMixin:
     @action(
         methods=["GET"],
         detail=False,
-        url_path=r"linked-accounts/(?P<provider>[^/]+)/link-url",
+        url_path=r"linked-accounts/(?P<provider>[^/]+)/link-url/?",
         url_name="openid_connect_linked_link_url",
         authentication_classes=[],
         permission_classes=[IsCsrfSafeAccountRequest],
@@ -475,7 +475,7 @@ class KeycloakAccountMixin:
     @action(
         methods=["GET"],
         detail=False,
-        url_path="credentials",
+        url_path=r"credentials/?",
         url_name="openid_connect_credentials",
         authentication_classes=[],
         permission_classes=[IsCsrfSafeAccountRequest],

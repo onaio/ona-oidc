@@ -19,13 +19,16 @@ from oidc.keycloak import KeycloakAccountMixin
 from oidc.permissions import IsCsrfSafeAccountRequest
 from oidc.viewsets import UserModelOpenIDConnectViewset
 
-#: What the shipped account actions declare. Repeated in the fixtures below so
-#: each one differs from the real route in exactly one way.
+#: What the shipped account actions declare. Read off the mixin rather than
+#: repeated, so a fixture below cannot start differing in a second way -- each
+#: is meant to differ from the real route in exactly one.
 GUARDED = {
     "authentication_classes": [],
     "permission_classes": [IsCsrfSafeAccountRequest],
     "renderer_classes": [JSONRenderer],
 }
+SESSIONS_PATH = KeycloakAccountMixin.sessions_list.url_path
+CREDENTIALS_PATH = KeycloakAccountMixin.credentials_list.url_path
 
 
 class InjectedViewset(UserModelOpenIDConnectViewset):
@@ -73,7 +76,7 @@ class NarrowedRedeclareViewset(KeycloakAccountMixin, UserModelOpenIDConnectViews
     @action(
         methods=["GET"],
         detail=False,
-        url_path="sessions",
+        url_path=SESSIONS_PATH,
         url_name="openid_connect_sessions",
         **GUARDED,
     )
@@ -102,7 +105,7 @@ class UnguardedRedeclareViewset(KeycloakAccountMixin, UserModelOpenIDConnectView
     @action(
         methods=["GET"],
         detail=False,
-        url_path="credentials",
+        url_path=CREDENTIALS_PATH,
         url_name="openid_connect_credentials",
     )
     def credentials_list(self, request, **kwargs):
@@ -130,7 +133,7 @@ class DetailRedeclareViewset(KeycloakAccountMixin, UserModelOpenIDConnectViewset
     @action(
         methods=["GET"],
         detail=True,
-        url_path="credentials",
+        url_path=CREDENTIALS_PATH,
         url_name="openid_connect_credentials",
         **GUARDED,
     )
@@ -152,7 +155,7 @@ class TightenedRedeclareViewset(KeycloakAccountMixin, UserModelOpenIDConnectView
     @action(
         methods=["GET"],
         detail=False,
-        url_path="credentials",
+        url_path=CREDENTIALS_PATH,
         url_name="openid_connect_credentials",
         authentication_classes=[],
         permission_classes=[IsCsrfSafeAccountRequest, OnlyDuringMaintenance],
@@ -170,7 +173,7 @@ class RenamedCompanionViewset(KeycloakAccountMixin, UserModelOpenIDConnectViewse
     @action(
         methods=["GET"],
         detail=False,
-        url_path="sessions",
+        url_path=SESSIONS_PATH,
         url_name="openid_connect_sessions",
         **GUARDED,
     )
