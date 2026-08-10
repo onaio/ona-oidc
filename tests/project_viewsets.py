@@ -11,10 +11,21 @@ circular import.
 
 from rest_framework import status
 from rest_framework.decorators import action
+from rest_framework.permissions import BasePermission
+from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
 
 from oidc.keycloak import KeycloakAccountMixin
+from oidc.permissions import IsCsrfSafeAccountRequest
 from oidc.viewsets import UserModelOpenIDConnectViewset
+
+#: What the shipped account actions declare. Repeated in the fixtures below so
+#: each one differs from the real route in exactly one way.
+GUARDED = {
+    "authentication_classes": [],
+    "permission_classes": [IsCsrfSafeAccountRequest],
+    "renderer_classes": [JSONRenderer],
+}
 
 
 class InjectedViewset(UserModelOpenIDConnectViewset):
@@ -64,6 +75,7 @@ class NarrowedRedeclareViewset(KeycloakAccountMixin, UserModelOpenIDConnectViews
         detail=False,
         url_path="sessions",
         url_name="openid_connect_sessions",
+        **GUARDED,
     )
     def sessions_list(self, request, **kwargs):
         return super().sessions_list(request, **kwargs)
@@ -80,3 +92,91 @@ class RenamedRouteViewset(KeycloakAccountMixin, UserModelOpenIDConnectViewset):
     )
     def login(self, request, **kwargs):
         return super().login(request, **kwargs)
+
+
+class UnguardedRedeclareViewset(KeycloakAccountMixin, UserModelOpenIDConnectViewset):
+    """Route-identical, but the decorator omits the view kwargs -- so
+    ``permission_classes`` falls back to the viewset default, ``AllowAny``,
+    and the account proxy loses its CSRF/Origin gate."""
+
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path="credentials",
+        url_name="openid_connect_credentials",
+    )
+    def credentials_list(self, request, **kwargs):
+        return super().credentials_list(request, **kwargs)
+
+
+class MovedRouteViewset(KeycloakAccountMixin, UserModelOpenIDConnectViewset):
+    """Re-declares under a different url_path, so the old URL 404s."""
+
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path="account/credentials",
+        url_name="openid_connect_credentials",
+        **GUARDED,
+    )
+    def credentials_list(self, request, **kwargs):
+        return super().credentials_list(request, **kwargs)
+
+
+class DetailRedeclareViewset(KeycloakAccountMixin, UserModelOpenIDConnectViewset):
+    """Re-declares with ``detail=True``, which inserts a ``pk`` segment the
+    caller never sends and breaks ``reverse()`` for everyone else."""
+
+    @action(
+        methods=["GET"],
+        detail=True,
+        url_path="credentials",
+        url_name="openid_connect_credentials",
+        **GUARDED,
+    )
+    def credentials_list(self, request, **kwargs):
+        return super().credentials_list(request, **kwargs)
+
+
+class OnlyDuringMaintenance(BasePermission):
+    """Stand-in for a deployment's own extra rule."""
+
+    def has_permission(self, request, view):
+        return True
+
+
+class TightenedRedeclareViewset(KeycloakAccountMixin, UserModelOpenIDConnectViewset):
+    """Keeps the shipped gate and adds one of its own, which is narrowing --
+    not the widening E002 exists to catch."""
+
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path="credentials",
+        url_name="openid_connect_credentials",
+        authentication_classes=[],
+        permission_classes=[IsCsrfSafeAccountRequest, OnlyDuringMaintenance],
+        renderer_classes=[JSONRenderer],
+    )
+    def credentials_list(self, request, **kwargs):
+        return super().credentials_list(request, **kwargs)
+
+
+class RenamedCompanionViewset(KeycloakAccountMixin, UserModelOpenIDConnectViewset):
+    """Re-declares both verbs but names the DELETE handler differently. The
+    route is unchanged -- ``mapping`` holds handler names, not verbs -- so
+    this must not be reported."""
+
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path="sessions",
+        url_name="openid_connect_sessions",
+        **GUARDED,
+    )
+    def sessions_list(self, request, **kwargs):
+        return super().sessions_list(request, **kwargs)
+
+    @sessions_list.mapping.delete
+    def revoke_every_other_session(self, request, **kwargs):
+        return super().sessions_revoke_others(request, **kwargs)

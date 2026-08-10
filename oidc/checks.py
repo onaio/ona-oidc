@@ -57,18 +57,56 @@ def check_session_backend_can_hold_tokens(app_configs, **kwargs):
     ]
 
 
+#: View kwargs an override has to carry forward. Dropping ``permission_classes``
+#: falls back to the viewset default -- ``AllowAny`` -- which on an
+#: account-proxy route silently removes the CSRF/Origin gate, and the route
+#: still looks identical by path, name and verb. Compared as subsets so a
+#: subclass may add to them.
+_GUARDED_VIEW_KWARGS = (
+    "permission_classes",
+    "authentication_classes",
+    "renderer_classes",
+)
+
+
+def _kwarg_survives(inherited, current, key: str) -> bool:
+    return set(getattr(inherited, "kwargs", {}).get(key) or ()) <= set(
+        getattr(current, "kwargs", {}).get(key) or ()
+    )
+
+
+def _hint_kwargs(inherited) -> str:
+    """The guarded view kwargs, spelled out so the hint can be copied."""
+    declared = [
+        f"{key}={[c.__name__ for c in getattr(inherited, 'kwargs', {})[key]]}"
+        for key in _GUARDED_VIEW_KWARGS
+        if key in getattr(inherited, "kwargs", {})
+    ]
+    return ", ".join(declared) if declared else "its view kwargs"
+
+
 def _routes_match(inherited, current) -> bool:
     """Whether an override still produces the route its parent declared.
 
     Name equality is not enough: a re-declared decorator with a different
-    ``url_path`` moves the endpoint, a different ``url_name`` breaks
-    ``reverse()``, and a fresh ``MethodMapper`` silently drops any
-    ``@<action>.mapping.<verb>`` companion the parent had.
+    ``url_path`` moves the endpoint, ``detail=True`` moves it again by
+    adding a ``pk`` segment, a different ``url_name`` breaks ``reverse()``,
+    a fresh ``MethodMapper`` silently drops any ``@<action>.mapping.<verb>``
+    companion the parent had, and omitted view kwargs quietly widen who may
+    call it.
+
+    The mapping is compared by verb rather than by (verb, handler name): the
+    route carries the verbs, so renaming the method a companion points at is
+    a rename, not a lost route.
     """
     return (
         getattr(inherited, "url_path", None) == getattr(current, "url_path", None)
         and getattr(inherited, "url_name", None) == getattr(current, "url_name", None)
-        and inherited.mapping.items() <= current.mapping.items()
+        and getattr(inherited, "detail", None) == getattr(current, "detail", None)
+        and inherited.mapping.keys() <= current.mapping.keys()
+        and all(
+            _kwarg_survives(inherited, current, key) for key in _GUARDED_VIEW_KWARGS
+        )
     )
 
 
@@ -106,10 +144,12 @@ def check_actions_survive_subclassing(app_configs, **kwargs):
                         f"Re-apply the decorator on the override, matching "
                         f"{klass.__name__}.{name} exactly: url_path="
                         f"{getattr(inherited, 'url_path', None)!r}, url_name="
-                        f"{getattr(inherited, 'url_name', None)!r}, and at "
-                        f"least the methods {sorted(inherited.mapping)}. Any "
-                        f"@{name}.mapping.<verb> companions must be "
-                        f"re-declared too -- a fresh decorator replaces them."
+                        f"{getattr(inherited, 'url_name', None)!r}, detail="
+                        f"{getattr(inherited, 'detail', None)!r}, at least the "
+                        f"methods {sorted(inherited.mapping)}, and "
+                        f"{_hint_kwargs(inherited)}. Any @{name}.mapping.<verb> "
+                        f"companions must be re-declared too -- a fresh "
+                        f"decorator replaces them."
                     ),
                     id="oidc.E002",
                 )

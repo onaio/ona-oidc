@@ -5091,6 +5091,69 @@ class TestDeployCheckComparesRoutesNotNames(TestCase):
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG={
             **OPENID_CONNECT_VIEWSET_CONFIG,
+            "VIEWSET_CLASS": "tests.project_viewsets.MovedRouteViewset",
+        }
+    )
+    def test_a_changed_url_path_is_reported(self):
+        errors = check_actions_survive_subclassing(None)
+        self.assertEqual([e.id for e in errors], ["oidc.E002"])
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "VIEWSET_CLASS": "tests.project_viewsets.DetailRedeclareViewset",
+        }
+    )
+    def test_a_flipped_detail_flag_is_reported(self):
+        """detail=True inserts a pk segment, so the SPA's URL 404s and
+        reverse() without a pk raises NoReverseMatch."""
+        errors = check_actions_survive_subclassing(None)
+        self.assertEqual([e.id for e in errors], ["oidc.E002"])
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "VIEWSET_CLASS": "tests.project_viewsets.UnguardedRedeclareViewset",
+        }
+    )
+    def test_dropping_the_view_kwargs_is_reported(self):
+        """The route matches by path, name and verb, but permission_classes
+        falls back to AllowAny -- the account proxy's only cross-origin
+        defence, gone with nothing to show for it. E002's own hint used to
+        describe exactly this override."""
+        errors = check_actions_survive_subclassing(None)
+        self.assertEqual([e.id for e in errors], ["oidc.E002"])
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "VIEWSET_CLASS": "tests.project_viewsets.TightenedRedeclareViewset",
+        }
+    )
+    def test_adding_a_permission_class_is_not_reported(self):
+        """Only widening matters. Demanding equality would hard-fail a
+        deployment for tightening its own account routes."""
+        self.assertEqual(check_actions_survive_subclassing(None), [])
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "VIEWSET_CLASS": "tests.project_viewsets.RenamedCompanionViewset",
+        }
+    )
+    def test_renaming_a_companion_handler_is_not_reported(self):
+        """``mapping`` holds handler names, so comparing it pairwise hard-
+        fails a subclass that kept both verbs and merely renamed a method --
+        and E002 is an Error, so that stops manage.py check outright."""
+        from tests.project_viewsets import RenamedCompanionViewset
+
+        self.assertEqual(check_actions_survive_subclassing(None), [])
+        routed = {a.__name__: a for a in RenamedCompanionViewset.get_extra_actions()}
+        self.assertEqual(sorted(routed["sessions_list"].mapping), ["delete", "get"])
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
             "VIEWSET_CLASS": "tests.project_viewsets.RedeclaredOverrideViewset",
         }
     )
