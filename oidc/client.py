@@ -558,6 +558,10 @@ class OpenIDClient:
                 data=data,
                 headers=headers,
                 timeout=self.request_timeout,
+                # As on the account call: a redirect here is not the token
+                # endpoint answering, and following it lands on a page that
+                # returns 200 with something that is not a token response.
+                allow_redirects=False,
             )
             response.raise_for_status()
         except requests.HTTPError as exc:
@@ -568,11 +572,17 @@ class OpenIDClient:
             raise TokenVerificationFailed(
                 f"Failed to refresh access token: {exc}"
             ) from exc
-        # Transport failures (DNS, timeout) are left to propagate, as is a
-        # non-JSON body. Reporting an unreachable IdP as "session expired" would
-        # send the user through a re-login that cannot fix it; the proxy maps
-        # RequestException to 502 instead.
-        return response.json()
+        # Transport failures (DNS, timeout) are left to propagate: reporting an
+        # unreachable IdP as "session expired" would send the user through a
+        # re-login that cannot fix it, and the proxy maps RequestException to
+        # 502 instead.
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise UpstreamShapeError(
+                f"token endpoint answered {response.status_code} with a body "
+                f"that is not JSON."
+            ) from exc
 
     def request_keycloak_account(
         self,

@@ -183,3 +183,82 @@ class RenamedCompanionViewset(KeycloakAccountMixin, UserModelOpenIDConnectViewse
     @sessions_list.mapping.delete
     def revoke_every_other_session(self, request, **kwargs):
         return super().sessions_revoke_others(request, **kwargs)
+
+
+class ReskinnedFormViewset(KeycloakAccountMixin, UserModelOpenIDConnectViewset):
+    """Renders the username form from its own template. The pair is still
+    parked by the base method, so this exit must stay exempt from the drain
+    -- keying that on the template path would strand this deployment on the
+    second attempt at a username."""
+
+    def _username_form_response(self, *args, **kwargs):
+        response = super()._username_form_response(*args, **kwargs)
+        response.template_name = "oidc/my_own_user_form.html"
+        return response
+
+
+class UnguardedAuthClassesViewset(KeycloakAccountMixin, UserModelOpenIDConnectViewset):
+    """Keeps the permission and renderer kwargs, drops only
+    ``authentication_classes=[]`` -- so DRF's SessionAuthentication comes
+    back and enforces its own CSRF check on a route whose callers have no
+    CSRF token."""
+
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path=CREDENTIALS_PATH,
+        url_name="openid_connect_credentials",
+        permission_classes=[IsCsrfSafeAccountRequest],
+        renderer_classes=[JSONRenderer],
+    )
+    def credentials_list(self, request, **kwargs):
+        return super().credentials_list(request, **kwargs)
+
+
+class ComposedPermissionViewset(KeycloakAccountMixin, UserModelOpenIDConnectViewset):
+    """Tightens by composing rather than by appending. ``A & B`` collapses
+    into one OperandHolder, so the shipped class is no longer literally in
+    the list."""
+
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path=CREDENTIALS_PATH,
+        url_name="openid_connect_credentials",
+        authentication_classes=[],
+        permission_classes=[IsCsrfSafeAccountRequest & OnlyDuringMaintenance],
+        renderer_classes=[JSONRenderer],
+    )
+    def credentials_list(self, request, **kwargs):
+        return super().credentials_list(request, **kwargs)
+
+
+class WidenedPermissionViewset(KeycloakAccountMixin, UserModelOpenIDConnectViewset):
+    """``A | B`` reads like the composed case but is a weakening: the route
+    now passes for anything B admits."""
+
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path=CREDENTIALS_PATH,
+        url_name="openid_connect_credentials",
+        authentication_classes=[],
+        permission_classes=[IsCsrfSafeAccountRequest | OnlyDuringMaintenance],
+        renderer_classes=[JSONRenderer],
+    )
+    def credentials_list(self, request, **kwargs):
+        return super().credentials_list(request, **kwargs)
+
+
+class ExtraVerbViewset(KeycloakAccountMixin, UserModelOpenIDConnectViewset):
+    """Adds a verb to a route it otherwise re-declares faithfully."""
+
+    @action(
+        methods=["GET", "HEAD"],
+        detail=False,
+        url_path=CREDENTIALS_PATH,
+        url_name="openid_connect_credentials",
+        **GUARDED,
+    )
+    def credentials_list(self, request, **kwargs):
+        return super().credentials_list(request, **kwargs)

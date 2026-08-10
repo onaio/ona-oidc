@@ -69,10 +69,37 @@ _GUARDED_VIEW_KWARGS = (
 )
 
 
+def _required_classes(entry) -> set:
+    """Everything an entry demands unconditionally.
+
+    ``A & B`` does not keep both classes in the list -- DRF builds a single
+    ``OperandHolder`` -- so a subclass that *tightened* a route by composing
+    would look, to a plain membership test, exactly like one that dropped
+    the gate. Only ``AND`` is flattened: ``A | B`` is a weakening, and has
+    to be reported.
+    """
+    operator = getattr(entry, "operator_class", None)
+    if operator is not None and operator.__name__ == "AND":
+        return _required_classes(entry.op1_class) | _required_classes(entry.op2_class)
+    return {entry}
+
+
 def _kwarg_survives(inherited, current, key: str) -> bool:
-    return set(getattr(inherited, "kwargs", {}).get(key) or ()) <= set(
-        getattr(current, "kwargs", {}).get(key) or ()
-    )
+    """Whether the override still demands everything the parent declared.
+
+    Presence is checked before content: ``authentication_classes=[]`` is
+    declared empty on purpose, and an empty set is a subset of anything --
+    including of an override that dropped the kwarg entirely and inherited
+    DRF's session and basic auth, CSRF enforcement and all.
+    """
+    declared = getattr(inherited, "kwargs", {})
+    if key not in declared:
+        return True
+    kept = getattr(current, "kwargs", {})
+    if key not in kept:
+        return False
+    required = set().union(*(_required_classes(e) for e in kept[key] or ())) or set()
+    return set(declared[key] or ()) <= required
 
 
 def _hint_kwargs(inherited) -> str:

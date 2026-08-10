@@ -6,6 +6,7 @@ import importlib
 import logging
 import re
 import traceback
+from collections.abc import Mapping
 from typing import List, Optional, Tuple
 
 from django.conf import settings
@@ -72,9 +73,29 @@ SSO_COOKIE_NAME = "SSO"
 USERNAME_FORM_MARKER_FIELD = "from_username_form"
 USERNAME_FORM_MARKER_VALUE = "1"
 
-# Rendering this template is the one callback exit allowed to leave a token
-# pair parked in the session; see ``callback``.
 USERNAME_FORM_TEMPLATE = "oidc/oidc_user_data_entry.html"
+
+# Stamped on the username-form response: it is the one callback exit allowed
+# to leave a token pair parked in the session, and ``callback`` reads this to
+# tell it apart. An attribute rather than the template path, which a
+# deployment is free to repoint at its own form.
+PAIR_PARKED_ATTR = "_oidc_pair_parked"
+
+
+def _claimed_id_token(request) -> Optional[str]:
+    """The id_token this request carries, for scoping the pending drain.
+
+    Read defensively. It happens in ``callback``'s ``finally``, where DRF
+    parses the body lazily: an unparseable or unsupported one raises there
+    and would replace whatever exception is already on its way out, and a
+    JSON body that is not an object has no ``.get`` at all.
+    """
+    try:
+        data = request.data
+    except Exception:  # noqa: BLE001 - any parse failure, and none of them matter here
+        return None
+    return data.get("id_token") if isinstance(data, Mapping) else None
+
 
 # Defaults used when FIELD_VALIDATION_REGEX has no "username" entry.
 # Kept conservative so the rendered form matches the legacy template
@@ -416,11 +437,13 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             "username_help_text": help_text,
             "state": state or "",
         }
-        return Response(
+        response = Response(
             merged,
             template_name=USERNAME_FORM_TEMPLATE,
             **response_kwargs,
         )
+        setattr(response, PAIR_PARKED_ATTR, True)
+        return response
 
     def _check_user_uniqueness(self, user_data: dict) -> Optional[str]:
         """
@@ -682,11 +705,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             response = self._callback(request, **kwargs)
             return response
         finally:
-            if getattr(response, "template_name", None) != USERNAME_FORM_TEMPLATE:
+            if not getattr(response, PAIR_PARKED_ATTR, False):
                 take_pending_tokens(
                     getattr(request, "session", None),
                     kwargs.get("auth_server"),
-                    request.data.get("id_token"),
+                    _claimed_id_token(request),
                 )
 
     def _callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa

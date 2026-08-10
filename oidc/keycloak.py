@@ -311,6 +311,16 @@ class KeycloakAccountMixin:
                 # that the distinction rarely matters.
                 return self._bad_gateway(exc, method, path_suffix)
             return Response(payload, status=status_code)
+        if status.is_redirect(status_code):
+            # We asked not to follow it, so it arrives here. Forwarding it
+            # verbatim would re-emit a redirect from our own origin with no
+            # Location -- and a 301 is cacheable. It is the same "not the
+            # account API answering" case as an unparseable body.
+            return self._bad_gateway(
+                UpstreamShapeError(f"account endpoint answered {status_code}"),
+                method,
+                path_suffix,
+            )
         return Response(
             {"error": "Identity provider rejected the request.", "upstream": body},
             status=status_code,

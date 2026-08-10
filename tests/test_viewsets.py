@@ -4197,6 +4197,44 @@ class TestPendingTokensBelongToOneFlow(TestCase):
             "access-alice",
         )
 
+    def test_a_body_it_cannot_parse_does_not_replace_the_real_error(self):
+        """The drain runs in a ``finally`` and needs the request's id_token.
+        Reading it through DRF's lazy parse means an unparseable body raises
+        *there* -- second, so it displaces whatever was already on its way
+        out, and a real defect reaches the browser as a content-type
+        complaint with nothing logged."""
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        for body, content_type in (
+            ("<x/>", "application/xml"),
+            ("{not json", "application/json"),
+            ("[1,2]", "application/json"),
+        ):
+            with self.subTest(body=body):
+                with patch.object(
+                    UserModelOpenIDConnectViewset,
+                    "_callback",
+                    side_effect=RuntimeError("a real bug"),
+                ):
+                    request = self.factory.post(
+                        "/", data=body, content_type=content_type
+                    )
+                    request.session = {}
+                    with self.assertRaises(RuntimeError):
+                        view(request, auth_server="default")
+
+    def test_an_unparseable_body_still_gets_the_handled_error(self):
+        """The same read on the unknown-auth_server path, which answers 400
+        and never looks at the body itself."""
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        for body in ("[1,2]", '"hello"', "null"):
+            with self.subTest(body=body):
+                request = self.factory.post(
+                    "/", data=body, content_type="application/json"
+                )
+                request.session = {}
+                response = view(request, auth_server="nosuchserver")
+                self.assertEqual(response.status_code, 400)
+
     def test_a_callback_that_raises_still_gives_the_pair_up(self):
         """An id_token shape this library has no handler for raises past
         every ``except`` and becomes a 500. That is an exit too, and the
@@ -4222,6 +4260,54 @@ class TestPendingTokensBelongToOneFlow(TestCase):
                 view(request, auth_server="default")
 
         self.assertEqual([k for k in session if k.endswith(":pending")], [])
+
+    def test_a_reskinned_form_keeps_its_pair_across_a_retry(self):
+        """The exempt exit is the username form, not one template path. A
+        deployment that renders its own form still parks a pair in the base
+        method, and draining it would leave that deployment signed in with
+        no pair the moment a user mistypes a username once."""
+        from tests.project_viewsets import ReskinnedFormViewset
+
+        session = {}
+        view = ReskinnedFormViewset.as_view({"post": "callback"})
+        claims = {"given_name": "Alice", "family_name": "User", "email": "a@x.io"}
+        with (
+            patch(
+                "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code",
+                return_value={
+                    "id_token": "id-token-alice",
+                    "access_token": "access-alice",
+                    "refresh_token": "refresh-alice",
+                },
+            ),
+            patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+                return_value=claims,
+            ),
+        ):
+            request = self.factory.post("/", data={"code": "auth-code"})
+            request.session = session
+            first = view(request, auth_server="default")
+        self.assertEqual(first.template_name, "oidc/my_own_user_form.html")
+        self._assert_still_parked(session, "alice")
+
+        User.objects.create(username="taken_name", email="someone@x.io")
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+            return_value=claims,
+        ):
+            request = self.factory.post(
+                "/",
+                data={
+                    "id_token": "id-token-alice",
+                    "username": "taken_name",
+                    USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+                },
+            )
+            request.session = session
+            view(request, auth_server="default")
+
+        self._assert_still_parked(session, "alice")
 
     def test_logout_clears_a_pair_abandoned_at_the_form(self):
         """Nothing can tell an abandoned pair from one whose tab is still on
@@ -4924,6 +5010,59 @@ class TestAccountCallFailureModes(TestCase):
         request.session = {}
         self.assertEqual(view(request, auth_server="default").status_code, 401)
 
+    def test_a_redirect_is_a_502_not_a_redirect_of_our_own(self):
+        """We ask not to follow it, so it lands here. Forwarding the status
+        verbatim re-emits a redirect from our own origin with no Location --
+        and a 301 is cacheable."""
+        for code in (301, 302, 307):
+            with self.subTest(code=code):
+                upstream = MagicMock(status_code=code, content=b"")
+                response = self._get(return_value=upstream)
+                self.assertEqual(response.status_code, 502)
+
+    def test_a_refresh_that_answers_with_html_is_a_502(self):
+        """Same failure as on the account call, one endpoint over: a
+        maintenance page in front of TOKEN_ENDPOINT used to escape as a bare
+        ValueError and 500."""
+        first = MagicMock(status_code=401, content=b"{}")
+        first.json.return_value = {"error": "invalid_token"}
+        refresh = MagicMock(status_code=200, content=b"<html>maintenance</html>")
+        refresh.json.side_effect = ValueError("Expecting value")
+
+        view = KeycloakOpenIDConnectViewset.as_view({"get": "linked_list"})
+        request = self.factory.get("/")
+        request.session = {
+            token_session_key(ACCESS_TOKEN_SESSION_KEY, "default"): "old",
+            token_session_key(REFRESH_TOKEN_SESSION_KEY, "default"): "rt",
+        }
+        with (
+            patch("oidc.client.requests.request", return_value=first),
+            patch("oidc.client.requests.post", return_value=refresh),
+        ):
+            response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 502)
+
+    def test_the_refresh_call_does_not_follow_redirects_either(self):
+        tokens = MagicMock(status_code=200, content=b"{}")
+        tokens.json.return_value = {"access_token": "new"}
+        first = MagicMock(status_code=401, content=b"{}")
+        first.json.return_value = {"error": "invalid_token"}
+        retry = MagicMock(status_code=200, content=b"[]")
+        retry.json.return_value = []
+
+        view = KeycloakOpenIDConnectViewset.as_view({"get": "linked_list"})
+        request = self.factory.get("/")
+        request.session = {
+            token_session_key(ACCESS_TOKEN_SESSION_KEY, "default"): "old",
+            token_session_key(REFRESH_TOKEN_SESSION_KEY, "default"): "rt",
+        }
+        with (
+            patch("oidc.client.requests.request", side_effect=[first, retry]),
+            patch("oidc.client.requests.post", return_value=tokens) as post,
+        ):
+            view(request, auth_server="default")
+        self.assertIs(post.call_args.kwargs["allow_redirects"], False)
+
     def test_an_empty_2xx_body_is_still_a_success(self):
         """A declared shape must not turn "nothing to send back" into a
         gateway error -- a 204 carries no body by definition."""
@@ -5406,6 +5545,54 @@ class TestDeployCheckComparesRoutesNotNames(TestCase):
         describe exactly this override."""
         errors = check_actions_survive_subclassing(None)
         self.assertEqual([e.id for e in errors], ["oidc.E002"])
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "VIEWSET_CLASS": "tests.project_viewsets.UnguardedAuthClassesViewset",
+        }
+    )
+    def test_dropping_only_authentication_classes_is_reported(self):
+        """``authentication_classes=[]`` is declared empty on purpose, and
+        an empty set is a subset of anything -- so a comparison by content
+        alone can never notice it going missing. The override inherits
+        SessionAuthentication, whose CSRF check then rejects the SPA's own
+        DELETEs."""
+        errors = check_actions_survive_subclassing(None)
+        self.assertEqual([e.id for e in errors], ["oidc.E002"])
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "VIEWSET_CLASS": "tests.project_viewsets.ComposedPermissionViewset",
+        }
+    )
+    def test_tightening_by_composition_is_not_reported(self):
+        """``A & B`` collapses to one OperandHolder, so the shipped class is
+        no longer literally in the list even though the route still demands
+        it."""
+        self.assertEqual(check_actions_survive_subclassing(None), [])
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "VIEWSET_CLASS": "tests.project_viewsets.WidenedPermissionViewset",
+        }
+    )
+    def test_widening_by_composition_is_still_reported(self):
+        """``A | B`` has the same shape as the case above and the opposite
+        meaning: the route now admits anything B admits."""
+        errors = check_actions_survive_subclassing(None)
+        self.assertEqual([e.id for e in errors], ["oidc.E002"])
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "VIEWSET_CLASS": "tests.project_viewsets.ExtraVerbViewset",
+        }
+    )
+    def test_adding_a_verb_is_not_reported(self):
+        self.assertEqual(check_actions_survive_subclassing(None), [])
 
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG={
