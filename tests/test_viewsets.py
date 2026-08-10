@@ -7,6 +7,7 @@ import logging
 from types import SimpleNamespace
 
 from django.contrib.auth import get_user_model
+from django.contrib.sessions.middleware import SessionMiddleware
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
@@ -5132,12 +5133,92 @@ class TestMixinOrderIsEnforced(TestCase):
         self.assertNotIn("Put the mixin first", message)
 
 
+class TestParkedPairSurvivesTheLoginFlush(TestCase):
+    """Under USE_AUTH_BACKEND, ``generate_successful_response`` runs Django's
+    ``login()``, which flushes the session when a different user was
+    authenticated in it. A pair the code exchange returned is in locals and
+    survives; the form path's pair is in the session and does not, so the
+    user ends up signed in with an id_token and no tokens -- a proxy that
+    401s for the whole session with nothing to indicate why."""
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+
+    def _with_session(self, data):
+        request = self.factory.post("/", data=data)
+        SessionMiddleware(lambda req: None).process_request(request)
+        request.session.save()
+        return request
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+            },
+        },
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "USE_AUTH_BACKEND": True,
+            "AUTH_BACKEND": "django.contrib.auth.backends.ModelBackend",
+        },
+    )
+    def test_a_form_login_as_a_different_user_keeps_its_pair(self):
+        claims = {"given_name": "Alice", "family_name": "User", "email": "a@x.io"}
+        view = KeycloakOpenIDConnectViewset.as_view({"post": "callback"})
+        incumbent = User.objects.create_user("someone_else", "other@x.io", "pw")
+
+        first = self._with_session({"code": "auth-code"})
+        first.session["_auth_user_id"] = str(incumbent.pk)
+        with (
+            patch(
+                "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code",
+                return_value={
+                    "id_token": "id-alice",
+                    "access_token": "at-alice",
+                    "refresh_token": "rt-alice",
+                },
+            ),
+            patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+                return_value=claims,
+            ),
+        ):
+            view(first, auth_server="default")
+        self.assertTrue([k for k in first.session.keys() if k.endswith(":pending")])
+
+        resubmit = self._with_session(
+            {
+                "id_token": "id-alice",
+                "username": "alice_chosen",
+                USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+            }
+        )
+        for key, value in first.session.items():
+            resubmit.session[key] = value
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+            return_value=claims,
+        ):
+            response = view(resubmit, auth_server="default")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            resubmit.session.get(
+                token_session_key(ACCESS_TOKEN_SESSION_KEY, "default")
+            ),
+            "at-alice",
+            "login()'s flush took the parked pair with it",
+        )
+
+
 @WITH_ACCOUNT_ENDPOINT
 class TestRefusalDrainsParkedTokens(TestCase):
     """A login refused *at the username form* parks a pair on the way in.
-    ``_persist_oidc_tokens`` is the only thing that drains the pending
-    slots, and the success guard skips it on refusal -- so the pair stays.
-    A refused caller never reaches logout, so nothing else clears it."""
+    Storing the tokens is what drains the pending slots, and the success
+    guard skips it on refusal -- so the pair stays. A refused caller never
+    reaches logout, so nothing else clears it."""
 
     TOKENS = {
         "id_token": "idp-id-token",

@@ -569,6 +569,34 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
         return user_data, missing_fields
 
+    @staticmethod
+    def _reunite_with_parked_pair(
+        request: HttpRequest,
+        auth_server: Optional[str],
+        id_token: Optional[str],
+        user_tokens,
+    ):
+        """Move this flow's parked pair out of the session and into hand.
+
+        The username form re-POSTs only the id_token, so on that path the
+        pair is in the session rather than in ``user_tokens``. Taken here --
+        before anything that can flush the session, and unconditionally, so
+        the pair cannot outlive the flow that parked it. Scoped to our
+        id_token: a pair parked by a second tab still sitting on the form
+        belongs to that tab and is left where it is.
+        """
+        tokens = user_tokens if isinstance(user_tokens, dict) else {}
+        parked_access, parked_refresh = take_pending_tokens(
+            getattr(request, "session", None), auth_server, id_token
+        )
+        if tokens.get("access_token") or not parked_access:
+            return tokens
+        return {
+            **tokens,
+            "access_token": parked_access,
+            "refresh_token": parked_refresh,
+        }
+
     def _persist_oidc_tokens(
         self,
         request: HttpRequest,
@@ -596,18 +624,6 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         tokens = user_tokens if isinstance(user_tokens, dict) else {}
         access_token = tokens.get("access_token")
         refresh_token = tokens.get("refresh_token")
-
-        # Drained even when a pair is already in hand, so this login's own
-        # parked pair cannot outlive it. Scoped to our id_token: a pair
-        # parked by a second tab still at the username form is left alone.
-        parked_access, parked_refresh = take_pending_tokens(
-            session, auth_server, id_token
-        )
-        if not access_token:
-            # Nothing in hand means this is the form resubmit, which carries
-            # only the id_token — the pair came from the first callback, and
-            # is handed back only if it belongs to this id_token.
-            access_token, refresh_token = parked_access, parked_refresh
 
         if id_token:
             session[token_session_key(ID_TOKEN_SESSION_KEY, auth_server)] = id_token
@@ -904,15 +920,22 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         user.last_login = timezone.now()
                         user.save(update_fields=["last_login"])
                         self._clear_login_states(server_response)
+                        # Before, not after: the call below runs Django's
+                        # ``login()``, which flushes the session when a
+                        # different user was authenticated in it -- taking
+                        # the parked slots with it. A pair the code exchange
+                        # returned is already in locals and survives that;
+                        # this puts the form path's pair in locals too, so
+                        # both paths reach the write below the same way.
+                        user_tokens = self._reunite_with_parked_pair(
+                            request, auth_server, id_token, user_tokens
+                        )
                         response = self.generate_successful_response(
                             request,
                             user,
                             redirect_after=redirect_after,
                             auth_server=auth_server,
                         )
-                        # After, not before: the call above runs Django's
-                        # ``login()``, which flushes the session when a
-                        # different user was authenticated in it.
                         #
                         # Only on a response that actually signed the user
                         # in. Overriding ``generate_successful_response`` to
