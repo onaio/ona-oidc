@@ -4887,6 +4887,16 @@ class TestAccountCallFailureModes(TestCase):
         response = self._get(return_value=upstream)
         self.assertEqual(response.status_code, 502)
 
+    @WITH_DEFAULT_SETTINGS
+    def test_a_caller_with_no_session_is_not_told_about_the_configuration(self):
+        """WITH_DEFAULT_SETTINGS has no ACCOUNT_ENDPOINT. Answering 503
+        first tells an anonymous caller which deployments have the proxy
+        turned on; the session check has to come first."""
+        view = KeycloakOpenIDConnectViewset.as_view({"get": "linked_list"})
+        request = self.factory.get("/")
+        request.session = {}
+        self.assertEqual(view(request, auth_server="default").status_code, 401)
+
     def test_an_empty_2xx_body_is_still_a_success(self):
         """A declared shape must not turn "nothing to send back" into a
         gateway error -- a 204 carries no body by definition."""

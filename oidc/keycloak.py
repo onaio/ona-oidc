@@ -254,14 +254,17 @@ class KeycloakAccountMixin:
                 {"error": _("Unknown auth server.")},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        # Before the configuration check: whether this deployment has an
+        # ACCOUNT_ENDPOINT is not something to tell a caller who has not
+        # shown a session.
+        session = _authenticated_session(request, client.auth_server)
+        if session is None:
+            return Response(NO_ACTIVE_SESSION, status=status.HTTP_401_UNAUTHORIZED)
         if not client.account_endpoint:
             return Response(
                 {"error": "Account endpoint not configured."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        session = _authenticated_session(request, client.auth_server)
-        if session is None:
-            return Response(NO_ACTIVE_SESSION, status=status.HTTP_401_UNAUTHORIZED)
         try:
             status_code, body = self._keycloak_account_request(
                 client, session, method, path_suffix
