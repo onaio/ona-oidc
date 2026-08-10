@@ -19,6 +19,7 @@ from typing import Any, Callable, Optional, Tuple
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpRequest, HttpResponse
 from django.utils.translation import gettext as _
+from django.utils.translation import gettext_lazy
 
 import jwt
 import requests
@@ -82,7 +83,9 @@ def _sid_from_id_token(id_token: str) -> Optional[str]:
 #: Single wording for "this request carries no usable OIDC session". The
 #: account proxy is driven by one SPA, so the same state must not surface
 #: three different strings depending on which endpoint was hit.
-NO_ACTIVE_SESSION = {"error": "No active OIDC session — please sign in again."}
+NO_ACTIVE_SESSION = {
+    "error": gettext_lazy("No active OIDC session — please sign in again.")
+}
 
 
 def _authenticated_session(request: HttpRequest, auth_server: Optional[str]):
@@ -205,7 +208,7 @@ class KeycloakAccountMixin:
         except TokenVerificationFailed:
             return (
                 status.HTTP_401_UNAUTHORIZED,
-                {"error": "Session expired — please sign in again."},
+                {"error": _("Session expired — please sign in again.")},
             )
 
         new_access = tokens.get("access_token")
@@ -223,7 +226,7 @@ class KeycloakAccountMixin:
         """The IdP answered, but not with anything we can use."""
         logger.exception("account proxy %s %s: %s", method, path_suffix, exc)
         return Response(
-            {"error": "Unexpected response from the identity provider."},
+            {"error": _("Unexpected response from the identity provider.")},
             status=status.HTTP_502_BAD_GATEWAY,
         )
 
@@ -262,7 +265,7 @@ class KeycloakAccountMixin:
             return Response(NO_ACTIVE_SESSION, status=status.HTTP_401_UNAUTHORIZED)
         if not client.account_endpoint:
             return Response(
-                {"error": "Account endpoint not configured."},
+                {"error": _("Account endpoint not configured.")},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         try:
@@ -278,7 +281,7 @@ class KeycloakAccountMixin:
             # too, and that is upstream's problem rather than our config.
             logger.exception(exc)
             return Response(
-                {"error": "Identity provider is not fully configured."},
+                {"error": _("Identity provider is not fully configured.")},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         except requests.RequestException as exc:
@@ -288,7 +291,7 @@ class KeycloakAccountMixin:
             # Keycloak instead of to us.
             logger.exception(exc)
             return Response(
-                {"error": "Could not reach the identity provider."},
+                {"error": _("Could not reach the identity provider.")},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
         except UpstreamShapeError as exc:
@@ -322,7 +325,7 @@ class KeycloakAccountMixin:
                 path_suffix,
             )
         return Response(
-            {"error": "Identity provider rejected the request.", "upstream": body},
+            {"error": _("Identity provider rejected the request."), "upstream": body},
             status=status_code,
         )
 
@@ -370,7 +373,7 @@ class KeycloakAccountMixin:
         button level)."""
         if not _SESSION_ID_RE.fullmatch(session_id):
             return Response(
-                {"error": "Invalid session id."},
+                {"error": _("Invalid session id.")},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         current_sid = _current_sid(request, kwargs.get("auth_server"))
@@ -443,7 +446,7 @@ class KeycloakAccountMixin:
         """Unlink a broker IdP from the current user."""
         if not _is_valid_provider_alias(provider):
             return Response(
-                {"error": "Invalid provider alias."},
+                {"error": _("Invalid provider alias.")},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return self._proxy_or_error(
@@ -471,7 +474,7 @@ class KeycloakAccountMixin:
         broker-link flow."""
         if not _is_valid_provider_alias(provider):
             return Response(
-                {"error": "Invalid provider alias."},
+                {"error": _("Invalid provider alias.")},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return self._proxy_or_error(
