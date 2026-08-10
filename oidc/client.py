@@ -118,6 +118,17 @@ class EndpointNotConfigured(ValueError):
     """
 
 
+class UpstreamShapeError(Exception):
+    """A 2xx from the account endpoint whose body is not what it claims.
+
+    Reported to the caller as a bad gateway rather than forwarded. An empty
+    body is normal (a revoke answers 204); a body that will not parse means
+    something other than Keycloak answered -- an ingress maintenance page, a
+    WAF block, a misrouted vhost -- and forwarding it as success turns
+    "could not reach your sessions" into "you have no other sessions".
+    """
+
+
 def _coerce_request_timeout(value, auth_server: str):
     """Normalise ``REQUEST_TIMEOUT`` to what ``requests`` accepts.
 
@@ -588,7 +599,15 @@ class OpenIDClient:
         url = f"{self.account_endpoint}{path_suffix}"
         try:
             response = requests.request(
-                method, url, headers=headers, timeout=self.request_timeout
+                method,
+                url,
+                headers=headers,
+                timeout=self.request_timeout,
+                # A redirect here is never the account API answering. Following
+                # one silently lands on whatever is at the other end -- often a
+                # login or maintenance page that returns 200 with HTML, which
+                # then reads as a successful, empty result.
+                allow_redirects=False,
             )
         except requests.RequestException as exc:
             logger.exception(exc)
@@ -598,6 +617,13 @@ class OpenIDClient:
         if response.content:
             try:
                 body = response.json()
-            except ValueError:
+            except ValueError as exc:
+                if 200 <= response.status_code < 300:
+                    raise UpstreamShapeError(
+                        f"{method} {path_suffix} answered "
+                        f"{response.status_code} with a body that is not JSON."
+                    ) from exc
+                # On an error status the body is only ever echoed back as
+                # context, so an unparseable one costs nothing.
                 body = None
         return response.status_code, body

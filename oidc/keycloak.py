@@ -27,7 +27,12 @@ from rest_framework.decorators import action
 from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
 
-from oidc.client import EndpointNotConfigured, OpenIDClient, TokenVerificationFailed
+from oidc.client import (
+    EndpointNotConfigured,
+    OpenIDClient,
+    TokenVerificationFailed,
+    UpstreamShapeError,
+)
 from oidc.permissions import IsCsrfSafeAccountRequest
 from oidc.utils import (
     ACCESS_TOKEN_SESSION_KEY,
@@ -213,6 +218,15 @@ class KeycloakAccountMixin:
             return status.HTTP_401_UNAUTHORIZED, body
         return client.request_keycloak_account(new_access, method, path_suffix)
 
+    @staticmethod
+    def _bad_gateway(exc: Exception, method: str, path_suffix: str) -> Response:
+        """The IdP answered, but not with anything we can use."""
+        logger.exception("account proxy %s %s: %s", method, path_suffix, exc)
+        return Response(
+            {"error": "Unexpected response from the identity provider."},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
     def _proxy_or_error(
         self,
         request: HttpRequest,
@@ -220,11 +234,16 @@ class KeycloakAccountMixin:
         method: str,
         path_suffix: str,
         transform: Optional[Callable[[Any], Any]] = None,
+        expect: Optional[type] = None,
     ) -> HttpResponse:
         """
         Shared wrapper for the proxy actions. ``transform`` runs on the
         parsed body so per-endpoint normalisation stays close to the
         action that needs it.
+
+        ``expect`` is the body type a 2xx must carry, for the actions that
+        forward it verbatim. Without it a gateway answering ``200 {"error":
+        ...}`` reaches the SPA as a successful, unreadable result.
         """
         client = self._get_client(auth_server=auth_server)
         if client is None:
@@ -269,20 +288,25 @@ class KeycloakAccountMixin:
                 {"error": "Could not reach the identity provider."},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
+        except UpstreamShapeError as exc:
+            return self._bad_gateway(exc, method, path_suffix)
         if status.is_success(status_code):
+            if expect is not None and body is not None and not isinstance(body, expect):
+                return self._bad_gateway(
+                    UpstreamShapeError(f"expected {expect.__name__}, got {type(body)}"),
+                    method,
+                    path_suffix,
+                )
             try:
                 payload = transform(body) if transform else body
             except (AttributeError, TypeError, KeyError) as exc:
-                # A 2xx whose body isn't the shape we normalise -- a gateway
-                # answering 200 with an error object, or an upstream shape
-                # change. Narrow on purpose: a defect in our own transform
-                # should still surface as a 500 with a traceback rather than
-                # be reported as the IdP misbehaving.
-                logger.exception(exc)
-                return Response(
-                    {"error": "Unexpected response from the identity provider."},
-                    status=status.HTTP_502_BAD_GATEWAY,
-                )
+                # A 2xx that parsed but is not the shape we normalise -- a
+                # nested field renamed, ``sessions`` arriving as a string.
+                # Nothing here can tell that from a defect in the transform
+                # itself, so both are reported as a bad gateway and the
+                # traceback goes to the log. Keep transforms small enough
+                # that the distinction rarely matters.
+                return self._bad_gateway(exc, method, path_suffix)
             return Response(payload, status=status_code)
         return Response(
             {"error": "Identity provider rejected the request.", "upstream": body},
@@ -388,6 +412,7 @@ class KeycloakAccountMixin:
             kwargs.get("auth_server"),
             "GET",
             "/linked-accounts",
+            expect=list,
         )
 
     @action(
@@ -441,6 +466,7 @@ class KeycloakAccountMixin:
             kwargs.get("auth_server"),
             "GET",
             f"/linked-accounts/{provider}",
+            expect=dict,
         )
 
     @action(
@@ -465,6 +491,7 @@ class KeycloakAccountMixin:
             kwargs.get("auth_server"),
             "GET",
             "/credentials",
+            expect=list,
         )
 
     @staticmethod

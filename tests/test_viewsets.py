@@ -1190,10 +1190,11 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(response.status_code, 502)
 
     @WITH_ACCOUNT_ENDPOINT
-    def test_proxy_does_not_disguise_our_own_bugs_as_upstream_failures(self):
-        """Pin: only transport/config errors become 502. A defect in our own
-        response handling must surface as a 500 with a traceback, not as
-        'could not reach the identity provider' pointing at Keycloak."""
+    def test_a_bug_outside_the_response_handling_is_not_reported_as_upstream(self):
+        """A 502 says "Keycloak misbehaved", which sends the investigation
+        somewhere there is nothing to find. Only the narrow window around
+        parsing and transforming a 2xx is allowed to report that; a defect
+        anywhere else must still surface as a 500 with a traceback."""
         view = KeycloakOpenIDConnectViewset.as_view({"get": "credentials_list"})
         request = self.factory.get("/")
         request.session = {"oidc_access_token:default": "t"}
@@ -1201,7 +1202,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         with patch.object(
             KeycloakOpenIDConnectViewset,
             "_keycloak_account_request",
-            side_effect=KeyError("bug in transform"),
+            side_effect=KeyError("bug outside the response handling"),
         ):
             with self.assertRaises(KeyError):
                 view(request, auth_server="default")
@@ -4867,12 +4868,52 @@ class TestAccountCallFailureModes(TestCase):
         response = self._get(side_effect=requests.Timeout("slow"))
         self.assertEqual(response.status_code, 502)
 
-    def test_a_non_json_body_does_not_raise(self):
-        """A fronting proxy answering with HTML must not 500 us."""
+    def test_a_non_json_2xx_body_is_a_502_not_an_empty_success(self):
+        """An ingress maintenance page or a WAF block answering 200 with
+        HTML used to reach the SPA as a successful empty result -- "you have
+        no other sessions" for a user who has several, and a "signed out
+        everywhere" that revoked nothing."""
         upstream = MagicMock(status_code=200, content=b"<html>oops</html>")
         upstream.json.side_effect = ValueError("no json")
         response = self._get(return_value=upstream)
-        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.status_code, 502)
+
+    def test_a_2xx_body_of_the_wrong_shape_is_a_502(self):
+        """The actions that forward verbatim have no transform to fail, so
+        without a declared shape a gateway's ``200 {"error": ...}`` reaches
+        the SPA as the list it was asking for."""
+        upstream = MagicMock(status_code=200, content=b'{"error":"realm gone"}')
+        upstream.json.return_value = {"error": "realm gone"}
+        response = self._get(return_value=upstream)
+        self.assertEqual(response.status_code, 502)
+
+    def test_an_empty_2xx_body_is_still_a_success(self):
+        """A declared shape must not turn "nothing to send back" into a
+        gateway error -- a 204 carries no body by definition."""
+        upstream = MagicMock(status_code=204, content=b"")
+        response = self._get(return_value=upstream)
+        self.assertEqual(response.status_code, 204)
+
+    def test_an_unparseable_error_body_is_still_reported_upstream(self):
+        """Only a 2xx has to parse. On an error status the body is echoed
+        as context, so HTML there costs nothing and must not become a 502
+        that hides the real status."""
+        upstream = MagicMock(status_code=403, content=b"<html>blocked</html>")
+        upstream.json.side_effect = ValueError("no json")
+        response = self._get(return_value=upstream)
+        self.assertEqual(response.status_code, 403)
+
+    def test_a_redirect_is_not_followed(self):
+        """Following one lands on whatever is at the other end -- usually a
+        login page answering 200 with HTML."""
+        upstream = MagicMock(status_code=200, content=b"[]")
+        upstream.json.return_value = []
+        view = KeycloakOpenIDConnectViewset.as_view({"get": "linked_list"})
+        request = self.factory.get("/")
+        request.session = {token_session_key(ACCESS_TOKEN_SESSION_KEY, "default"): "t"}
+        with patch("oidc.client.requests.request", return_value=upstream) as req:
+            view(request, auth_server="default")
+        self.assertIs(req.call_args.kwargs["allow_redirects"], False)
 
     def test_an_upstream_error_is_wrapped_in_the_envelope_the_spa_reads(self):
         upstream = MagicMock(status_code=403, content=b'{"error":"forbidden"}')
