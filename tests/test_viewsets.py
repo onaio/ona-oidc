@@ -23,6 +23,7 @@ from oidc.checks import (
     check_actions_survive_subclassing,
     check_session_backend_can_hold_tokens,
 )
+from oidc.keycloak import _sid_from_id_token
 from oidc.client import OpenIDClient, TokenVerificationFailed, state_cache_key
 from oidc.keycloak import KeycloakOpenIDConnectViewset
 from oidc.permissions import IsCsrfSafeAccountRequest, get_account_request_header
@@ -107,6 +108,26 @@ OPENID_CONNECT_VIEWSET_CONFIG = {
     "SSO_COOKIE_DOMAIN": ".example.com",
     "SSO_COOKIE_MAX_AGE": 60 * 60 * 24 * 30,
 }
+
+
+# Settings shapes repeated across many test classes. Hoisted so a change to
+# the fixture is made once, and so the assertions aren't buried in setup.
+WITH_DEFAULT_SETTINGS = override_settings(
+    OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
+    OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+)
+
+#: ...plus an ACCOUNT_ENDPOINT, which the account-proxy actions require.
+WITH_ACCOUNT_ENDPOINT = override_settings(
+    OPENID_CONNECT_AUTH_SERVERS={
+        **OPENID_CONNECT_AUTH_SERVERS,
+        "default": {
+            **OPENID_CONNECT_AUTH_SERVERS["default"],
+            "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
+        },
+    },
+    OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+)
 
 
 class TestUserModelOpenIDConnectViewset(TestCase):
@@ -973,10 +994,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertIn("login_hint=alice%40example.com", response.url)
         self.assertNotIn("evil_param", response.url)
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_DEFAULT_SETTINGS
     def test_login_default_allowlist_drops_all_query_params(self):
         view = BaseOpenIDConnectViewset.as_view({"get": "login"})
 
@@ -1009,10 +1027,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertIn("kc_idp_hint=onadata", response.url)
         self.assertNotIn("next=", response.url)
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_DEFAULT_SETTINGS
     def test_logout_forwards_id_token_hint_from_session(self):
         """The id_token stashed by the callback is threaded as
         ``id_token_hint`` on the end-session URL and popped from
@@ -1095,10 +1110,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertIn("id_token_hint=ey.legit.jwt", response.url)
         self.assertNotIn("ey.attacker.jwt", response.url)
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_DEFAULT_SETTINGS
     def test_logout_default_allowlist_drops_all_query_params(self):
         """No ``LOGOUT_QUERY_PARAM_ALLOWLIST`` configured → empty set →
         all query params dropped. Mirrors the login default."""
@@ -1112,16 +1124,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         # End-session URL untouched — bare endpoint, no stray `?`/`&`.
         self.assertEqual(response.url, "http://localhost:3000")
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_account_proxy_no_session_token_returns_401(self):
         """No stashed access_token → 401, never reach Keycloak."""
         view = KeycloakOpenIDConnectViewset.as_view({"get": "linked_list"})
@@ -1135,16 +1138,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         # Critical: we never reached out to Keycloak.
         mock_request.assert_not_called()
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_account_proxy_refresh_rejected_by_idp_returns_401(self):
         """The IdP answered and refused the refresh token: the session really
         is dead, so signing in again is the right instruction."""
@@ -1168,16 +1162,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
 
         self.assertEqual(response.status_code, 401)
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_account_proxy_refresh_transport_failure_returns_502(self):
         """Pin: an unreachable IdP must not be reported as an expired session.
         Doing so sends the user through a re-login that cannot fix a server
@@ -1203,16 +1188,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
 
         self.assertEqual(response.status_code, 502)
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_proxy_does_not_disguise_our_own_bugs_as_upstream_failures(self):
         """Pin: only transport/config errors become 502. A defect in our own
         response handling must surface as a 500 with a traceback, not as
@@ -1229,16 +1205,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             with self.assertRaises(KeyError):
                 view(request, auth_server="default")
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_account_proxy_refreshes_on_401_and_retries(self):
         """Keycloak 401 → refresh access_token via refresh_token → retry.
         Session writeback so the next request uses the fresh token."""
@@ -1288,10 +1255,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             request.session["oidc_refresh_token:default"], "fresh.refresh.token"
         )
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_DEFAULT_SETTINGS
     def test_account_proxy_returns_503_when_endpoint_not_configured(self):
         """Deployments that haven't wired ``ACCOUNT_ENDPOINT`` get a
         clear 503 — never reach Keycloak with a half-baked URL."""
@@ -1306,16 +1270,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(response.status_code, 503)
         mock_post.assert_not_called()
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_keycloak_account_request_get_passes_through_status_and_body(self):
         """Shared helper round-trips method/path/body and surfaces upstream
         (status, body). Refresh + retry exists already; this locks the
@@ -1345,16 +1300,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             kwargs["headers"]["Authorization"], "Bearer stashed.access.token"
         )
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_sessions_list_flattens_devices_into_rows(self):
         """Keycloak returns DeviceRepresentation[] with nested sessions[].
         Proxy flattens to a per-session list so the SPA renders rows,
@@ -1414,16 +1360,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(rows[1]["os"], "Windows")
         self.assertFalse(rows[1]["current"])
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_sessions_list_marks_only_sid_match_current_when_grouped(self):
         """Two browsers on one machine (e.g. normal + incognito on
         localhost) collapse into a single device that Keycloak flags
@@ -1461,16 +1398,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertFalse(by_id["sess-old"]["current"])
         self.assertTrue(by_id["sess-current"]["current"])
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_sessions_revoke_one_forwards_id(self):
         view = KeycloakOpenIDConnectViewset.as_view({"delete": "sessions_revoke_one"})
         request = self.factory.delete("/")
@@ -1492,16 +1420,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(args[0], "DELETE")
         self.assertTrue(args[1].endswith("/sessions/other-sid"))
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_sessions_revoke_one_rejects_current_session(self):
         view = KeycloakOpenIDConnectViewset.as_view({"delete": "sessions_revoke_one"})
         request = self.factory.delete("/")
@@ -1519,16 +1438,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         # Crucial: we never reach Keycloak.
         mock_request.assert_not_called()
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_sessions_revoke_others_passes_current_false(self):
         """DELETE /sessions revokes every session EXCEPT the current one."""
         view = KeycloakOpenIDConnectViewset.as_view(
@@ -1550,16 +1460,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(args[0], "DELETE")
         self.assertIn("/sessions?current=false", args[1])
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_linked_list_forwards_keycloak_body_verbatim(self):
         view = KeycloakOpenIDConnectViewset.as_view({"get": "linked_list"})
         request = self.factory.get("/")
@@ -1584,16 +1485,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data, keycloak_body)
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_linked_unlink_forwards_provider_alias(self):
         view = KeycloakOpenIDConnectViewset.as_view({"delete": "linked_unlink"})
         request = self.factory.delete("/")
@@ -1607,16 +1499,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         args, _ = mock_request.call_args
         self.assertTrue(args[1].endswith("/linked-accounts/google"))
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_linked_unlink_rejects_invalid_provider_alias(self):
         view = KeycloakOpenIDConnectViewset.as_view({"delete": "linked_unlink"})
         request = self.factory.delete("/")
@@ -1626,16 +1509,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(response.status_code, 400)
         mock_request.assert_not_called()
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_linked_link_url_forwards_body(self):
         """The link-url action forwards Keycloak's linked-account
         representation verbatim — the SPA extracts ``accountLinkUri``
@@ -1667,16 +1541,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             },
         )
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_credentials_list_forwards_body(self):
         """The credentials action forwards Keycloak's nested
         credential-metadata wire shape verbatim — reshaping for
@@ -2555,10 +2420,7 @@ class TestLoginNextValidation(TestCase):
     def setUp(self):
         self.factory = APIRequestFactory()
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_DEFAULT_SETTINGS
     @patch("oidc.client.cache.set")
     def test_safe_relative_next_is_cached(self, mock_cache_set):
         view = BaseOpenIDConnectViewset.as_view({"get": "login"})
@@ -3063,16 +2925,7 @@ class AccountProxyCsrfTests(TestCase):
         )
         self.assertTrue(self.perm.has_permission(request, self.view))
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_permitted_request_reaches_the_action(self):
         """Header + no cross-origin Origin: the permission passes and the
         action runs through to a concrete success."""
@@ -3239,16 +3092,7 @@ class TestSessionIdPathTraversal(TestCase):
     def setUp(self):
         self.factory = APIRequestFactory()
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_dot_segment_session_id_is_rejected_before_any_upstream_call(self):
         view = KeycloakOpenIDConnectViewset.as_view({"delete": "sessions_revoke_one"})
         for session_id in ("..", ".", "..%2f.."):
@@ -3263,16 +3107,7 @@ class TestSessionIdPathTraversal(TestCase):
                 # The point of the guard: Keycloak is never contacted.
                 mock_request.assert_not_called()
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_a_real_session_id_still_reaches_the_expected_url(self):
         """The guard must not narrow the endpoint to uselessness."""
         view = KeycloakOpenIDConnectViewset.as_view({"delete": "sessions_revoke_one"})
@@ -3340,16 +3175,7 @@ class TestMisconfigurationIsNotAnOutage(TestCase):
         # handed to requests and no call leaves the process.
         mock_post.assert_not_called()
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_a_non_json_token_response_is_502_not_503(self):
         """``requests`` raises ``JSONDecodeError`` for a non-JSON body, and it
         subclasses both ``ValueError`` and ``RequestException``. Catching bare
@@ -3396,16 +3222,7 @@ class TestProxyErrorsAreAlwaysJson(TestCase):
     degrades to a bare status code on the client, so every failure mode has
     to stay JSON."""
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_unknown_auth_server_answers_json(self):
         response = self.client.get("/oidc/nosuchserver/sessions")
         self.assertEqual(response.status_code, 400)
@@ -3663,16 +3480,7 @@ class TestLogoutClearsStashedTokens(TestCase):
         mock_request.assert_not_called()
 
 
-@override_settings(
-    OPENID_CONNECT_AUTH_SERVERS={
-        **OPENID_CONNECT_AUTH_SERVERS,
-        "default": {
-            **OPENID_CONNECT_AUTH_SERVERS["default"],
-            "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-        },
-    },
-    OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-)
+@WITH_ACCOUNT_ENDPOINT
 class TestProviderAliasCharset(TestCase):
     """Keycloak accepts dots and mixed case in an identity-provider alias.
 
@@ -4013,16 +3821,7 @@ class TestReadsAreOriginGated(TestCase):
         request = self.factory.post("/", HTTP_ORIGIN="http://testserver")
         self.assertFalse(self.perm.has_permission(request, self.view))
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            **OPENID_CONNECT_AUTH_SERVERS,
-            "default": {
-                **OPENID_CONNECT_AUTH_SERVERS["default"],
-                "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-            },
-        },
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_ACCOUNT_ENDPOINT
     def test_a_cross_origin_read_never_reaches_keycloak(self):
         """End to end: even with hostile CORS reflecting the attacker's
         origin, the listing is never fetched, so there is nothing for the
@@ -4050,16 +3849,7 @@ class TestReadsAreOriginGated(TestCase):
         mock_request.assert_not_called()
 
 
-@override_settings(
-    OPENID_CONNECT_AUTH_SERVERS={
-        **OPENID_CONNECT_AUTH_SERVERS,
-        "default": {
-            **OPENID_CONNECT_AUTH_SERVERS["default"],
-            "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-        },
-    },
-    OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-)
+@WITH_ACCOUNT_ENDPOINT
 class TestPendingTokensBelongToOneFlow(TestCase):
     """Pending slots are per-provider, but a session can run two logins.
 
@@ -4336,10 +4126,7 @@ class TestProviderAliasAnchoring(TestCase):
                 self.assertFalse(_is_valid_provider_alias(alias))
 
 
-@override_settings(
-    OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
-    OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-)
+@WITH_DEFAULT_SETTINGS
 class TestLogoutClearsPreNamespacingTokens(TestCase):
     """A session established before the per-provider rename holds bare
     ``oidc_id_token`` etc. Nothing reads those any more, but only
@@ -4381,10 +4168,7 @@ class TestLogoutClearsPreNamespacingTokens(TestCase):
         self.assertNotIn("legacy.id", response.url)
 
 
-@override_settings(
-    OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
-    OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-)
+@WITH_DEFAULT_SETTINGS
 class TestCallbackDoesNotLogCredentials(TestCase):
     """The id_token must never reach the application log.
 
@@ -4416,14 +4200,14 @@ class TestCallbackDoesNotLogCredentials(TestCase):
                 # *what* was logged, not whether anything was.
                 logging.getLogger("oidc.viewsets").info("probe")
                 response = view(request, auth_server="default")
-        return response, "\n".join(captured.output)
+        return response, "\n".join(captured.output), captured
 
     def test_the_uniqueness_conflict_path_does_not_log_the_id_token(self):
         # Username collides, email does not -- an email match would find the
         # existing user and log straight in, never reaching the conflict.
         User.objects.create(username="alice", email="alice@example.com")
 
-        response, logged = self._run(
+        response, logged, captured = self._run(
             {
                 "given_name": "Alice",
                 "family_name": "User",
@@ -4437,26 +4221,29 @@ class TestCallbackDoesNotLogCredentials(TestCase):
         self.assertNotIn(self.SECRET_TOKEN, logged)
         self.assertNotIn("SECRET_TOKEN_MATERIAL", logged)
 
-    def test_a_field_validation_failure_does_not_forge_log_lines(self):
-        """The rejected value is caller-supplied; interpolated raw, a
-        newline in it would forge an extra log line."""
-        response, logged = self._run(
-            {
-                "given_name": "Bob",
-                "family_name": "User",
-                "email": "bob@example.com",
-                "preferred_username": "bob_username",
-            },
-            data={
-                "username": "x\nINFO:oidc.viewsets:forged line",
-                USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
-            },
-        )
+    def test_a_rejected_field_value_cannot_forge_a_log_line(self):
+        """``validate_fields`` echoes the rejected value. Interpolated with
+        an f-string a newline in it would start a second log line that reads
+        as its own entry; %r escapes it.
 
-        self.assertNotIn(self.SECRET_TOKEN, logged)
-        # The newline must be escaped by %r rather than starting a new line.
-        for line in logged.splitlines():
-            self.assertNotEqual(line.strip(), "forged line")
+        Driven straight at the method: routed through ``callback`` the
+        payload never arrives, because ``USE_EMAIL_USERNAME`` rewrites an
+        invalid username from the email before validation sees it.
+        """
+        viewset = UserModelOpenIDConnectViewset()
+        forged = "x\nINFO:oidc.viewsets:forged line"
+
+        with self.assertLogs("oidc.viewsets", level="INFO") as captured:
+            with self.assertRaises(ValueError):
+                viewset.validate_fields({"username": forged})
+
+        echoed = [r for r in captured.records if r.getMessage().startswith("Invalid")]
+        self.assertEqual(len(echoed), 1, "the rejected value was never logged")
+        self.assertNotIn(
+            chr(10),
+            echoed[0].getMessage(),
+            "a caller-supplied newline reached the log verbatim",
+        )
 
 
 class TestCredentialBearingSessionHardening(TestCase):
@@ -4494,10 +4281,7 @@ class TestCredentialBearingSessionHardening(TestCase):
         """
         UserModelOpenIDConnectViewset()
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
-        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-    )
+    @WITH_DEFAULT_SETTINGS
     def test_the_session_key_is_rotated_when_tokens_are_written(self):
         """Session fixation: the id the request arrived with must not be the
         one that ends up holding the tokens."""
@@ -4828,16 +4612,7 @@ class TestOverriddenActionDeployCheck(TestCase):
         self.assertIn("callback", routed)
 
 
-@override_settings(
-    OPENID_CONNECT_AUTH_SERVERS={
-        **OPENID_CONNECT_AUTH_SERVERS,
-        "default": {
-            **OPENID_CONNECT_AUTH_SERVERS["default"],
-            "ACCOUNT_ENDPOINT": "https://idp.example.com/realms/r/account",
-        },
-    },
-    OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
-)
+@WITH_ACCOUNT_ENDPOINT
 class TestSubclassRefusalLeavesNoTokens(TestCase):
     """A subclass can refuse a login the library itself would have accepted
     -- overriding ``generate_successful_response`` is the documented way,
@@ -4901,3 +4676,210 @@ class TestSubclassRefusalLeavesNoTokens(TestCase):
 
         self.assertEqual(response.status_code, 401)
         mock_request.assert_not_called()
+
+
+class TestSidFromIdToken(TestCase):
+    """``_sid_from_id_token`` is patched in every test that depends on it, so
+    the real contract was pinned nowhere. It drives two user-visible things:
+    the 409 that stops you revoking the session you are using, and the
+    ``current`` flag in the sessions list. Reading the wrong claim, or
+    demanding a signature the caller cannot supply, turns both off silently
+    -- and the ``current`` fallback is the two-browsers-look-identical bug
+    the flattening exists to fix.
+    """
+
+    def _token(self, claims):
+        return jwt.encode(claims, "irrelevant-secret", algorithm="HS256")
+
+    def test_reads_the_sid_claim(self):
+        self.assertEqual(
+            _sid_from_id_token(self._token({"sid": "abc-123", "sub": "u1"})),
+            "abc-123",
+        )
+
+    def test_does_not_read_session_state_instead(self):
+        """Keycloak emits both; ``session_state`` is the older, different
+        value, so picking it up would be a silent behaviour swap."""
+        token = self._token({"session_state": "wrong-one", "sub": "u1"})
+        self.assertIsNone(_sid_from_id_token(token))
+
+    def test_decodes_without_verifying_the_signature(self):
+        """The token was verified at callback time; here we only need a
+        claim, and the signing key is not available on this path."""
+        token = jwt.encode({"sid": "abc-123"}, "some-other-key", algorithm="HS256")
+        self.assertEqual(_sid_from_id_token(token), "abc-123")
+
+    def test_a_malformed_token_yields_none_rather_than_raising(self):
+        for token in ("not-a-jwt", "", "a.b.c"):
+            with self.subTest(token=token):
+                self.assertIsNone(_sid_from_id_token(token))
+
+    def test_a_token_without_the_claim_yields_none(self):
+        self.assertIsNone(_sid_from_id_token(self._token({"sub": "u1"})))
+
+
+class TestDeployChecksAreRegistered(TestCase):
+    """Both checks exist to fail ``manage.py check`` rather than the first
+    user to sign in. Calling the functions directly proves their logic but
+    not that they ever run, which is the property that matters."""
+
+    def test_both_checks_run_through_djangos_registry(self):
+        from django.core.checks import registry
+
+        registered = {c.__name__ for c in registry.registry.get_checks()}
+        self.assertIn("check_session_backend_can_hold_tokens", registered)
+        self.assertIn("check_actions_survive_subclassing", registered)
+
+    @override_settings(
+        SESSION_ENGINE="django.contrib.sessions.backends.signed_cookies",
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "VIEWSET_CLASS": "oidc.keycloak.KeycloakOpenIDConnectViewset",
+        },
+    )
+    def test_a_misconfigured_deployment_fails_run_checks(self):
+        """End to end through the registry, the way a deploy would hit it."""
+        from django.core.checks import run_checks
+
+        self.assertIn("oidc.E001", {e.id for e in run_checks()})
+
+
+@WITH_ACCOUNT_ENDPOINT
+class TestAccountCallFailureModes(TestCase):
+    """Everything downstream of the first Keycloak response. The 502 mapping
+    was only ever driven through the *refresh* call, so the account call's
+    own transport and parsing paths were unexercised."""
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+
+    def _get(self, **patch_kwargs):
+        view = KeycloakOpenIDConnectViewset.as_view({"get": "linked_list"})
+        request = self.factory.get("/")
+        request.session = {token_session_key(ACCESS_TOKEN_SESSION_KEY, "default"): "t"}
+        with patch("oidc.client.requests.request", **patch_kwargs):
+            return view(request, auth_server="default")
+
+    def test_an_unreachable_idp_is_a_502_not_an_empty_success(self):
+        response = self._get(side_effect=requests.ConnectionError("unreachable"))
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("error", response.data)
+
+    def test_a_timeout_is_also_a_502(self):
+        """``Timeout`` is a RequestException subclass -- pinned because the
+        timeouts this branch added make it newly reachable."""
+        response = self._get(side_effect=requests.Timeout("slow"))
+        self.assertEqual(response.status_code, 502)
+
+    def test_a_non_json_body_does_not_raise(self):
+        """A fronting proxy answering with HTML must not 500 us."""
+        upstream = MagicMock(status_code=200, content=b"<html>oops</html>")
+        upstream.json.side_effect = ValueError("no json")
+        response = self._get(return_value=upstream)
+        self.assertEqual(response.status_code, 200)
+
+    def test_an_upstream_error_is_wrapped_in_the_envelope_the_spa_reads(self):
+        upstream = MagicMock(status_code=403, content=b'{"error":"forbidden"}')
+        upstream.json.return_value = {"error": "forbidden"}
+        response = self._get(return_value=upstream)
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("error", response.data)
+        self.assertEqual(response.data["upstream"], {"error": "forbidden"})
+
+    def test_a_401_with_no_stashed_refresh_token_stays_401(self):
+        upstream = MagicMock(status_code=401, content=b"{}")
+        upstream.json.return_value = {"error": "invalid_token"}
+        response = self._get(return_value=upstream)
+        self.assertEqual(response.status_code, 401)
+
+    def test_a_refresh_that_returns_no_access_token_is_a_401(self):
+        view = KeycloakOpenIDConnectViewset.as_view({"get": "linked_list"})
+        request = self.factory.get("/")
+        request.session = {
+            token_session_key(ACCESS_TOKEN_SESSION_KEY, "default"): "expired",
+            token_session_key(REFRESH_TOKEN_SESSION_KEY, "default"): "r",
+        }
+        rejected = MagicMock(status_code=401, content=b"{}")
+        rejected.json.return_value = {}
+        refreshed = MagicMock(status_code=200)
+        refreshed.json.return_value = {"token_type": "Bearer"}  # no access_token
+        with (
+            patch("oidc.client.requests.request", return_value=rejected),
+            patch("oidc.client.requests.post", return_value=refreshed),
+        ):
+            response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 401)
+
+
+@WITH_DEFAULT_SETTINGS
+class TestRemainingTokenLifecycleGuards(TestCase):
+    """Guards whose removal previously left the suite green."""
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+
+    def test_logout_clears_the_pending_slots(self):
+        """A login abandoned at the username form parks a refresh token.
+        Logout is the only thing that removes it -- the session is not
+        flushed unless USE_AUTH_BACKEND is on."""
+        view = KeycloakOpenIDConnectViewset.as_view({"get": "logout"})
+        request = self.factory.get("/")
+        request.session = {
+            pending_token_session_key(ACCESS_TOKEN_SESSION_KEY, "default"): "a",
+            pending_token_session_key(REFRESH_TOKEN_SESSION_KEY, "default"): "r",
+            pending_token_session_key(ID_TOKEN_SESSION_KEY, "default"): "i",
+        }
+
+        view(request, auth_server="default")
+
+        self.assertEqual(
+            [v for v in request.session.values() if v in {"a", "r", "i"}],
+            [],
+            f"pending credentials survived logout: {request.session}",
+        )
+
+    def test_a_viewset_that_does_not_stash_parks_nothing(self):
+        """``stash_oidc_tokens`` must gate the *park*, not just the active
+        write -- otherwise every non-proxy deployment starts storing refresh
+        tokens at the username form."""
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with (
+            patch(
+                "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code",
+                return_value={
+                    "id_token": "i",
+                    "access_token": "secret-access",
+                    "refresh_token": "secret-refresh",
+                },
+            ),
+            patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+                # Email present (so no userinfo round-trip) but its local
+                # part is too short to derive a valid username from -- the
+                # entry form, which is the only path that parks anything.
+                return_value={
+                    "given_name": "Bob",
+                    "family_name": "User",
+                    "email": "c@example.com",
+                },
+            ),
+        ):
+            request = self.factory.post("/", data={"code": "auth-code"})
+            request.session = {}
+            view(request, auth_server="default")
+
+        self.assertEqual(
+            [v for v in request.session.values() if str(v).startswith("secret-")],
+            [],
+            f"a non-proxy viewset parked a token pair: {request.session}",
+        )
+
+    def test_the_jwks_fetch_passes_a_timeout(self):
+        """On the hot path of every login -- a stalled IdP here pins the
+        worker, which is what the timeout exists to prevent."""
+        client = OpenIDClient("default")
+        upstream = MagicMock(status_code=200)
+        upstream.json.return_value = {"keys": []}
+        with patch("oidc.client.requests.get", return_value=upstream) as mock_get:
+            client._retrieve_jwks_related_to_kid("some-kid")
+        self.assertIsNotNone(mock_get.call_args.kwargs.get("timeout"))
