@@ -5039,3 +5039,45 @@ class TestUnexpectedUpstreamShapeIsNotA500(TestCase):
             [{"os": "mac", "sessions": [{"id": "a", "current": True}]}]
         )
         self.assertEqual(response.status_code, 200)
+
+
+class TestDeployCheckComparesRoutesNotNames(TestCase):
+    """E002 originally compared action *names*, so any re-declaration passed
+    -- including the one its own hint described. These are the shapes that
+    keep the name and lose the route."""
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "VIEWSET_CLASS": "tests.project_viewsets.NarrowedRedeclareViewset",
+        }
+    )
+    def test_dropping_a_mapping_companion_is_reported(self):
+        """`@sessions_list.mapping.delete` is how sessions_revoke_others is
+        routed; a fresh decorator replaces the mapper and DELETE /sessions
+        becomes a 405."""
+        errors = check_actions_survive_subclassing(None)
+        self.assertEqual([e.id for e in errors], ["oidc.E002"])
+        self.assertIn("sessions_list", errors[0].msg)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "VIEWSET_CLASS": "tests.project_viewsets.RenamedRouteViewset",
+        }
+    )
+    def test_a_changed_url_name_is_reported(self):
+        """The library itself reverses openid_connect_login on the callback
+        error path, so losing the name turns that page into a 500."""
+        errors = check_actions_survive_subclassing(None)
+        self.assertEqual([e.id for e in errors], ["oidc.E002"])
+        self.assertIn("login", errors[0].msg)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "VIEWSET_CLASS": "tests.project_viewsets.RedeclaredOverrideViewset",
+        }
+    )
+    def test_a_faithful_redeclaration_still_passes(self):
+        self.assertEqual(check_actions_survive_subclassing(None), [])

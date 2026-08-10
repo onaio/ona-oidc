@@ -52,3 +52,31 @@ class RefusingViewset(KeycloakAccountMixin, UserModelOpenIDConnectViewset):
             {"error": "Organization accounts cannot sign in via SSO."},
             status=status.HTTP_403_FORBIDDEN,
         )
+
+
+class NarrowedRedeclareViewset(KeycloakAccountMixin, UserModelOpenIDConnectViewset):
+    """Follows E002's old hint literally: re-declares the decorator but not
+    the ``@sessions_list.mapping.delete`` companion, so a fresh MethodMapper
+    silently drops DELETE /sessions."""
+
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path="sessions",
+        url_name="openid_connect_sessions",
+    )
+    def sessions_list(self, request, **kwargs):
+        return super().sessions_list(request, **kwargs)
+
+
+class RenamedRouteViewset(KeycloakAccountMixin, UserModelOpenIDConnectViewset):
+    """Re-declares with a different url_name, breaking reverse()."""
+
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path=r"login/?",
+        url_name="something_else",
+    )
+    def login(self, request, **kwargs):
+        return super().login(request, **kwargs)
