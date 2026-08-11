@@ -3,11 +3,14 @@
 Test that oidc urls resolve.
 """
 
+from django.contrib.auth.models import User
 from django.test import TestCase
 from django.urls import resolve, reverse
 
 from rest_framework.renderers import JSONRenderer
+from rest_framework.viewsets import ModelViewSet
 
+from oidc.routers import UnprefixedNameRouter
 from oidc.viewsets import UserModelOpenIDConnectViewset
 
 
@@ -47,3 +50,40 @@ class TestUrls(TestCase):
         self.assertEqual(view.actions, {"get": "session"})
         self.assertEqual(view.initkwargs["authentication_classes"], [])
         self.assertEqual(view.initkwargs["renderer_classes"], [JSONRenderer])
+
+    def test_routes_accept_an_optional_trailing_slash(self):
+        """The hand-written URLconf matched by prefix, so /login/ happened to
+        resolve. The router anchors its patterns, so each action opts back in
+        with ``url_path=r"<name>/?"`` -- without that, a deployment whose
+        configured login URL carries a trailing slash starts 404ing."""
+        for path in ("/oidc/abc/login", "/oidc/abc/login/"):
+            with self.subTest(path=path):
+                self.assertEqual(resolve(path).func.cls, UserModelOpenIDConnectViewset)
+
+
+class TestUnprefixedNameRouterScope(TestCase):
+    """The router drops the ``{basename}-`` prefix so this package's
+    ``@action`` names survive. That must not extend to DRF's own
+    ``{basename}-list``/``-detail``: a ``VIEWSET_CLASS`` with CRUD methods
+    would come out as a bare ``list``/``detail``, which collides across
+    routers in one namespace and breaks hyperlinked serializers reversing
+    ``<model>-detail``."""
+
+    def _names(self, viewset):
+        router = UnprefixedNameRouter(trailing_slash=False)
+        router.register(r"things", viewset, basename="thing")
+        return [url.name for url in router.urls]
+
+    def test_action_names_lose_the_basename_prefix(self):
+        self.assertIn(
+            "openid_connect_login", self._names(UserModelOpenIDConnectViewset)
+        )
+
+    def test_crud_routes_keep_drfs_naming(self):
+        class ThingViewSet(ModelViewSet):
+            queryset = User.objects.all()
+            serializer_class = None
+
+        names = self._names(ThingViewSet)
+        self.assertIn("thing-list", names)
+        self.assertIn("thing-detail", names)
