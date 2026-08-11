@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+{% comment %}
+Fallback only. The two pages this package renders in a browser -- the
+username-entry form and the unrecoverable-error page -- extend 'base.html',
+and without one anywhere on the template path they raise
+TemplateDoesNotExist and the user gets a bare 500 instead.
+
+A project's own base.html wins: TEMPLATES["DIRS"] is searched before any app
+directory, and among app directories the INSTALLED_APPS order decides, so
+list "oidc" after the app that provides yours. It only has to define the
+title and content blocks below.
+{% endcomment %}
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}{% endblock %}</title>
+  </head>
+  <body>
+    {% block content %}{% endblock %}
+  </body>
+</html>
