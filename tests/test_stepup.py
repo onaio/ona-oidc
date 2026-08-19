@@ -140,6 +140,16 @@ class TestRedeemStepUp(TestCase):
         self.assertIsNone(claims)
         self.assertEqual(reason, "state_unknown")
 
+    def test_redemption_binds_to_the_state_s_auth_server(self):
+        """The callback names the server, but the state decides it: a flow
+        started for one server must not be redeemed with another's client."""
+        _, state = build_step_up_url("kc")
+
+        claims, _, reason = _redeem_with({"acr": "gold"}, "login-only", state)
+
+        self.assertIsNone(claims)
+        self.assertEqual(reason, "state_unknown")
+
     def test_the_exchange_reuses_the_authorize_requests_callback(self):
         """RFC 6749 4.1.3 requires the two to be identical. Sending the login
         callback here, after asking with the step-up one, is rejected."""
@@ -320,7 +330,13 @@ class TestSubjectBinding(TestCase):
         self.assertTrue(satisfied)
 
 
-from oidc.checks import check_step_up_demands_fresh_authentication  # noqa: E402
+from oidc.checks import (  # noqa: E402
+    check_step_up_demands_fresh_authentication,
+    check_step_up_grants_use_a_shared_cache,
+)
+
+_LOCMEM = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
+_REDIS = {"default": {"BACKEND": "django_redis.cache.RedisCache"}}
 
 
 class TestFreshAuthenticationCheck(TestCase):
@@ -337,6 +353,24 @@ class TestFreshAuthenticationCheck(TestCase):
         warnings = check_step_up_demands_fresh_authentication()
 
         self.assertEqual([w.id for w in warnings], ["oidc.W001"])
+
+
+class TestGrantCacheCheck(TestCase):
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=SERVERS, CACHES=_LOCMEM)
+    def test_local_memory_with_step_up_is_reported(self):
+        warnings = check_step_up_grants_use_a_shared_cache()
+
+        self.assertEqual([w.id for w in warnings], ["oidc.W002"])
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=SERVERS, CACHES=_REDIS)
+    def test_a_shared_cache_is_silent(self):
+        self.assertEqual(check_step_up_grants_use_a_shared_cache(), [])
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={"login-only": {"STEP_UP": {}}}, CACHES=_LOCMEM
+    )
+    def test_no_step_up_server_means_the_cache_is_irrelevant(self):
+        self.assertEqual(check_step_up_grants_use_a_shared_cache(), [])
 
 
 class TestPopupRendering(TestCase):

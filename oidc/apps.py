@@ -19,8 +19,12 @@ class oidcConfig(AppConfig):
     def ready(self):
         # Imported here rather than at module scope: the check reads settings,
         # and that must not happen while the app registry is still populating.
-        from oidc.checks import check_step_up_demands_fresh_authentication
+        from oidc.checks import (
+            check_step_up_demands_fresh_authentication,
+            check_step_up_grants_use_a_shared_cache,
+        )
 
         # Registered by the package, so a consumer gets it without having to
         # know this package's config has a footgun in it.
         register(check_step_up_demands_fresh_authentication)
+        register(check_step_up_grants_use_a_shared_cache)

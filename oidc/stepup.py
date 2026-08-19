@@ -89,7 +89,13 @@ def build_step_up_url(
 
     cache.set(
         _step_up_state_key(state),
-        {"code_verifier": verifier, "context": context or {}},
+        {
+            "code_verifier": verifier,
+            "context": context or {},
+            # Bound so redemption exchanges against the server the flow started
+            # at, not one a callback names -- see redeem_step_up.
+            "auth_server": auth_server,
+        },
         STEP_UP_STATE_TTL,
     )
 
@@ -145,14 +151,32 @@ def redeem_step_up(
     expired. The state is burned before the exchange, so a failure cannot be
     retried against the same authorisation.
     """
-    stashed = cache.get(_step_up_state_key(state))
+    key = _step_up_state_key(state)
+    stashed = cache.get(key)
     if stashed is None:
         logger.warning("step-up: unknown or expired state")
         return None, {}, "state_unknown"
-    cache.delete(_step_up_state_key(state))
+    # Delete-as-check, as spend_grant does: ``cache.delete`` reports whether it
+    # removed anything, so two callbacks racing on one state cannot both go on
+    # to exchange, and a burnt state cannot be retried.
+    if not cache.delete(key):
+        logger.warning("step-up: state already consumed")
+        return None, stashed.get("context", {}), "state_unknown"
 
-    client = OpenIDClient(auth_server)
+    context = stashed.get("context", {})
+    # Bind the exchange to the server the flow was started against. The callback
+    # names the server, but with more than one step-up server a flow begun for B
+    # must not be redeemed with A's client_id/secret/endpoints.
+    bound_server = stashed.get("auth_server")
+    if bound_server and bound_server != auth_server:
+        logger.warning("step-up: callback auth server does not match the state")
+        return None, context, "state_unknown"
+    auth_server = bound_server or auth_server
+
     try:
+        # Inside the try: an unknown auth server raises from OpenIDClient, and
+        # like every other exchange failure that is a refusal, not a traceback.
+        client = OpenIDClient(auth_server)
         tokens = client.retrieve_tokens_using_auth_code(
             code,
             code_verifier=stashed["code_verifier"],
@@ -168,9 +192,9 @@ def redeem_step_up(
         # should reach the user as a traceback. The state is already burnt, so
         # there is nothing to retry against.
         logger.exception("step-up: could not redeem the authorization code")
-        return None, stashed.get("context", {}), "exchange_failed"
+        return None, context, "exchange_failed"
 
-    return claims, stashed.get("context", {}), None
+    return claims, context, None
 
 
 def verify_assurance(claims: dict, config: dict) -> Tuple[bool, str]:
@@ -294,7 +318,9 @@ def verify_subject(claims: dict, expected: Any, config: dict) -> Tuple[bool, str
     return True, ""
 
 
-def render_step_up_popup(target_origin: str, grant=None, reason=None) -> str:
+def render_step_up_popup(
+    target_origin: str, grant: Optional[str] = None, reason: Optional[str] = None
+) -> str:
     """HTML that hands a step-up result to the window that opened it.
 
     ``target_origin`` is never ``*``: whatever the application passes back is
