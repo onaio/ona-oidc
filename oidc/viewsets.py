@@ -20,6 +20,7 @@ from django.http import (
     HttpResponseBadRequest,
     HttpResponseRedirect,
 )
+from django.template.loader import select_template
 from django.utils import timezone
 from django.utils.translation import gettext as _
 
@@ -73,6 +74,19 @@ DEFAULT_USERNAME_HELP_TEXT = "Username should not contain . @ - symbols"
 logger = logging.getLogger(__name__)
 
 
+class OIDCTemplateHTMLRenderer(TemplateHTMLRenderer):
+    """Renders the package's pages on the project's ``base.html``.
+
+    Falls back to ``oidc/base.html`` when the project has none, so a fresh
+    install renders instead of raising TemplateDoesNotExist.
+    """
+
+    def get_template_context(self, data, renderer_context):
+        context = super().get_template_context(data, renderer_context)
+        base_template = select_template(["base.html", "oidc/base.html"])
+        return {**context, "base_template": base_template}
+
+
 class BaseOpenIDConnectViewset(viewsets.ViewSet):
     """
     BaseOpenIDConnectViewset: Base viewset that implements login and logout
@@ -80,7 +94,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     """
 
     permission_classes = [permissions.AllowAny]
-    renderer_classes = [JSONRenderer, TemplateHTMLRenderer]
+    renderer_classes = [JSONRenderer, OIDCTemplateHTMLRenderer]
     user_model = None
 
     def perform_authentication(self, request):
