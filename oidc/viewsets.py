@@ -174,7 +174,12 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             return bool(self.cookie_secure)
         return bool(getattr(settings, "SESSION_COOKIE_SECURE", False))
 
-    @action(methods=["GET"], detail=False)
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path=r"login/?",
+        url_name="openid_connect_login",
+    )
     def login(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         auth_server = kwargs.get("auth_server")
         client = self._get_client(auth_server=auth_server)
@@ -219,6 +224,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         detail=False,
         authentication_classes=[],
         renderer_classes=[JSONRenderer],
+        # ``session/?`` like the other three: the router anchors
+        # patterns, so without it a configured probe URL with a
+        # trailing slash 404s.
+        url_path=r"session/?",
+        url_name="openid_connect_session",
     )
     def session(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         """Return the current SSO-backed browser session, without tokens.
@@ -255,7 +265,12 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         """Return the non-secret session payload for ``user``."""
         return {"username": user.username}
 
-    @action(methods=["GET"], detail=False)
+    @action(
+        methods=["GET"],
+        detail=False,
+        url_path=r"logout/?",
+        url_name="openid_connect_logout",
+    )
     def logout(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         auth_server = kwargs.get("auth_server")
         client = self._get_client(auth_server=auth_server)
@@ -497,7 +512,12 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         if state:
             cache.delete(state_cache_key(state))
 
-    @action(methods=["POST", "GET"], detail=False)
+    @action(
+        methods=["POST", "GET"],
+        detail=False,
+        url_path=r"callback/?",
+        url_name="openid_connect_callback",
+    )
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
         auth_server = kwargs.get("auth_server")
         client = self._get_client(auth_server=auth_server)
