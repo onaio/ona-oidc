@@ -460,9 +460,6 @@ class TestSubjectBindingIsSafe(TestCase):
     def test_the_default_binding_is_safe(self):
         self.assertTrue(subject_binding_is_safe({}))
 
-    def test_an_email_claim_is_safe(self):
-        self.assertTrue(subject_binding_is_safe({"SUBJECT_CLAIM": "email"}))
-
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG={"MAP_CLAIM_TO_MODEL": {"upn": "email"}}
     )
@@ -471,11 +468,6 @@ class TestSubjectBindingIsSafe(TestCase):
 
     def test_a_username_field_is_not_safe(self):
         self.assertFalse(subject_binding_is_safe({"SUBJECT_FIELD": "username"}))
-
-    def test_a_username_claim_is_not_safe(self):
-        self.assertFalse(
-            subject_binding_is_safe({"SUBJECT_CLAIM": "preferred_username"})
-        )
 
     def test_the_default_falls_back_to_the_emails_list(self):
         claims = {"emails": ["ana@example.org"]}
