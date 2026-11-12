@@ -1,3 +1,4 @@
+import logging
 from typing import Iterable, Optional
 
 from django.conf import settings
@@ -10,6 +11,8 @@ import jwt
 from jwt.exceptions import InvalidTokenError
 
 import oidc.settings as default
+
+logger = logging.getLogger(__name__)
 
 
 def authenticate_sso(request, unique_user_field: str = "email"):
@@ -32,6 +35,15 @@ def authenticate_sso(request, unique_user_field: str = "email"):
 
     try:
         jwt_payload = jwt.decode(sso, secret_key, algorithms=[algorithm])
+        if "exp" not in jwt_payload:
+            # Grace period for cookies minted before tokens carried an
+            # expiry. Newly minted tokens always have one; a future
+            # release will require it.
+            logger.warning(
+                "Accepted an SSO token without an exp claim; support for "
+                "exp-less tokens is deprecated and will be removed in a "
+                "future release."
+            )
         unique_user_value = jwt_payload.get(unique_user_field)
         if unique_user_value is None and unique_user_field != "email":
             # Older SSO cookies always used the "email" claim name, even when

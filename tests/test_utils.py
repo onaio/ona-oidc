@@ -45,6 +45,17 @@ class TestAuthenticateSSO(TestCase):
             with self.subTest(name):
                 self.assertIsNone(authenticate_sso(self._request(token)))
 
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={"JWT_SECRET_KEY": "abc"}
+    )
+    def test_legacy_token_without_exp_authenticates_with_deprecation_warning(self):
+        """Cookies minted before exp existed keep working, loudly, for now."""
+        token = jwt.encode({"email": "jdoe@example.com"}, "abc", algorithm="HS256")
+        with self.assertLogs("oidc.utils", level="WARNING") as logs:
+            auth = authenticate_sso(self._request(token))
+        self.assertEqual(auth, (self.user, True))
+        self.assertIn("deprecated", "\n".join(logs.output))
+
     def test_missing_or_empty_secret_raises_improperly_configured(self):
         """A token can never be verified against a missing/empty secret."""
         token = jwt.encode({"email": "jdoe@example.com"}, "abc", algorithm="HS256")
