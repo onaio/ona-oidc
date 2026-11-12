@@ -14,6 +14,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpResponseRedirect
+from django.views.decorators.debug import sensitive_variables
 
 import jwt
 import requests
@@ -372,6 +373,9 @@ class OpenIDClient:
             decoded_token[REDIRECT_AFTER_AUTH] = cached_data.get("redirect_after")
         return decoded_token
 
+    # Hide all locals: several hold the client secret, code or verifier, and a
+    # list of names would miss any added later.
+    @sensitive_variables()
     def retrieve_tokens_using_auth_code(
         self, code: str, code_verifier: Optional[str] = None
     ) -> dict:

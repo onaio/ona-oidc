@@ -203,7 +203,14 @@ class ImportUserAdmin(BaseUserAdmin):
         try:
             results = self._search_user(self._get_access_token(), query)
         except requests.RequestException as exc:
-            logger.exception(exc)
+            # The exception text can echo the request, and a traceback would
+            # carry the token request's locals, which hold the client secret.
+            status_code = getattr(exc.response, "status_code", None)
+            logger.error(
+                "User search request failed: %s%s",
+                type(exc).__name__,
+                f" HTTP {status_code}" if status_code else "",
+            )
 
             return JsonResponse([], safe=False, status=200)
 
