@@ -20,6 +20,16 @@ def authenticate_sso(request, unique_user_field: str = "email"):
     if not sso:
         return None
 
+    if not secret_key:
+        # Fail loudly rather than verify against a guessable default.
+        # Older PyJWT versions accept an empty HMAC key, which would make
+        # every SSO token forgeable; newer ones raise InvalidKeyError on
+        # each request instead. Neither is an acceptable failure mode.
+        raise ImproperlyConfigured(
+            "OPENID_CONNECT_VIEWSET_CONFIG['JWT_SECRET_KEY'] must be set "
+            "to verify SSO tokens."
+        )
+
     try:
         jwt_payload = jwt.decode(sso, secret_key, algorithms=[algorithm])
         unique_user_value = jwt_payload.get(unique_user_field)

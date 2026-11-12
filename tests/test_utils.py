@@ -1,15 +1,43 @@
 """Tests for module oidc.utils"""
 
+from django.contrib.auth import get_user_model
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 from django.test.utils import override_settings
 
+import jwt
 from rest_framework.test import APIRequestFactory
 
 from oidc.utils import (
+    authenticate_sso,
     get_login_query_param_allowlist,
     is_safe_login_redirect,
 )
+
+
+class TestAuthenticateSSO(TestCase):
+    """Tests for the public SSO verification entry point."""
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = get_user_model().objects.create(
+            username="jdoe", email="jdoe@example.com", is_active=True
+        )
+
+    def _request(self, sso=None):
+        request = self.factory.get("/")
+        if sso is not None:
+            request.COOKIES["SSO"] = sso
+        return request
+
+    def test_missing_or_empty_secret_raises_improperly_configured(self):
+        """A token can never be verified against a missing/empty secret."""
+        token = jwt.encode({"email": "jdoe@example.com"}, "abc", algorithm="HS256")
+        for config in ({}, {"JWT_SECRET_KEY": ""}):
+            with self.subTest(config=config):
+                with override_settings(OPENID_CONNECT_VIEWSET_CONFIG=config):
+                    with self.assertRaises(ImproperlyConfigured):
+                        authenticate_sso(self._request(token))
 
 
 class TestGetLoginQueryParamAllowlist(TestCase):
