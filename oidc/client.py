@@ -93,11 +93,13 @@ RESERVED_END_SESSION_PARAMS = frozenset(
     }
 )
 
-# Signature algorithms accepted for ID tokens. All are RSA-key
-# algorithms, matching the RSA-only JWKS handling in
-# ``verify_and_decode_id_token``; the token's own ``alg`` header never
-# selects the verification algorithm.
-ID_TOKEN_ALLOWED_ALGORITHMS = ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512"]
+# Signature algorithms a configured ``ID_TOKEN_ALLOWED_ALGORITHMS``
+# list may contain. All are RSA-key algorithms, matching the RSA-only
+# JWKS handling in ``verify_and_decode_id_token``; the token's own
+# ``alg`` header never selects the verification algorithm.
+ID_TOKEN_SUPPORTED_ALGORITHMS = frozenset(
+    {"RS256", "RS384", "RS512", "PS256", "PS384", "PS512"}
+)
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +215,25 @@ class OpenIDClient:
         # PyJWT itself only skips the check for None, and would enforce
         # iss == "" for an empty string.
         self.issuer = config[auth_server].get("ISSUER") or None
+        allowed_algorithms = config[auth_server].get(
+            "ID_TOKEN_ALLOWED_ALGORITHMS",
+            default_config["ID_TOKEN_ALLOWED_ALGORITHMS"],
+        )
+        # A bare string would hit PyJWT's substring matching, and a
+        # non-RSA entry would send that token's verification down a
+        # code path our RSA-only JWKS handling cannot satisfy, raising
+        # an exception the callback does not treat as a rejection.
+        if (
+            not isinstance(allowed_algorithms, (list, tuple))
+            or not allowed_algorithms
+            or not set(allowed_algorithms) <= ID_TOKEN_SUPPORTED_ALGORITHMS
+        ):
+            raise ImproperlyConfigured(
+                f"OPENID_CONNECT_AUTH_SERVERS[{auth_server!r}]"
+                "['ID_TOKEN_ALLOWED_ALGORITHMS'] must be a non-empty list "
+                f"drawn from {sorted(ID_TOKEN_SUPPORTED_ALGORITHMS)}"
+            )
+        self.id_token_allowed_algorithms = list(allowed_algorithms)
 
     def _retrieve_jwks_related_to_kid(self, kid: str) -> Optional[str]:
         """
@@ -362,7 +383,7 @@ class OpenIDClient:
             public_key,
             audience=[self.client_id],
             issuer=self.issuer,
-            algorithms=ID_TOKEN_ALLOWED_ALGORITHMS,
+            algorithms=self.id_token_allowed_algorithms,
             options={"require": ["exp", "iat", "aud"]},
             # Tolerate small IdP/server clock skew: with iat required,
             # PyJWT otherwise rejects a token whose iat is seconds ahead

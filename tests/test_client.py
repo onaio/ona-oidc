@@ -1241,6 +1241,58 @@ class IDTokenValidationTestCase(TestCase):
         OPENID_CONNECT_AUTH_SERVERS={
             "default": {
                 **ID_TOKEN_VALIDATION_AUTH_SERVERS["default"],
+                "ID_TOKEN_ALLOWED_ALGORITHMS": ["RS256"],
+            }
+        }
+    )
+    def test_configured_algorithm_allowlist_narrows_the_default(self):
+        """A configured allowlist rejects an RSA-family algorithm it omits."""
+        rs384_token = jwt.encode(
+            self._claims(),
+            self.private_key,
+            algorithm="RS384",
+            headers={"kid": "test-kid"},
+        )
+        with self.assertRaises(jwt.InvalidTokenError):
+            self._verify(rs384_token)
+        decoded = self._verify(self._sign(self._claims()))
+        self.assertEqual(decoded["sub"], "user-1")
+
+    def test_default_allowlist_covers_the_rsa_family(self):
+        """With no allowlist configured, other RSA-family algorithms verify."""
+        rs384_token = jwt.encode(
+            self._claims(),
+            self.private_key,
+            algorithm="RS384",
+            headers={"kid": "test-kid"},
+        )
+        decoded = self._verify(rs384_token)
+        self.assertEqual(decoded["sub"], "user-1")
+
+    def test_invalid_algorithm_allowlist_config_is_rejected(self):
+        """An allowlist outside the RSA family fails at client construction."""
+        for name, value in {
+            "symmetric algorithm": ["RS256", "HS256"],
+            "non-RSA asymmetric algorithm": ["ES256"],
+            "empty list": [],
+            "bare string instead of a list": "RS256",
+        }.items():
+            with self.subTest(name):
+                with override_settings(
+                    OPENID_CONNECT_AUTH_SERVERS={
+                        "default": {
+                            **ID_TOKEN_VALIDATION_AUTH_SERVERS["default"],
+                            "ID_TOKEN_ALLOWED_ALGORITHMS": value,
+                        }
+                    }
+                ):
+                    with self.assertRaises(ImproperlyConfigured):
+                        OpenIDClient("default")
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                **ID_TOKEN_VALIDATION_AUTH_SERVERS["default"],
                 "ISSUER": "https://idp.example.com",
             }
         }
