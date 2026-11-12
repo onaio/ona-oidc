@@ -42,7 +42,7 @@ def authenticate_sso(request, unique_user_field: str = "email"):
 
 
 TRUE_STRINGS = frozenset({"true", "1", "yes", "on"})
-FALSE_STRINGS = frozenset({"false", "0", "no", "off", ""})
+FALSE_STRINGS = frozenset({"false", "0", "no", "off"})
 
 
 def str_to_bool(val):

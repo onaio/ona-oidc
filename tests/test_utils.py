@@ -127,7 +127,7 @@ class TestIsSafeLoginRedirect(TestCase):
 
 class TestStrToBool(TestCase):
     def test_false_spellings_are_false(self):
-        for val in ["False", "false", "FALSE", "0", "no", "off", "", " false "]:
+        for val in ["False", "false", "FALSE", "0", "no", "off", " false "]:
             with self.subTest(val=val):
                 self.assertIs(str_to_bool(val), False)
 
@@ -144,3 +144,9 @@ class TestStrToBool(TestCase):
     def test_unrecognized_string_raises_improperly_configured(self):
         with self.assertRaises(ImproperlyConfigured):
             str_to_bool("flase")
+
+    def test_blank_string_raises_improperly_configured(self):
+        for val in ["", "   "]:
+            with self.subTest(val=val):
+                with self.assertRaises(ImproperlyConfigured):
+                    str_to_bool(val)
