@@ -364,6 +364,10 @@ class OpenIDClient:
             issuer=self.issuer,
             algorithms=ID_TOKEN_ALLOWED_ALGORITHMS,
             options={"require": ["exp", "iat", "aud"]},
+            # Tolerate small IdP/server clock skew: with iat required,
+            # PyJWT otherwise rejects a token whose iat is seconds ahead
+            # as "not yet valid".
+            leeway=30,
         )
         # ``login()`` writes ``{auth_server, redirect_after}`` under the
         # nonce whenever the caller supplied a ``next``, even when

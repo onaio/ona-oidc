@@ -1297,3 +1297,14 @@ class IDTokenValidationTestCase(TestCase):
         with self.assertLogs("oidc.client", level="WARNING"):
             decoded = self._verify(self._sign(self._claims()))
         self.assertEqual(decoded["sub"], "user-1")
+
+    def test_small_clock_skew_is_tolerated(self):
+        """A token whose iat is seconds ahead (IdP clock skew) verifies."""
+        decoded = self._verify(self._sign(self._claims(iat=int(time.time()) + 10)))
+        self.assertEqual(decoded["sub"], "user-1")
+
+    def test_expired_token_is_rejected(self):
+        """A token past its exp, beyond any leeway, is rejected."""
+        past = int(time.time()) - 3600
+        with self.assertRaises(jwt.InvalidTokenError):
+            self._verify(self._sign(self._claims(iat=past, exp=past + 300)))
