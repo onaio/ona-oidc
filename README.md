@@ -103,9 +103,13 @@ them. Use it only for a provider that requires it.
 
 ### ID token validation
 
-ID tokens must be signed with an RSA-key algorithm (`RS256`/`RS384`/
-`RS512`/`PS256`/`PS384`/`PS512`) and carry `exp`, `iat` and `aud` claims;
-tokens that do not are rejected. When `ISSUER` is set, the token's
+ID tokens must be signed with an algorithm in the per-server
+`ID_TOKEN_ALLOWED_ALGORITHMS` list and carry `exp`, `iat` and `aud`
+claims; tokens that do not are rejected. The list defaults to the
+RSA family (`RS256`/`RS384`/`RS512`/`PS256`/`PS384`/`PS512`) and may
+only contain algorithms from that family — set it to a subset, e.g.
+`["RS256"]`, to accept exactly what your provider signs with. Any
+other value raises `ImproperlyConfigured`. When `ISSUER` is set, the token's
 `iss` claim must match it exactly; use the `issuer` value from the
 provider's `/.well-known/openid-configuration` document. For Microsoft
 Entra ID that value contains your tenant id — tokens never carry the
