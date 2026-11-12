@@ -414,7 +414,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     + timedelta(seconds=self.cookie_max_age or SSO_JWT_DEFAULT_MAX_AGE),
                 },
                 secret_key,
-                config.get("JWT_ALGORITHM"),
+                self.jwt_algorithm,
             )
             response.set_cookie(
                 SSO_COOKIE_NAME,

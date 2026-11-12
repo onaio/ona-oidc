@@ -2264,3 +2264,13 @@ class TestSSOCookieJWTExpiry(TestCase):
             BaseOpenIDConnectViewset().generate_successful_response(
                 request, self.user
             )
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            "JWT_SECRET_KEY": "abc",
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000",
+        }
+    )
+    def test_minting_defaults_to_hs256_when_algorithm_unset(self):
+        payload = self._minted_payload()
+        self.assertEqual(payload["email"], "jdoe@example.com")
