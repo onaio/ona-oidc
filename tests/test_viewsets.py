@@ -2274,3 +2274,43 @@ class TestSSOCookieJWTExpiry(TestCase):
     def test_minting_defaults_to_hs256_when_algorithm_unset(self):
         payload = self._minted_payload()
         self.assertEqual(payload["email"], "jdoe@example.com")
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            "USE_AUTH_BACKEND": True,
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000",
+        }
+    )
+    def test_missing_jwt_secret_is_rejected_before_login(self):
+        """The config error must fire before a session is established.
+
+        The factory request has no session, so login() would raise an
+        unrelated error if it ran first; seeing ImproperlyConfigured
+        proves the config check comes before login().
+        """
+        request = self.factory.get("/")
+        with self.assertRaises(ImproperlyConfigured):
+            BaseOpenIDConnectViewset().generate_successful_response(
+                request, self.user
+            )
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "SSO_COOKIE_MAX_AGE": 0,
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000",
+        }
+    )
+    def test_explicit_zero_cookie_max_age_is_honoured(self):
+        """SSO_COOKIE_MAX_AGE=0 mints an already-expired JWT, not a 7-day one."""
+        request = self.factory.get("/")
+        response = BaseOpenIDConnectViewset().generate_successful_response(
+            request, self.user
+        )
+        payload = jwt.decode(
+            response.cookies.get("SSO").value,
+            "abc",
+            algorithms=["HS256"],
+            options={"verify_exp": False},
+        )
+        self.assertEqual(payload["exp"] - payload["iat"], 0)

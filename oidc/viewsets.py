@@ -392,26 +392,33 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             redirect_after or per_provider_target or config.get("REDIRECT_AFTER_AUTH")
         )
 
+        secret_key = config.get("JWT_SECRET_KEY")
+        if self.use_sso and not secret_key:
+            # Without this check, PyJWT turns a missing secret + missing
+            # algorithm into an unsigned (alg=none) token. Raised before
+            # login() so the config error does not leave an established
+            # session behind the error response.
+            raise ImproperlyConfigured(
+                "USE_SSO_COOKIE requires OPENID_CONNECT_VIEWSET_CONFIG"
+                "['JWT_SECRET_KEY'] to be set."
+            )
+
         if self.use_auth_backend:
             login(request, user, backend=self.auth_backend)
 
         if self.use_sso:
-            secret_key = config.get("JWT_SECRET_KEY")
-            if not secret_key:
-                # Without this check, PyJWT turns a missing secret +
-                # missing algorithm into an unsigned (alg=none) token.
-                raise ImproperlyConfigured(
-                    "USE_SSO_COOKIE requires OPENID_CONNECT_VIEWSET_CONFIG"
-                    "['JWT_SECRET_KEY'] to be set."
-                )
             sso_value = getattr(user, self.sso_cookie, getattr(user, "email", ""))
             issued_at = timezone.now()
+            jwt_max_age = (
+                SSO_JWT_DEFAULT_MAX_AGE
+                if self.cookie_max_age is None
+                else self.cookie_max_age
+            )
             sso_cookie = jwt.encode(
                 {
                     self.sso_cookie: sso_value,
                     "iat": issued_at,
-                    "exp": issued_at
-                    + timedelta(seconds=self.cookie_max_age or SSO_JWT_DEFAULT_MAX_AGE),
+                    "exp": issued_at + timedelta(seconds=jwt_max_age),
                 },
                 secret_key,
                 self.jwt_algorithm,
