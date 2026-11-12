@@ -3,6 +3,7 @@ Tests for the OpenID Client
 """
 
 import json
+from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -2067,6 +2068,9 @@ class TestSessionAction(TestCase):
         )
 
     def _sso_token(self, value, claim="email", **claims):
+        # Tokens must carry exp to be accepted at all; exp-less tokens
+        # have their own rejection test in tests.test_utils.
+        claims.setdefault("exp", timezone.now() + timedelta(minutes=5))
         return jwt.encode({claim: value, **claims}, "abc", algorithm="HS256")
 
     def _get_session(self, sso=None):
