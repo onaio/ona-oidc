@@ -114,6 +114,21 @@ The `SSO` cookie emitted on successful authentication honours these keys:
   have a specific reason to expose the cookie to JavaScript.
 - **`SSO_COOKIE_PATH`** (`str`, default `"/"`).
 
+The cookie's JWT carries `iat` and `exp` claims: the token expires
+`SSO_COOKIE_MAX_AGE` seconds after it is minted, or after 7 days when
+`SSO_COOKIE_MAX_AGE` is not set. The cookie value is a bearer credential —
+it can be replayed through the `SSO` request header — so the token bounds
+its own lifetime instead of relying on the browser dropping the cookie.
+Tokens minted by older releases have no `exp`; `authenticate_sso` still
+accepts them but logs a deprecation warning, and a future release will
+reject them.
+
+`JWT_SECRET_KEY` is required for the SSO features: minting the cookie and
+verifying it with `authenticate_sso` both raise `ImproperlyConfigured`
+when it is missing or empty. Invalid tokens (bad signature, malformed
+value, expired) are an authentication miss — `authenticate_sso` returns
+`None` rather than raising.
+
 Future work: once `Secure=True` is enforced cohort-wide, the cookie name
 can migrate to `__Secure-SSO` for browser-enforced guarantees.
 
