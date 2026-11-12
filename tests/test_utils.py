@@ -153,6 +153,6 @@ class TestAuthenticateSso(TestCase):
         variables = dict(
             SafeExceptionReporterFilter().get_traceback_frame_variables(None, sso_frame)
         )
-        self.assertIn("unique_user_field", variables)
+        self.assertEqual(variables["unique_user_field"], "no_such_field")
         for value in (secret, cookie):
             self.assertNotIn(value, str(variables))
