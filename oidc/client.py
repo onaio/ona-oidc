@@ -209,6 +209,7 @@ class OpenIDClient:
                 f"REQUEST_MODE must be one of {REQUEST_MODES}, "
                 f"got {self.request_mode!r}"
             )
+        self.issuer = config[auth_server].get("ISSUER")
 
     def _retrieve_jwks_related_to_kid(self, kid: str) -> Optional[str]:
         """
@@ -340,6 +341,7 @@ class OpenIDClient:
             id_token,
             public_key,
             audience=[self.client_id],
+            issuer=self.issuer,
             algorithms=ID_TOKEN_ALLOWED_ALGORITHMS,
         )
         # ``login()`` writes ``{auth_server, redirect_after}`` under the

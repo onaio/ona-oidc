@@ -1235,3 +1235,25 @@ class IDTokenValidationTestCase(TestCase):
             with self.subTest(name):
                 with self.assertRaises(jwt.InvalidTokenError):
                     self._verify(token)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                **ID_TOKEN_VALIDATION_AUTH_SERVERS["default"],
+                "ISSUER": "https://idp.example.com",
+            }
+        }
+    )
+    def test_configured_issuer_is_enforced(self):
+        """With ISSUER set, a token with the wrong or no iss is rejected."""
+        for name, iss in {
+            "wrong issuer": "https://evil.example.com",
+            "missing issuer": None,
+        }.items():
+            with self.subTest(name):
+                with self.assertRaises(jwt.InvalidTokenError):
+                    self._verify(self._sign(self._claims(iss=iss)))
+        decoded = self._verify(
+            self._sign(self._claims(iss="https://idp.example.com"))
+        )
+        self.assertEqual(decoded["sub"], "user-1")
