@@ -87,6 +87,7 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "RESPONSE_TYPE": "id_token",
         "RESPONSE_MODE": "form_post",
         "REQUEST_MODE": "form_post",
+        "ISSUER": "https://login.microsoftonline.com/common/v2.0",
         "USE_NONCES": True,
         "NONCE_CACHE_TIMEOUT": 1800,
     }
@@ -99,6 +100,15 @@ OPENID_CONNECT_AUTH_SERVERS = {
 credentials to `TOKEN_ENDPOINT`. The default, `form_post`, sends them in the
 request body. `query` puts them in the URL, where proxy and provider logs keep
 them. Use it only for a provider that requires it.
+
+### ID token validation
+
+ID tokens must be signed with an RSA-key algorithm (`RS256`/`RS384`/
+`RS512`/`PS256`/`PS384`/`PS512`) and carry `exp`, `iat` and `aud` claims;
+tokens that do not are rejected. When `ISSUER` is set to the provider's
+issuer URL, the token's `iss` claim must match it. When `ISSUER` is not
+set, the `iss` claim is not checked and every verification logs a
+warning; a future release will require the setting.
 
 ### SSO cookie security
 
