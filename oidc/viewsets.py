@@ -23,7 +23,7 @@ from django.http import (
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.utils.translation import gettext as _
-from django.views.decorators.debug import sensitive_post_parameters
+from django.views.decorators.debug import sensitive_post_parameters, sensitive_variables
 
 import jwt
 from jwt.exceptions import PyJWTError
@@ -75,7 +75,9 @@ DEFAULT_USERNAME_HELP_TEXT = "Username should not contain . @ - symbols"
 logger = logging.getLogger(__name__)
 
 
-@method_decorator(sensitive_post_parameters("code", "id_token"), name="dispatch")
+@method_decorator(
+    sensitive_post_parameters("code", "id_token", "access_token"), name="dispatch"
+)
 class BaseOpenIDConnectViewset(viewsets.ViewSet):
     """
     BaseOpenIDConnectViewset: Base viewset that implements login and logout
@@ -501,6 +503,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             cache.delete(state_cache_key(state))
 
     @action(methods=["POST", "GET"], detail=False)
+    # Also hides the frames it calls, which hold tokens and client secrets.
+    @sensitive_variables()
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
         auth_server = kwargs.get("auth_server")
         client = self._get_client(auth_server=auth_server)

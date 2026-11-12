@@ -8,6 +8,7 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.core.cache import cache
 from django.http import JsonResponse
 from django.urls import path
+from django.views.decorators.debug import sensitive_variables
 
 import requests
 
@@ -192,6 +193,8 @@ class ImportUserAdmin(BaseUserAdmin):
             )
         )
 
+    # Also hides the frames it calls, which hold the client secret and token.
+    @sensitive_variables()
     def search_user(self, request):
         """Admin-protected JSON suggestions for importing a user"""
         config = get_import_conf()

@@ -15,7 +15,7 @@ class RequestModeCheckTestCase(SimpleTestCase):
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=QUERY_MODE_SERVERS)
     def test_query_request_mode_warns(self):
-        """Each auth server in query mode gets a deprecation warning"""
+        """Each auth server in query mode gets a warning"""
         warnings = [m for m in run_checks() if m.id == "oidc.W001"]
 
         self.assertEqual(len(warnings), 1)

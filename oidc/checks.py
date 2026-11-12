@@ -15,8 +15,7 @@ def check_request_mode(app_configs, **kwargs):
             "request URL (REQUEST_MODE 'query').",
             hint=(
                 "Proxy and provider access logs keep URLs. Set REQUEST_MODE to "
-                "'form_post' unless the provider only accepts query parameters. "
-                "Query mode is deprecated."
+                "'form_post' unless the provider only accepts query parameters."
             ),
             id="oidc.W001",
         )

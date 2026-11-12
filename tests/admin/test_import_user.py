@@ -1,4 +1,5 @@
 import json
+import traceback
 from unittest.mock import Mock, patch
 
 from django.contrib import admin
@@ -6,6 +7,7 @@ from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
+from django.views.debug import SafeExceptionReporterFilter
 
 import requests
 
@@ -187,6 +189,36 @@ class ImportUserAdminTestCase(TestCase):
             params={"q": "ab"},
             headers={"Authorization": "Bearer tok"},
         )
+
+    @patch.object(ImportUserAdmin, "_search_user", side_effect=RuntimeError("boom"))
+    @patch.object(ImportUserAdmin, "_get_access_token", return_value="tok")
+    def test_search_user_locals_hidden_from_error_reports(self, *_mocks):
+        """An error the search view doesn't catch shows no client secret"""
+        secret = "s3cr3t-import-value"
+        url = reverse("admin:auth_user_search")
+
+        # assertRaises drops the traceback, and the frames are what this checks.
+        with override_settings(
+            OPENID_IMPORT_USER={**OPENID_IMPORT_USER, "CLIENT_SECRET": secret}
+        ):
+            try:
+                self.client.get(url, {"q": "ab"})
+            except RuntimeError as exc:
+                escaped = exc
+            else:
+                self.fail("the unexpected error should escape the view")
+
+        frame = next(
+            frame
+            for frame, _ in traceback.walk_tb(escaped.__traceback__)
+            if frame.f_code.co_name == "search_user"
+        )
+        self.assertIn(secret, str(frame.f_locals["config"]))
+        variables = dict(
+            SafeExceptionReporterFilter().get_traceback_frame_variables(None, frame)
+        )
+        self.assertIn("config", variables)
+        self.assertNotIn(secret, str(variables))
 
     @patch("oidc.admin.requests.post")
     def test_search_user_view_failure_logs_no_request_detail(self, mock_post):

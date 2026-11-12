@@ -3,6 +3,7 @@ Tests for the OpenID Client
 """
 
 import json
+import traceback
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -953,6 +954,42 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(reported["state"], "st4te")
         self.assertNotEqual(reported["code"], "c0de-value")
         self.assertNotEqual(reported["id_token"], "t0ken-value")
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch("oidc.viewsets.OpenIDClient.verify_and_decode_id_token")
+    @patch("oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code")
+    def test_callback_locals_hidden_from_error_reports(
+        self, mock_retrieve_tokens_using_auth_code, mock_verify
+    ):
+        """An error the callback doesn't catch shows no tokens in error reports"""
+        tokens = {
+            "access_token": "acc3ss-value",
+            "refresh_token": "r3fresh-value",
+            "id_token": "id-t0ken-value",
+        }
+        mock_retrieve_tokens_using_auth_code.return_value = tokens
+        mock_verify.side_effect = RuntimeError("unexpected")
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        request = self.factory.post("/", data={"code": "c0de-value"})
+
+        # assertRaises drops the traceback, and the frames are what this checks.
+        try:
+            view(request, auth_server="default")
+        except RuntimeError as exc:
+            escaped = exc
+        else:
+            self.fail("the unexpected error should escape the callback")
+
+        frames = [frame for frame, _ in traceback.walk_tb(escaped.__traceback__)]
+        callback_frame = next(f for f in frames if f.f_code.co_name == "callback")
+        self.assertIn(
+            tokens["access_token"], str(callback_frame.f_locals["user_tokens"])
+        )
+        reporter_filter = SafeExceptionReporterFilter()
+        for frame in frames[frames.index(callback_frame) :]:
+            variables = dict(reporter_filter.get_traceback_frame_variables(None, frame))
+            for value in tokens.values():
+                self.assertNotIn(value, str(variables))
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
