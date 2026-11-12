@@ -1106,6 +1106,35 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
         OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
     )
+    @patch("oidc.viewsets.OpenIDClient.logout")
+    def test_logout_locals_hidden_from_error_reports(self, mock_client_logout):
+        """An error during logout shows no stashed id_token in error reports"""
+        id_token = "ey.st4shed.jwt"
+        mock_client_logout.side_effect = RuntimeError("unexpected")
+        view = BaseOpenIDConnectViewset.as_view({"get": "logout"})
+        request = self.factory.get("/")
+        request.session = {"oidc_id_token": id_token}
+
+        # assertRaises drops the traceback, and the frames are what this checks.
+        try:
+            view(request, auth_server="default")
+        except RuntimeError as exc:
+            escaped = exc
+        else:
+            self.fail("the unexpected error should escape logout")
+
+        frames = [frame for frame, _ in traceback.walk_tb(escaped.__traceback__)]
+        logout_frame = next(f for f in frames if f.f_code.co_name == "logout")
+        self.assertEqual(logout_frame.f_locals["id_token_hint"], id_token)
+        reporter_filter = SafeExceptionReporterFilter()
+        for frame in frames[frames.index(logout_frame) :]:
+            variables = dict(reporter_filter.get_traceback_frame_variables(None, frame))
+            self.assertNotIn(id_token, str(variables))
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
     def test_logout_forwards_id_token_hint_from_session(self):
         """The id_token stashed by the callback is threaded as
         ``id_token_hint`` on the end-session URL and popped from

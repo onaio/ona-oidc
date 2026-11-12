@@ -263,6 +263,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         return {"username": user.username}
 
     @action(methods=["GET"], detail=False)
+    @sensitive_variables()
     def logout(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         auth_server = kwargs.get("auth_server")
         client = self._get_client(auth_server=auth_server)
