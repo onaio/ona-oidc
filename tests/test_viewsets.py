@@ -2,6 +2,7 @@
 Tests for the OpenID Client
 """
 
+import copy
 import json
 
 from django.contrib.auth import get_user_model
@@ -1241,6 +1242,34 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(user.username, "johne")
             self.assertEqual(user.email, "johne@example.com")
             self.assertEqual(user.is_active, False)
+
+    def test_user_defaults_not_shared_between_users(self):
+        ona_defaults = {"is_active": True}
+        config = {
+            **copy.deepcopy(OPENID_CONNECT_VIEWSET_CONFIG),
+            "USER_DEFAULTS": {"^.*@ona.io$": ona_defaults},
+        }
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        data = {"id_token": "a.b.c"}
+        with (
+            override_settings(OPENID_CONNECT_VIEWSET_CONFIG=config),
+            patch("oidc.viewsets.OpenIDClient.verify_and_decode_id_token") as mock_func,
+        ):
+            mock_func.return_value = {
+                "given_name": "anna",
+                "family_name": "first",
+                "sub": "anna@ona.io",
+            }
+            response = view(self.factory.post("/", data=data), auth_server="default")
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(User.objects.get(username="anna").last_name, "first")
+
+            mock_func.return_value = {"given_name": "ben", "sub": "ben@ona.io"}
+            response = view(self.factory.post("/", data=data), auth_server="default")
+            self.assertEqual(response.status_code, 302)
+
+        self.assertEqual(User.objects.get(username="ben").last_name, "")
+        self.assertEqual(ona_defaults, {"is_active": True})
 
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
     def test_direct_access_to_callback_fails(self):
