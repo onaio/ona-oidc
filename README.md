@@ -203,6 +203,40 @@ urlpatterns = [
 
 ```
 
+## Step-up authentication
+
+Step-up asks the identity provider to prove a **fresh second factor** for a
+single sensitive action, on top of an existing session. The relying party
+sends an authorization request that forces a new authentication, and the
+callback accepts it only when the returned token proves the factor ran and was
+recent.
+
+Add a `STEP_UP` block to an auth server's entry in
+`OPENID_CONNECT_AUTH_SERVERS`:
+
+```python
+OPENID_CONNECT_AUTH_SERVERS = {
+    "example": {
+        # ... the server's login settings ...
+        "STEP_UP": {
+            "CLAIM": "acr",               # acr, amr, or tfp
+            "SATISFIED_BY": ["gold"],     # accepted values (a list, any-of)
+            "MAX_AGE": 0,                 # force a fresh factor
+            "MAX_AUTH_AGE_SECONDS": 300,  # how recent auth_time must be
+            "REQUIRE_AUTH_TIME": True,
+            # "PROMPT": "login",          # for providers that ignore max_age
+            # "SUBJECT_CLAIM"/"SUBJECT_FIELD": override the email binding
+            "REDIRECT_URI": "https://<app-host>/api/v1/stepup/callback",
+        },
+    },
+}
+```
+
+Configuring the provider so a step-up actually demands a code (the flows,
+conditional OTP steps and claims for Keycloak, WSO2, Azure AD B2C and Entra ID)
+is covered in
+[docs/step-up-provider-setup.md](docs/step-up-provider-setup.md).
+
 ## Import User (Optional)
 
 The `ona-oidc` package includes an optional import user feature that allows administrators to search and import users from an external OIDC provider through the Django admin interface. This feature is useful for organizations that want to create users based on data from their identity provider.
