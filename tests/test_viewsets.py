@@ -2251,3 +2251,16 @@ class TestSSOCookieJWTExpiry(TestCase):
         """A session cookie (no max age) still carries a bounded JWT: 7 days."""
         payload = self._minted_payload()
         self.assertEqual(payload["exp"] - payload["iat"], 60 * 60 * 24 * 7)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000",
+        }
+    )
+    def test_minting_without_jwt_secret_raises_improperly_configured(self):
+        """USE_SSO_COOKIE without JWT_SECRET_KEY is a config error, not a crash."""
+        request = self.factory.get("/")
+        with self.assertRaises(ImproperlyConfigured):
+            BaseOpenIDConnectViewset().generate_successful_response(
+                request, self.user
+            )

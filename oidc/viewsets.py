@@ -396,6 +396,14 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             login(request, user, backend=self.auth_backend)
 
         if self.use_sso:
+            secret_key = config.get("JWT_SECRET_KEY")
+            if not secret_key:
+                # Without this check, PyJWT turns a missing secret +
+                # missing algorithm into an unsigned (alg=none) token.
+                raise ImproperlyConfigured(
+                    "USE_SSO_COOKIE requires OPENID_CONNECT_VIEWSET_CONFIG"
+                    "['JWT_SECRET_KEY'] to be set."
+                )
             sso_value = getattr(user, self.sso_cookie, getattr(user, "email", ""))
             issued_at = timezone.now()
             sso_cookie = jwt.encode(
@@ -405,7 +413,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     "exp": issued_at
                     + timedelta(seconds=self.cookie_max_age or SSO_JWT_DEFAULT_MAX_AGE),
                 },
-                config.get("JWT_SECRET_KEY"),
+                secret_key,
                 config.get("JWT_ALGORITHM"),
             )
             response.set_cookie(
