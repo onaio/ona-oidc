@@ -306,6 +306,11 @@ class OpenIDClient:
         # silently expire unread when ``USE_NONCES`` is False (#116).
         nonce = decoded_token.get("nonce")
         cached_data = cache.get(nonce) if nonce else None
+        # A nonce is single-use (OIDC Core 1.0 §15.5.2). Only the request
+        # whose delete removes the entry may use it, so two concurrent
+        # replays of one ID token cannot both pass.
+        if cached_data is not None and not cache.delete(nonce):
+            cached_data = None
         if self.cache_nonces:
             # Verify that the cached nonce is present and that
             # the provider the nonce was initiated for, is the same

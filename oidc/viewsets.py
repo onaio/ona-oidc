@@ -5,6 +5,7 @@ oidc Viewsets module
 import importlib
 import logging
 import re
+import secrets
 import traceback
 from typing import List, Optional, Tuple
 
@@ -59,10 +60,17 @@ SSO_COOKIE_NAME = "SSO"
 # is a public constant and can be forged. Its purpose is to make the
 # "use id_token from body, skip auth-code exchange" path deliberate
 # (only triggered by our own form), so the broader code-exchange path
-# remains the default. Real protection comes from
-# verify_and_decode_id_token (signature, expiry, nonce).
+# remains the default. Real protection comes from the single-use login
+# continuation the form carries instead of the ID token.
 USERNAME_FORM_MARKER_FIELD = "from_username_form"
 USERNAME_FORM_MARKER_VALUE = "1"
+
+# Hidden field on oidc_user_data_entry.html holding a single-use key for
+# the server-side stash of an already-verified ID token. The token's
+# nonce is consumed on first verification, so the re-submit continues
+# from this stash instead of verifying the token a second time.
+LOGIN_CONTINUATION_FIELD = "login_continuation"
+_LOGIN_CONTINUATION_PREFIX = "oidc:continuation:"
 
 # Defaults used when FIELD_VALIDATION_REGEX has no "username" entry.
 # Kept conservative so the rendered form matches the legacy template
@@ -344,6 +352,42 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             **response_kwargs,
         )
 
+    def _stash_login_continuation(
+        self, client: OpenIDClient, id_token: str, decoded_id_token: dict
+    ) -> str:
+        key = secrets.token_urlsafe(32)
+        cache.set(
+            f"{_LOGIN_CONTINUATION_PREFIX}{key}",
+            {
+                "auth_server": client.auth_server,
+                "id_token": id_token,
+                "decoded_id_token": decoded_id_token,
+            },
+            client.nonce_cache_timeout,
+        )
+        return key
+
+    def _pop_login_continuation(self, client: OpenIDClient, key: str) -> Optional[dict]:
+        cache_key = f"{_LOGIN_CONTINUATION_PREFIX}{key}"
+        continuation = cache.get(cache_key)
+        if continuation is None or not cache.delete(cache_key):
+            return None
+        if continuation.get("auth_server") != client.auth_server:
+            return None
+        return continuation
+
+    def _retry_authentication_response(self) -> Response:
+        return Response(
+            {
+                "error": _(
+                    "Unable to validate authentication request; Kindly retry authentication process."
+                ),
+                "error_title": _("Authentication request verification failed"),
+            },
+            status=status.HTTP_401_UNAUTHORIZED,
+            template_name="oidc/oidc_unrecoverable_error.html",
+        )
+
     def _check_user_uniqueness(self, user_data: dict) -> Optional[str]:
         """
         Helper function that checks if the supplied user data is unique. If user_data does not
@@ -502,6 +546,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         auth_server = kwargs.get("auth_server")
         client = self._get_client(auth_server=auth_server)
         user = redirect_after = code_verifier = None
+        continuation = decoded_id_token = None
         server_response = {}
 
         if client:
@@ -509,24 +554,29 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             # the original (already-consumed) ?code= still on the URL
             # because action="" preserves the query string. Detect that
             # specific re-submit via the hidden marker the form sets and
-            # reuse the id_token it carries instead of re-exchanging the
-            # stale code (which 400s from the IdP as invalid_code). The
-            # marker is a path gate, not an auth check — the id_token is
-            # still verified downstream.
+            # continue from the ID token stashed when the form was
+            # rendered instead of re-exchanging the stale code (which 400s
+            # from the IdP as invalid_code). The marker is a path gate,
+            # not an auth check — the single-use continuation is.
             is_username_form_resubmit = (
                 request.method == "POST"
                 and request.data.get(USERNAME_FORM_MARKER_FIELD)
                 == USERNAME_FORM_MARKER_VALUE
-                and request.data.get("id_token")
+                and request.data.get(LOGIN_CONTINUATION_FIELD)
             )
             if is_username_form_resubmit:
+                continuation = self._pop_login_continuation(
+                    client, request.data.get(LOGIN_CONTINUATION_FIELD)
+                )
+                if continuation is None:
+                    return self._retry_authentication_response()
                 # Carry `state` forward (the form rendered it as a hidden
                 # input from the original server_response) so the success
                 # path's _clear_login_states can drop the PKCE cache entry
                 # written by client.login(). Without this, that entry would
                 # leak until cache TTL on every missing-username flow.
                 server_response = {
-                    "id_token": request.data.get("id_token"),
+                    "id_token": continuation["id_token"],
                     "state": request.data.get("state"),
                 }
             elif client.response_mode == "form_post":
@@ -584,7 +634,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             if user_tokens or id_token:
                 try:
                     id_token = id_token or user_tokens.get("id_token")
-                    decoded_id_token = client.verify_and_decode_id_token(id_token)
+                    decoded_id_token = (
+                        continuation["decoded_id_token"]
+                        if continuation
+                        else client.verify_and_decode_id_token(id_token)
+                    )
                     # Stash the raw id_token in the Django session so
                     # the logout action below can replay it as
                     # `id_token_hint` on the Keycloak end-session URL.
@@ -654,7 +708,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                                 len(missing_fields) == 1
                                 and list(missing_fields)[0] == "username"
                             ):
-                                data = {"id_token": id_token}
+                                data = {
+                                    LOGIN_CONTINUATION_FIELD: self._stash_login_continuation(
+                                        client, id_token, decoded_id_token
+                                    )
+                                }
                                 logger.info("missing_fields: ", missing_fields)
                                 return self._username_form_response(
                                     data, state=server_response.get("state")
@@ -676,7 +734,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             field = self._check_user_uniqueness(user_data)
                             if field:
                                 data = {
-                                    "id_token": id_token,
+                                    LOGIN_CONTINUATION_FIELD: self._stash_login_continuation(
+                                        client, id_token, decoded_id_token
+                                    ),
                                     "error": f"{field.capitalize()} field is already in use.",
                                 }
                                 logger.info(data)
@@ -696,8 +756,15 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     stack_trace = traceback.format_exc()
                     logger.info("ValueError")
                     logger.info(stack_trace)
+                    if decoded_id_token is None:
+                        return self._retry_authentication_response()
                     return self._username_form_response(
-                        {"error": str(e), "id_token": id_token},
+                        {
+                            "error": str(e),
+                            LOGIN_CONTINUATION_FIELD: self._stash_login_continuation(
+                                client, id_token, decoded_id_token
+                            ),
+                        },
                         state=server_response.get("state"),
                         status=status.HTTP_400_BAD_REQUEST,
                     )

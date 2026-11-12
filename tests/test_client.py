@@ -15,6 +15,7 @@ import requests
 
 from oidc.client import (
     REDIRECT_AFTER_AUTH,
+    NonceVerificationFailed,
     OpenIDClient,
     TokenVerificationFailed,
     state_cache_key,
@@ -948,3 +949,64 @@ class OpenIDClientTestCase(TestCase):
         decoded = client.verify_and_decode_id_token("h.p.s")
 
         self.assertNotIn(REDIRECT_AFTER_AUTH, decoded)
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch("oidc.client.RSAAlgorithm.from_jwk")
+    @patch("oidc.client.jwt.decode")
+    @patch("oidc.client.jwt.get_unverified_header")
+    @patch.object(OpenIDClient, "_retrieve_jwks_related_to_kid")
+    @patch.object(secrets, "token_urlsafe")
+    def test_nonce_is_single_use(
+        self,
+        mock_token_urlsafe,
+        mock_jwks,
+        mock_get_header,
+        mock_jwt_decode,
+        _mock_from_jwk,
+    ):
+        """Replaying an ID token after its nonce was verified fails (#143)."""
+        mock_token_urlsafe.return_value = "n1"
+        mock_jwks.return_value = {"kty": "RSA"}
+        mock_get_header.return_value = {"kid": "k1", "alg": "RS256"}
+        mock_jwt_decode.return_value = {"sub": "1", "nonce": "n1"}
+
+        client = OpenIDClient("default")
+        self.assertTrue(client.cache_nonces)
+        client.login()
+        self.assertIsNotNone(cache.get("n1"))
+
+        self.assertEqual(client.verify_and_decode_id_token("h.p.s")["sub"], "1")
+        self.assertIsNone(cache.get("n1"))
+
+        with self.assertRaises(NonceVerificationFailed):
+            client.verify_and_decode_id_token("h.p.s")
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch("oidc.client.RSAAlgorithm.from_jwk")
+    @patch("oidc.client.jwt.decode")
+    @patch("oidc.client.jwt.get_unverified_header")
+    @patch.object(OpenIDClient, "_retrieve_jwks_related_to_kid")
+    @patch.object(secrets, "token_urlsafe")
+    def test_nonce_consumed_by_concurrent_request_is_refused(
+        self,
+        mock_token_urlsafe,
+        mock_jwks,
+        mock_get_header,
+        mock_jwt_decode,
+        _mock_from_jwk,
+    ):
+        """Two requests can read the nonce before either deletes it; the
+        one whose delete finds nothing left must fail."""
+        mock_token_urlsafe.return_value = "n1"
+        mock_jwks.return_value = {"kty": "RSA"}
+        mock_get_header.return_value = {"kid": "k1", "alg": "RS256"}
+        mock_jwt_decode.return_value = {"sub": "1", "nonce": "n1"}
+
+        client = OpenIDClient("default")
+        client.login()
+        self.assertIsNotNone(cache.get("n1"))
+
+        with patch.object(cache, "delete", return_value=False) as mock_delete:
+            with self.assertRaises(NonceVerificationFailed):
+                client.verify_and_decode_id_token("h.p.s")
+        mock_delete.assert_called_once_with("n1")
