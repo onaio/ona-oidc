@@ -167,6 +167,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             config.get("AUTO_CREATE_USER", default_config["AUTO_CREATE_USER"])
         )
 
+    # Also hides the client's own setup, which holds every server's secret.
+    @sensitive_variables()
     def _get_client(self, auth_server: str) -> Optional[OpenIDClient]:
         auth_config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
 

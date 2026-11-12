@@ -945,15 +945,50 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         """Django error reports mask the POSTed code and id_token"""
         mock_retrieve_tokens_using_auth_code.side_effect = TokenVerificationFailed()
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
-        data = {"code": "c0de-value", "id_token": "t0ken-value", "state": "st4te"}
+        data = {
+            "code": "c0de-value",
+            "id_token": "t0ken-value",
+            "access_token": "acc3ss-value",
+            "state": "st4te",
+        }
         request = self.factory.post("/", data=data)
 
         view(request, auth_server="default")
 
         reported = SafeExceptionReporterFilter().get_post_parameters(request)
         self.assertEqual(reported["state"], "st4te")
-        self.assertNotEqual(reported["code"], "c0de-value")
-        self.assertNotEqual(reported["id_token"], "t0ken-value")
+        for name in ("code", "id_token", "access_token"):
+            self.assertNotEqual(reported[name], data[name])
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "CLIENT_SECRET": "s3cr3t-login-value",
+                "REQUEST_MODE": "form-post",
+            }
+        }
+    )
+    def test_client_setup_locals_hidden_from_error_reports(self):
+        """A misconfigured client fails login without its secret in error reports"""
+        secret = "s3cr3t-login-value"
+        view = UserModelOpenIDConnectViewset.as_view({"get": "login"})
+
+        # assertRaises drops the traceback, and the frames are what this checks.
+        try:
+            view(self.factory.get("/"), auth_server="default")
+        except ImproperlyConfigured as exc:
+            escaped = exc
+        else:
+            self.fail("the misconfiguration should escape login")
+
+        frames = [frame for frame, _ in traceback.walk_tb(escaped.__traceback__)]
+        get_client = next(f for f in frames if f.f_code.co_name == "_get_client")
+        self.assertIn(secret, str(get_client.f_locals["auth_config"]))
+        reporter_filter = SafeExceptionReporterFilter()
+        for frame in frames[frames.index(get_client) :]:
+            variables = dict(reporter_filter.get_traceback_frame_variables(None, frame))
+            self.assertNotIn(secret, str(variables))
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch("oidc.viewsets.OpenIDClient.verify_and_decode_id_token")
