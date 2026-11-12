@@ -2186,7 +2186,7 @@ class TestSessionAction(TestCase):
         )
         sso = response.cookies.get("SSO").value
         payload = jwt.decode(sso, "abc", algorithms=["HS256"])
-        self.assertEqual(payload, {"username": "jdoe"})
+        self.assertEqual(payload["username"], "jdoe")
 
         session_response = self._get_session(sso)
         self.assertEqual(session_response.status_code, 200)
@@ -2205,3 +2205,49 @@ class TestSessionAction(TestCase):
         )
         self.assertEqual(response.status_code, 401)
         self.assertFalse(response.has_header("WWW-Authenticate"))
+
+
+class TestSSOCookieJWTExpiry(TestCase):
+    """The SSO cookie's JWT must be a bounded credential, not a forever token."""
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = User.objects.create(
+            username="jdoe", email="jdoe@example.com", is_active=True
+        )
+
+    def _minted_payload(self):
+        request = self.factory.get("/")
+        response = BaseOpenIDConnectViewset().generate_successful_response(
+            request, self.user
+        )
+        return jwt.decode(
+            response.cookies.get("SSO").value, "abc", algorithms=["HS256"]
+        )
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000",
+        }
+    )
+    def test_minted_sso_jwt_expires_after_cookie_max_age(self):
+        payload = self._minted_payload()
+        self.assertEqual(payload["email"], "jdoe@example.com")
+        # OPENID_CONNECT_VIEWSET_CONFIG sets SSO_COOKIE_MAX_AGE to 30 days.
+        self.assertEqual(payload["exp"] - payload["iat"], 60 * 60 * 24 * 30)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **{
+                k: v
+                for k, v in OPENID_CONNECT_VIEWSET_CONFIG.items()
+                if k != "SSO_COOKIE_MAX_AGE"
+            },
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000",
+        }
+    )
+    def test_minted_sso_jwt_gets_default_expiry_without_cookie_max_age(self):
+        """A session cookie (no max age) still carries a bounded JWT: 7 days."""
+        payload = self._minted_payload()
+        self.assertEqual(payload["exp"] - payload["iat"], 60 * 60 * 24 * 7)

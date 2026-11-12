@@ -6,6 +6,7 @@ import importlib
 import logging
 import re
 import traceback
+from datetime import timedelta
 from typing import List, Optional, Tuple
 
 from django.conf import settings
@@ -53,6 +54,12 @@ from oidc.utils import (
 
 default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 SSO_COOKIE_NAME = "SSO"
+
+# Lifetime of the SSO cookie's JWT when SSO_COOKIE_MAX_AGE is not set
+# (i.e. the browser cookie is a session cookie). The JWT must expire on
+# its own: the cookie value is a bearer credential that can be replayed
+# through the `SSO` header long after the browser session ends.
+SSO_JWT_DEFAULT_MAX_AGE = 60 * 60 * 24 * 7  # 7 days
 
 # Hidden field on oidc_user_data_entry.html that signals the form is
 # re-POSTing to the callback URL. Not a security boundary — the value
@@ -390,8 +397,14 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
         if self.use_sso:
             sso_value = getattr(user, self.sso_cookie, getattr(user, "email", ""))
+            issued_at = timezone.now()
             sso_cookie = jwt.encode(
-                {self.sso_cookie: sso_value},
+                {
+                    self.sso_cookie: sso_value,
+                    "iat": issued_at,
+                    "exp": issued_at
+                    + timedelta(seconds=self.cookie_max_age or SSO_JWT_DEFAULT_MAX_AGE),
+                },
                 config.get("JWT_SECRET_KEY"),
                 config.get("JWT_ALGORITHM"),
             )
