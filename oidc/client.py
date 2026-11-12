@@ -351,6 +351,7 @@ class OpenIDClient:
             audience=[self.client_id],
             issuer=self.issuer,
             algorithms=ID_TOKEN_ALLOWED_ALGORITHMS,
+            options={"require": ["exp", "iat", "aud"]},
         )
         # ``login()`` writes ``{auth_server, redirect_after}`` under the
         # nonce whenever the caller supplied a ``next``, even when

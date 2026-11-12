@@ -1263,3 +1263,10 @@ class IDTokenValidationTestCase(TestCase):
         with self.assertLogs("oidc.client", level="WARNING") as logs:
             self._verify(self._sign(self._claims()))
         self.assertIn("ISSUER", "\n".join(logs.output))
+
+    def test_token_missing_required_claims_is_rejected(self):
+        """A token lacking exp or iat is rejected despite a valid signature."""
+        for missing in ("exp", "iat"):
+            with self.subTest(missing=missing):
+                with self.assertRaises(jwt.InvalidTokenError):
+                    self._verify(self._sign(self._claims(**{missing: None})))
