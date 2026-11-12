@@ -13,6 +13,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpResponseRedirect
 from django.test import TestCase
 from django.test.utils import override_settings
+from django.views.debug import SafeExceptionReporterFilter
 
 import jwt
 import requests
@@ -747,6 +748,29 @@ class OpenIDClientTestCase(TestCase):
                 self.assertIn(expected_log, logged)
                 self.assertNotIn("HTTPError", logged)
                 self._assert_secret_not_exposed(mock_requests_post, logs, raised)
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=QUERY_MODE_AUTH_SERVERS)
+    @patch.object(requests, "post")
+    def test_retrieve_tokens_locals_hidden_from_error_reports(self, mock_requests_post):
+        """An unexpected error from the exchange shows no credentials in error reports"""
+        code, verifier = "c0de-value", "v3rifier-value"
+        mock_requests_post.side_effect = RuntimeError("unexpected")
+
+        with self.assertRaises(RuntimeError) as raised:
+            OpenIDClient("pkce").retrieve_tokens_using_auth_code(code, verifier)
+
+        frame = next(
+            frame
+            for frame, _ in traceback.walk_tb(raised.exception.__traceback__)
+            if frame.f_code.co_name == "retrieve_tokens_using_auth_code"
+        )
+        self.assertIn(LEAKY_SECRET, str(frame.f_locals["data"]))
+        variables = dict(
+            SafeExceptionReporterFilter().get_traceback_frame_variables(None, frame)
+        )
+        self.assertIn("data", variables)
+        for value in (LEAKY_SECRET, code, verifier):
+            self.assertNotIn(value, str(variables))
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=QUERY_MODE_AUTH_SERVERS)
     @patch.object(requests, "post")

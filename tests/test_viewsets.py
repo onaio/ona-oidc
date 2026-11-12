@@ -10,6 +10,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 from django.test.utils import override_settings
 from django.utils import timezone
+from django.views.debug import SafeExceptionReporterFilter
 
 import jwt
 from mock import MagicMock, patch
@@ -934,6 +935,24 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             "Unable to retrieve ID Token. Kindly retry authentication process.",
         )
         self.assertNotIn(secret, str(response.data))
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch("oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code")
+    def test_callback_hides_credentials_from_error_reports(
+        self, mock_retrieve_tokens_using_auth_code
+    ):
+        """Django error reports mask the POSTed code and id_token"""
+        mock_retrieve_tokens_using_auth_code.side_effect = TokenVerificationFailed()
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        data = {"code": "c0de-value", "id_token": "t0ken-value", "state": "st4te"}
+        request = self.factory.post("/", data=data)
+
+        view(request, auth_server="default")
+
+        reported = SafeExceptionReporterFilter().get_post_parameters(request)
+        self.assertEqual(reported["state"], "st4te")
+        self.assertNotEqual(reported["code"], "c0de-value")
+        self.assertNotEqual(reported["id_token"], "t0ken-value")
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)

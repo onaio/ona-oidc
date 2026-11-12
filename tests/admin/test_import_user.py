@@ -7,6 +7,8 @@ from django.core.cache import cache
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
+import requests
+
 from oidc.admin import ImportUserAdmin
 
 OPENID_IMPORT_USER = {
@@ -185,6 +187,32 @@ class ImportUserAdminTestCase(TestCase):
             params={"q": "ab"},
             headers={"Authorization": "Bearer tok"},
         )
+
+    @patch("oidc.admin.requests.post")
+    def test_search_user_view_failure_logs_no_request_detail(self, mock_post):
+        """A failed IdP request logs its type and status, not its text"""
+        secret = "s3cr3t-value"
+        rejected = requests.Response()
+        rejected.status_code = 401
+        mock_post.side_effect = requests.HTTPError(
+            f"401 Client Error: echoed client_secret={secret}", response=rejected
+        )
+        url = reverse("admin:auth_user_search")
+
+        with (
+            override_settings(
+                OPENID_IMPORT_USER={**OPENID_IMPORT_USER, "CLIENT_SECRET": secret}
+            ),
+            self.assertLogs("oidc.admin", level="DEBUG") as logs,
+        ):
+            r = self.client.get(url, {"q": "ab"})
+
+        self.assertEqual(r.json(), [])
+        logged = "\n".join(logs.output)
+        self.assertIn("HTTPError", logged)
+        self.assertIn("HTTP 401", logged)
+        self.assertNotIn(secret, logged)
+        self.assertTrue(all(record.exc_info is None for record in logs.records))
 
     def test_search_user_view_empty_query_returns_empty(self):
         """Search user view empty query returns empty"""
