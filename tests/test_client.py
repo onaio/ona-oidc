@@ -1257,3 +1257,9 @@ class IDTokenValidationTestCase(TestCase):
             self._sign(self._claims(iss="https://idp.example.com"))
         )
         self.assertEqual(decoded["sub"], "user-1")
+
+    def test_missing_issuer_config_logs_warning(self):
+        """Verification without a configured ISSUER warns that iss is unchecked."""
+        with self.assertLogs("oidc.client", level="WARNING") as logs:
+            self._verify(self._sign(self._claims()))
+        self.assertIn("ISSUER", "\n".join(logs.output))

@@ -337,6 +337,14 @@ class OpenIDClient:
         public_key = RSAAlgorithm.from_jwk(json.dumps(jwks))
         cached_data = {}
 
+        if not self.issuer:
+            logger.warning(
+                "No ISSUER configured for auth server %r; the ID token's "
+                "iss claim is not verified. Set OPENID_CONNECT_AUTH_SERVERS"
+                "[%r]['ISSUER'] to the provider's issuer URL.",
+                self.auth_server,
+                self.auth_server,
+            )
         decoded_token = jwt.decode(
             id_token,
             public_key,
