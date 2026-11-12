@@ -334,7 +334,16 @@ class OpenIDClient:
         if not jwks:
             raise NoJSONWebKeyFound("Failed to retrieve key ID described in Token")
 
-        public_key = RSAAlgorithm.from_jwk(json.dumps(jwks))
+        try:
+            public_key = RSAAlgorithm.from_jwk(json.dumps(jwks))
+        except jwt.exceptions.InvalidKeyError as exc:
+            # The kid matched a JWKS entry that is not an RSA key (EC,
+            # OKP, …). InvalidKeyError is not an InvalidTokenError, so
+            # without this translation it would escape the callback's
+            # handled-rejection path as a server error.
+            raise NoJSONWebKeyFound(
+                "ID token key is not usable with the allowed RSA algorithms"
+            ) from exc
         cached_data = {}
 
         if not self.issuer:

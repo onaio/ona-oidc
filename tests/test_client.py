@@ -18,12 +18,13 @@ from django.test.utils import override_settings
 
 import jwt
 import requests
-from cryptography.hazmat.primitives.asymmetric import rsa
-from jwt.algorithms import RSAAlgorithm
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 
 from oidc.client import (
     REDIRECT_AFTER_AUTH,
     REQUEST_MODES,
+    NoJSONWebKeyFound,
     OpenIDClient,
     TokenVerificationFailed,
     state_cache_key,
@@ -1270,3 +1271,18 @@ class IDTokenValidationTestCase(TestCase):
             with self.subTest(missing=missing):
                 with self.assertRaises(jwt.InvalidTokenError):
                     self._verify(self._sign(self._claims(**{missing: None})))
+
+    def test_kid_resolving_to_non_rsa_key_is_a_handled_rejection(self):
+        """A kid that resolves to a non-RSA JWKS key rejects, not crashes."""
+        ec_key = ec.generate_private_key(ec.SECP256R1())
+        jwk = json.loads(ECAlgorithm.to_jwk(ec_key.public_key()))
+        jwk["kid"] = "ec-kid"
+        token = jwt.encode(
+            self._claims(), ec_key, algorithm="ES256", headers={"kid": "ec-kid"}
+        )
+        jwks_response = MagicMock(
+            status_code=200, **{"json.return_value": {"keys": [jwk]}}
+        )
+        with patch.object(requests, "get", return_value=jwks_response):
+            with self.assertRaises(NoJSONWebKeyFound):
+                OpenIDClient("default").verify_and_decode_id_token(token)
