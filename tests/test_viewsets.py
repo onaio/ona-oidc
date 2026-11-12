@@ -661,6 +661,69 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 response.data.get("error"), "Missing required fields: first_name"
             )
 
+    def _assert_unrecoverable_auth_401(self, response):
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.template_name, "oidc/oidc_unrecoverable_error.html")
+        self.assertEqual(
+            response.data.get("error"),
+            "Unable to validate authentication request; Kindly retry authentication process.",
+        )
+        self.assertEqual(
+            response.data.get("error_title"),
+            "Authentication request verification failed",
+        )
+
+    def test_unrecoverable_error_on_access_token_verification_failed(self):
+        """TokenVerificationFailed during tokens_to_user_info returns 401 without 500 or leaks."""
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with (
+            patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+            ) as mock_decode,
+            patch("oidc.viewsets.OpenIDClient.tokens_to_user_info") as mock_user_info,
+        ):
+            mock_decode.return_value = {"sub": "user-1"}
+            mock_user_info.side_effect = TokenVerificationFailed(
+                "internal secret marker"
+            )
+
+            request = self.factory.post("/", data={"id_token": "hdr.payload.sig"})
+            response = view(request, auth_server="default")
+
+        self._assert_unrecoverable_auth_401(response)
+        self.assertNotIn("internal secret marker", str(response.data.get("error")))
+
+    def test_unrecoverable_error_on_missing_at_hash(self):
+        """Missing at_hash when userinfo is needed renders unrecoverable 401."""
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+            return_value={"sub": "user-1"},
+        ):
+            request = self.factory.post("/", data={"id_token": "hdr.payload.sig"})
+            response = view(request, auth_server="default")
+
+        self._assert_unrecoverable_auth_401(response)
+
+    def test_unrecoverable_error_on_unsupported_access_token_algorithm(self):
+        """Unsupported alg in access-token validation renders unrecoverable 401, not username form."""
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with (
+            patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+            ) as mock_decode,
+            patch(
+                "oidc.client.jwt.get_unverified_header",
+                return_value={"alg": "UNSUPPORTED"},
+            ),
+        ):
+            mock_decode.return_value = {"sub": "user-1", "at_hash": "abc"}
+
+            request = self.factory.post("/", data={"id_token": "hdr.payload.sig"})
+            response = view(request, auth_server="default")
+
+        self._assert_unrecoverable_auth_401(response)
+
     def test_create_non_existing_user(self):
         """
         Test that a new user is created if the username is present and
