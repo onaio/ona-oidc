@@ -731,10 +731,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         state=server_response.get("state"),
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-                except jwt.exceptions.DecodeError:
+                except jwt.exceptions.InvalidTokenError:
                     return Response(
                         {
-                            "error": _("Failed to decode ID Token."),
+                            "error": _("ID Token is invalid or has expired."),
                             "error_title": _("Invalid ID Token"),
                         },
                         status=status.HTTP_401_UNAUTHORIZED,

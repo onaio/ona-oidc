@@ -940,6 +940,28 @@ class TestUserModelOpenIDConnectViewset(TestCase):
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    @patch("oidc.viewsets.OpenIDClient.verify_and_decode_id_token")
+    def test_invalid_id_token_renders_error_page_not_500(self, mock_verify):
+        """Any token-validation failure shows the error page, not a crash."""
+        failures = {
+            "expired": jwt.exceptions.ExpiredSignatureError("expired"),
+            "missing claim": jwt.exceptions.MissingRequiredClaimError("exp"),
+            "wrong issuer": jwt.exceptions.InvalidIssuerError("bad iss"),
+            "disallowed algorithm": jwt.exceptions.InvalidAlgorithmError("alg"),
+        }
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        for name, failure in failures.items():
+            with self.subTest(name):
+                mock_verify.side_effect = failure
+                request = self.factory.post("/", data={"id_token": "stale"})
+                response = view(request, auth_server="default")
+                self.assertEqual(response.status_code, 401)
+                self.assertEqual(
+                    response.template_name, "oidc/oidc_unrecoverable_error.html"
+                )
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
     def test_base_open_id_connect_viewset(self):
         viewset_class = BaseOpenIDConnectViewset
         view = viewset_class.as_view({"get": "login"})
