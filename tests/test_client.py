@@ -1286,3 +1286,14 @@ class IDTokenValidationTestCase(TestCase):
         with patch.object(requests, "get", return_value=jwks_response):
             with self.assertRaises(NoJSONWebKeyFound):
                 OpenIDClient("default").verify_and_decode_id_token(token)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {**ID_TOKEN_VALIDATION_AUTH_SERVERS["default"], "ISSUER": ""}
+        }
+    )
+    def test_empty_issuer_behaves_like_unset(self):
+        """ISSUER='' skips the iss check with the warning, same as unset."""
+        with self.assertLogs("oidc.client", level="WARNING"):
+            decoded = self._verify(self._sign(self._claims()))
+        self.assertEqual(decoded["sub"], "user-1")

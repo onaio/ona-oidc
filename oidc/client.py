@@ -209,7 +209,10 @@ class OpenIDClient:
                 f"REQUEST_MODE must be one of {REQUEST_MODES}, "
                 f"got {self.request_mode!r}"
             )
-        self.issuer = config[auth_server].get("ISSUER")
+        # Normalized to None so every falsy value means "no iss check";
+        # PyJWT itself only skips the check for None, and would enforce
+        # iss == "" for an empty string.
+        self.issuer = config[auth_server].get("ISSUER") or None
 
     def _retrieve_jwks_related_to_kid(self, kid: str) -> Optional[str]:
         """
