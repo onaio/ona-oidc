@@ -913,6 +913,29 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(response.url, "http://localhost:3000")
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch("oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code")
+    def test_auth_code_flow_token_failure_hides_exception_detail(
+        self, mock_retrieve_tokens_using_auth_code
+    ):
+        """A failed code exchange shows a fixed message, never the exception text"""
+        secret = "s3cr3t-value"
+        mock_retrieve_tokens_using_auth_code.side_effect = TokenVerificationFailed(
+            f"https://example.com/oauth2/v2.0/token?client_secret={secret}"
+        )
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        request = self.factory.post("/", data={"code": "SplxlOBeZQQYbYS6WxSbIA"})
+        response = view(request, auth_server="default")
+
+        mock_retrieve_tokens_using_auth_code.assert_called_once()
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.template_name, "oidc/oidc_unrecoverable_error.html")
+        self.assertEqual(
+            response.data["error"],
+            "Unable to retrieve ID Token. Kindly retry authentication process.",
+        )
+        self.assertNotIn(secret, str(response.data))
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
     def test_base_open_id_connect_viewset(self):
         viewset_class = BaseOpenIDConnectViewset
