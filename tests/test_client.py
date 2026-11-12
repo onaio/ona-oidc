@@ -756,12 +756,17 @@ class OpenIDClientTestCase(TestCase):
         code, verifier = "c0de-value", "v3rifier-value"
         mock_requests_post.side_effect = RuntimeError("unexpected")
 
-        with self.assertRaises(RuntimeError) as raised:
+        # assertRaises drops the traceback, and the frames are what this checks.
+        try:
             OpenIDClient("pkce").retrieve_tokens_using_auth_code(code, verifier)
+        except RuntimeError as exc:
+            escaped = exc
+        else:
+            self.fail("the unexpected error should escape the exchange")
 
         frame = next(
             frame
-            for frame, _ in traceback.walk_tb(raised.exception.__traceback__)
+            for frame, _ in traceback.walk_tb(escaped.__traceback__)
             if frame.f_code.co_name == "retrieve_tokens_using_auth_code"
         )
         self.assertIn(LEAKY_SECRET, str(frame.f_locals["data"]))
