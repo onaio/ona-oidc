@@ -745,7 +745,6 @@ class OpenIDClientTestCase(TestCase):
                 logged, logs, raised = self._retrieve_tokens_expecting_failure()
 
                 self.assertIn(expected_log, logged)
-                # The status already says the request was rejected.
                 self.assertNotIn("HTTPError", logged)
                 self._assert_secret_not_exposed(mock_requests_post, logs, raised)
 
@@ -769,8 +768,8 @@ class OpenIDClientTestCase(TestCase):
     @patch.object(requests, "post")
     def test_retrieve_tokens_failure_redacts_echoed_request(self, mock_requests_post):
         """
-        A provider that echoes the request into its error fields leaks nothing:
-        the message has only the status, and the reported body is redacted
+        A provider that echoes the request into its error fields leaks nothing.
+        The message has only the status, and the report redacts the body.
         """
         code, verifier = "c0de-value", "v3rifier/value"
         echoed = f"{LEAKY_SECRET} {code} {quote(verifier, safe='')}"
@@ -799,7 +798,7 @@ class OpenIDClientTestCase(TestCase):
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=QUERY_MODE_AUTH_SERVERS)
     @patch.object(requests, "post")
     def test_retrieve_tokens_failure_report_is_truncated(self, mock_requests_post):
-        """Only the start of a long response body is reported"""
+        """The report keeps only the start of a long response body"""
         mock_requests_post.return_value = self._token_response(502, b"x" * 5000)
 
         _logged, logs, _raised = self._retrieve_tokens_expecting_failure()

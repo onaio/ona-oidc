@@ -114,10 +114,12 @@ def _describe_token_failure(
     response: Optional[requests.Response], failure_type: Optional[str]
 ) -> str:
     """
-    Summarise a failed token request for the log message: the HTTP status and
-    what went wrong, never response or exception text. Providers can echo the
-    request, including the client secret, into their error fields; the body
-    is reported separately, redacted, by `_token_response_details`.
+    Summarise a failed token request for the log message.
+
+    Returns the HTTP status and what went wrong, never response or exception
+    text. Providers can echo the request, client secret included, into their
+    error fields, so `_token_response_details` reports the body separately,
+    redacted.
     """
     if response is None:
         return failure_type or "no response"
@@ -135,10 +137,11 @@ def _token_response_details(
     response: requests.Response, secrets_sent: Iterable[Optional[str]]
 ) -> dict:
     """
-    Describe an unusable token response for error reporting. Values the
-    request sent are redacted first, because some providers echo the request
-    back, and the body is truncated after redacting so no partial value
-    survives the cut.
+    Describe an unusable token response for error reporting.
+
+    Some providers echo the request back, so this redacts the values the
+    request sent. It truncates after redacting, so the cut cannot leave part
+    of a value behind.
     """
     text = response.text
     return {
