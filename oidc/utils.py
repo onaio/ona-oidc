@@ -7,7 +7,7 @@ from django.http import HttpRequest
 from django.utils.http import url_has_allowed_host_and_scheme
 
 import jwt
-from jwt.exceptions import InvalidSignatureError
+from jwt.exceptions import InvalidTokenError
 
 import oidc.settings as default
 
@@ -46,7 +46,11 @@ def authenticate_sso(request, unique_user_field: str = "email"):
         )
         if user and user.is_active:
             return (user, True)
-    except InvalidSignatureError:
+    except InvalidTokenError:
+        # Bad signature, malformed value, expired token, wrong audience …
+        # are all an authentication miss, never a server error. Key/config
+        # problems (InvalidKeyError) are not InvalidTokenError subclasses
+        # and still propagate.
         pass
     return None
 

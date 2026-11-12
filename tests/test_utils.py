@@ -30,6 +30,21 @@ class TestAuthenticateSSO(TestCase):
             request.COOKIES["SSO"] = sso
         return request
 
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={"JWT_SECRET_KEY": "abc"}
+    )
+    def test_invalid_tokens_return_none_instead_of_raising(self):
+        """Malformed or expired tokens are an authentication miss, not a 500."""
+        tokens = {
+            "malformed": "not-a-jwt",
+            "expired": jwt.encode(
+                {"email": "jdoe@example.com", "exp": 0}, "abc", algorithm="HS256"
+            ),
+        }
+        for name, token in tokens.items():
+            with self.subTest(name):
+                self.assertIsNone(authenticate_sso(self._request(token)))
+
     def test_missing_or_empty_secret_raises_improperly_configured(self):
         """A token can never be verified against a missing/empty secret."""
         token = jwt.encode({"email": "jdoe@example.com"}, "abc", algorithm="HS256")
