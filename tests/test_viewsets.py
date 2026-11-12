@@ -2236,6 +2236,7 @@ class TestSSOCookieJWTExpiry(TestCase):
         }
     )
     def test_minted_sso_jwt_expires_after_cookie_max_age(self):
+        """The minted JWT carries iat/exp, expiring SSO_COOKIE_MAX_AGE later."""
         payload = self._minted_payload()
         self.assertEqual(payload["email"], "jdoe@example.com")
         # OPENID_CONNECT_VIEWSET_CONFIG sets SSO_COOKIE_MAX_AGE to 30 days.
@@ -2276,6 +2277,7 @@ class TestSSOCookieJWTExpiry(TestCase):
         }
     )
     def test_minting_defaults_to_hs256_when_algorithm_unset(self):
+        """A config with a secret but no JWT_ALGORITHM mints with HS256."""
         payload = self._minted_payload()
         self.assertEqual(payload["email"], "jdoe@example.com")
 
