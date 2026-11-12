@@ -5,6 +5,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpRequest
 from django.utils.http import url_has_allowed_host_and_scheme
+from django.views.decorators.debug import sensitive_variables
 
 import jwt
 from jwt.exceptions import InvalidSignatureError
@@ -12,6 +13,7 @@ from jwt.exceptions import InvalidSignatureError
 import oidc.settings as default
 
 
+@sensitive_variables("config", "secret_key", "sso")
 def authenticate_sso(request, unique_user_field: str = "email"):
     config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
     secret_key = config.get("JWT_SECRET_KEY", "")
