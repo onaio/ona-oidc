@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 import secrets
+import time
 import traceback
 from itertools import product
 from unittest.mock import MagicMock, patch
@@ -17,6 +18,8 @@ from django.test.utils import override_settings
 
 import jwt
 import requests
+from cryptography.hazmat.primitives.asymmetric import rsa
+from jwt.algorithms import RSAAlgorithm
 
 from oidc.client import (
     REDIRECT_AFTER_AUTH,
@@ -1167,3 +1170,68 @@ class OpenIDClientTestCase(TestCase):
         decoded = client.verify_and_decode_id_token("h.p.s")
 
         self.assertNotIn(REDIRECT_AFTER_AUTH, decoded)
+
+
+ID_TOKEN_VALIDATION_AUTH_SERVERS = {
+    "default": {
+        **OPENID_CONNECT_AUTH_SERVERS["default"],
+        "USE_NONCES": False,
+    }
+}
+
+
+@override_settings(OPENID_CONNECT_AUTH_SERVERS=ID_TOKEN_VALIDATION_AUTH_SERVERS)
+class IDTokenValidationTestCase(TestCase):
+    """Signature-level tests for ID token verification.
+
+    These sign real tokens with a real RSA keypair and run real
+    verification; only the JWKS network fetch is mocked.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.private_key = rsa.generate_private_key(
+            public_exponent=65537, key_size=2048
+        )
+        jwk = json.loads(RSAAlgorithm.to_jwk(cls.private_key.public_key()))
+        jwk["kid"] = "test-kid"
+        cls.jwks = {"keys": [jwk]}
+
+    def _claims(self, **overrides):
+        now = int(time.time())
+        claims = {"aud": "client", "iat": now, "exp": now + 300, "sub": "user-1"}
+        claims.update(overrides)
+        return {k: v for k, v in claims.items() if v is not None}
+
+    def _sign(self, claims):
+        return jwt.encode(
+            claims, self.private_key, algorithm="RS256", headers={"kid": "test-kid"}
+        )
+
+    def _verify(self, token):
+        jwks_response = MagicMock(
+            status_code=200, **{"json.return_value": self.jwks}
+        )
+        with patch.object(requests, "get", return_value=jwks_response):
+            return OpenIDClient("default").verify_and_decode_id_token(token)
+
+    def test_valid_rs256_token_decodes(self):
+        """A properly signed RS256 token with the expected audience decodes."""
+        decoded = self._verify(self._sign(self._claims()))
+        self.assertEqual(decoded["sub"], "user-1")
+
+    def test_header_chosen_algorithm_outside_allowlist_is_rejected(self):
+        """The token's own alg header cannot select the verification algorithm."""
+        cases = {
+            "HS256 with a guessed shared secret": jwt.encode(
+                self._claims(), "guess", algorithm="HS256", headers={"kid": "test-kid"}
+            ),
+            "unsigned alg=none": jwt.encode(
+                self._claims(), None, algorithm="none", headers={"kid": "test-kid"}
+            ),
+        }
+        for name, token in cases.items():
+            with self.subTest(name):
+                with self.assertRaises(jwt.InvalidTokenError):
+                    self._verify(token)

@@ -93,6 +93,12 @@ RESERVED_END_SESSION_PARAMS = frozenset(
     }
 )
 
+# Signature algorithms accepted for ID tokens. All are RSA-key
+# algorithms, matching the RSA-only JWKS handling in
+# ``verify_and_decode_id_token``; the token's own ``alg`` header never
+# selects the verification algorithm.
+ID_TOKEN_ALLOWED_ALGORITHMS = ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512"]
+
 logger = logging.getLogger(__name__)
 
 
@@ -327,12 +333,14 @@ class OpenIDClient:
         if not jwks:
             raise NoJSONWebKeyFound("Failed to retrieve key ID described in Token")
 
-        alg = unverified_header.get("alg")
         public_key = RSAAlgorithm.from_jwk(json.dumps(jwks))
         cached_data = {}
 
         decoded_token = jwt.decode(
-            id_token, public_key, audience=[self.client_id], algorithms=alg
+            id_token,
+            public_key,
+            audience=[self.client_id],
+            algorithms=ID_TOKEN_ALLOWED_ALGORITHMS,
         )
         # ``login()`` writes ``{auth_server, redirect_after}`` under the
         # nonce whenever the caller supplied a ``next``, even when
