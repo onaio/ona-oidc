@@ -1308,3 +1308,17 @@ class IDTokenValidationTestCase(TestCase):
         past = int(time.time()) - 3600
         with self.assertRaises(jwt.InvalidTokenError):
             self._verify(self._sign(self._claims(iat=past, exp=past + 300)))
+
+    def test_token_signed_with_a_different_key_is_rejected(self):
+        """A signature from any key other than the JWKS key fails."""
+        other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        token = jwt.encode(
+            self._claims(), other, algorithm="RS256", headers={"kid": "test-kid"}
+        )
+        with self.assertRaises(jwt.InvalidTokenError):
+            self._verify(token)
+
+    def test_wrong_audience_is_rejected(self):
+        """A token minted for a different client id is rejected."""
+        with self.assertRaises(jwt.InvalidTokenError):
+            self._verify(self._sign(self._claims(aud="other-client")))

@@ -734,9 +734,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 except jwt.exceptions.InvalidTokenError as e:
                     # PyJWT messages are static strings; no token
                     # material reaches the log.
-                    logger.warning(
-                        "ID token rejected: %s: %s", type(e).__name__, e
-                    )
+                    logger.warning("ID token rejected: %s: %s", type(e).__name__, e)
                     return Response(
                         {
                             "error": _("ID Token is invalid or has expired."),
