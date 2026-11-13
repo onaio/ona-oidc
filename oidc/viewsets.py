@@ -6,6 +6,7 @@ import importlib
 import logging
 import re
 import traceback
+from datetime import UTC, datetime, timedelta
 from typing import List, Optional, Tuple
 
 from django.conf import settings
@@ -53,6 +54,12 @@ from oidc.utils import (
 
 default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
 SSO_COOKIE_NAME = "SSO"
+
+# Lifetime of the SSO cookie's JWT when SSO_COOKIE_MAX_AGE is not set
+# (i.e. the browser cookie is a session cookie). The JWT must expire on
+# its own: the cookie value is a bearer credential that can be replayed
+# through the `SSO` header long after the browser session ends.
+SSO_JWT_DEFAULT_MAX_AGE = 60 * 60 * 24 * 7  # 7 days
 
 # Hidden field on oidc_user_data_entry.html that signals the form is
 # re-POSTing to the callback URL. Not a security boundary — the value
@@ -385,15 +392,38 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             redirect_after or per_provider_target or config.get("REDIRECT_AFTER_AUTH")
         )
 
+        secret_key = config.get("JWT_SECRET_KEY")
+        if self.use_sso and not secret_key:
+            # Without this check, PyJWT turns a missing secret + missing
+            # algorithm into an unsigned (alg=none) token. Raised before
+            # login() so the config error does not leave an established
+            # session behind the error response.
+            raise ImproperlyConfigured(
+                "USE_SSO_COOKIE requires OPENID_CONNECT_VIEWSET_CONFIG"
+                "['JWT_SECRET_KEY'] to be set."
+            )
+
         if self.use_auth_backend:
             login(request, user, backend=self.auth_backend)
 
         if self.use_sso:
             sso_value = getattr(user, self.sso_cookie, getattr(user, "email", ""))
+            # JWT timestamps are UTC by definition; timezone.now() is naive
+            # local time under USE_TZ=False, which PyJWT would read as UTC.
+            issued_at = datetime.now(UTC)
+            jwt_max_age = (
+                SSO_JWT_DEFAULT_MAX_AGE
+                if self.cookie_max_age is None
+                else self.cookie_max_age
+            )
             sso_cookie = jwt.encode(
-                {self.sso_cookie: sso_value},
-                config.get("JWT_SECRET_KEY"),
-                config.get("JWT_ALGORITHM"),
+                {
+                    self.sso_cookie: sso_value,
+                    "iat": issued_at,
+                    "exp": issued_at + timedelta(seconds=jwt_max_age),
+                },
+                secret_key,
+                self.jwt_algorithm,
             )
             response.set_cookie(
                 SSO_COOKIE_NAME,
