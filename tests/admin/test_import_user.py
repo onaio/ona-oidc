@@ -1,5 +1,4 @@
 import json
-import traceback
 from unittest.mock import Mock, patch
 
 from django.contrib import admin
@@ -7,11 +6,11 @@ from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
-from django.views.debug import SafeExceptionReporterFilter
 
 import requests
 
 from oidc.admin import ImportUserAdmin
+from tests.error_reports import escaped_frames, reported_locals
 
 OPENID_IMPORT_USER = {
     "ENABLED": True,
@@ -190,35 +189,32 @@ class ImportUserAdminTestCase(TestCase):
             headers={"Authorization": "Bearer tok"},
         )
 
-    @patch.object(ImportUserAdmin, "_search_user", side_effect=RuntimeError("boom"))
-    @patch.object(ImportUserAdmin, "_get_access_token", return_value="tok")
-    def test_search_user_locals_hidden_from_error_reports(self, *_mocks):
-        """An error the search view doesn't catch shows no client secret"""
-        secret = "s3cr3t-import-value"
+    @patch("oidc.admin.requests.post")
+    def test_search_user_locals_hidden_from_error_reports(self, mock_post):
+        """
+        An error the search view doesn't catch shows no client secret or token,
+        in its own frame or the frames it calls
+        """
+        secret, token = "s3cr3t-import-value", "t0ken-value"
+        mock_post.return_value = Mock(
+            json=Mock(return_value={"access_token": token, "expires_in": "soon"})
+        )
         url = reverse("admin:auth_user_search")
 
-        # assertRaises drops the traceback, and the frames are what this checks.
         with override_settings(
             OPENID_IMPORT_USER={**OPENID_IMPORT_USER, "CLIENT_SECRET": secret}
         ):
-            try:
-                self.client.get(url, {"q": "ab"})
-            except RuntimeError as exc:
-                escaped = exc
-            else:
-                self.fail("the unexpected error should escape the view")
+            frames = escaped_frames(
+                lambda: self.client.get(url, {"q": "ab"}), ValueError, "search_user"
+            )
 
-        frame = next(
-            frame
-            for frame, _ in traceback.walk_tb(escaped.__traceback__)
-            if frame.f_code.co_name == "search_user"
-        )
-        self.assertIn(secret, str(frame.f_locals["config"]))
-        variables = dict(
-            SafeExceptionReporterFilter().get_traceback_frame_variables(None, frame)
-        )
-        self.assertIn("config", variables)
-        self.assertNotIn(secret, str(variables))
+        self.assertIn(secret, str(frames[0].f_locals["config"]))
+        self.assertIn("config", reported_locals(frames[0]))
+        token_frame = next(f for f in frames if f.f_code.co_name == "_get_access_token")
+        self.assertEqual(token_frame.f_locals["token"], token)
+        for frame in frames:
+            for value in (secret, token):
+                self.assertNotIn(value, str(reported_locals(frame)))
 
     @patch("oidc.admin.requests.post")
     def test_search_user_view_failure_logs_no_request_detail(self, mock_post):

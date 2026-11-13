@@ -2,13 +2,17 @@
 System checks for the oidc app
 """
 
+from collections.abc import Mapping
+
 from django.conf import settings
 from django.core.checks import Tags, Warning, register
 
 
 @register(Tags.security)
 def check_request_mode(app_configs, **kwargs):
-    servers = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
+    servers = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", None)
+    if not isinstance(servers, Mapping):
+        return []
     return [
         Warning(
             f"Auth server {name!r} sends client credentials in the token "
@@ -20,5 +24,5 @@ def check_request_mode(app_configs, **kwargs):
             id="oidc.W001",
         )
         for name, server in servers.items()
-        if server.get("REQUEST_MODE") == "query"
+        if isinstance(server, Mapping) and server.get("REQUEST_MODE") == "query"
     ]

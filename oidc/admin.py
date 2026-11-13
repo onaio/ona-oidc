@@ -193,7 +193,6 @@ class ImportUserAdmin(BaseUserAdmin):
             )
         )
 
-    # Also hides the frames it calls, which hold the client secret and token.
     @sensitive_variables()
     def search_user(self, request):
         """Admin-protected JSON suggestions for importing a user"""
@@ -206,8 +205,7 @@ class ImportUserAdmin(BaseUserAdmin):
         try:
             results = self._search_user(self._get_access_token(), query)
         except requests.RequestException as exc:
-            # The exception text can echo the request, and a traceback would
-            # carry the token request's locals, which hold the client secret.
+            # The exception text can echo the request.
             status_code = getattr(exc.response, "status_code", None)
             logger.error(
                 "User search request failed: %s%s",

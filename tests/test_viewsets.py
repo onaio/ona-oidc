@@ -3,7 +3,6 @@ Tests for the OpenID Client
 """
 
 import json
-import traceback
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -26,6 +25,7 @@ from oidc.viewsets import (
     BaseOpenIDConnectViewset,
     UserModelOpenIDConnectViewset,
 )
+from tests.error_reports import escaped_frames, reported_locals
 
 User = get_user_model()
 
@@ -939,7 +939,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch("oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code")
-    def test_callback_hides_credentials_from_error_reports(
+    def test_callback_post_parameters_hidden_from_error_reports(
         self, mock_retrieve_tokens_using_auth_code
     ):
         """Django error reports mask the POSTed code and id_token"""
@@ -955,10 +955,11 @@ class TestUserModelOpenIDConnectViewset(TestCase):
 
         view(request, auth_server="default")
 
-        reported = SafeExceptionReporterFilter().get_post_parameters(request)
+        reporter_filter = SafeExceptionReporterFilter()
+        reported = reporter_filter.get_post_parameters(request)
         self.assertEqual(reported["state"], "st4te")
         for name in ("code", "id_token", "access_token"):
-            self.assertNotEqual(reported[name], data[name])
+            self.assertEqual(reported[name], reporter_filter.cleansed_substitute)
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
@@ -974,21 +975,35 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         secret = "s3cr3t-login-value"
         view = UserModelOpenIDConnectViewset.as_view({"get": "login"})
 
-        # assertRaises drops the traceback, and the frames are what this checks.
-        try:
-            view(self.factory.get("/"), auth_server="default")
-        except ImproperlyConfigured as exc:
-            escaped = exc
-        else:
-            self.fail("the misconfiguration should escape login")
+        frames = escaped_frames(
+            lambda: view(self.factory.get("/"), auth_server="default"),
+            ImproperlyConfigured,
+            "_get_client",
+        )
 
-        frames = [frame for frame, _ in traceback.walk_tb(escaped.__traceback__)]
-        get_client = next(f for f in frames if f.f_code.co_name == "_get_client")
-        self.assertIn(secret, str(get_client.f_locals["auth_config"]))
-        reporter_filter = SafeExceptionReporterFilter()
-        for frame in frames[frames.index(get_client) :]:
-            variables = dict(reporter_filter.get_traceback_frame_variables(None, frame))
-            self.assertNotIn(secret, str(variables))
+        self.assertIn(secret, str(frames[0].f_locals["auth_config"]))
+        for frame in frames:
+            self.assertNotIn(secret, str(reported_locals(frame)))
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "JWT_SECRET_KEY": "s3cr3t-jwt-value",
+            "SSO_COOKIE_SAMESITE": "None",
+            "SSO_COOKIE_SECURE": False,
+        }
+    )
+    def test_viewset_setup_locals_hidden_from_error_reports(self):
+        """A misconfigured viewset fails without its JWT secret in error reports"""
+        secret = "s3cr3t-jwt-value"
+
+        frames = escaped_frames(
+            UserModelOpenIDConnectViewset, ImproperlyConfigured, "__init__"
+        )
+
+        self.assertEqual(frames[0].f_locals["config"]["JWT_SECRET_KEY"], secret)
+        for frame in frames:
+            self.assertNotIn(secret, str(reported_locals(frame)))
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch("oidc.viewsets.OpenIDClient.verify_and_decode_id_token")
@@ -1007,24 +1022,14 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         request = self.factory.post("/", data={"code": "c0de-value"})
 
-        # assertRaises drops the traceback, and the frames are what this checks.
-        try:
-            view(request, auth_server="default")
-        except RuntimeError as exc:
-            escaped = exc
-        else:
-            self.fail("the unexpected error should escape the callback")
-
-        frames = [frame for frame, _ in traceback.walk_tb(escaped.__traceback__)]
-        callback_frame = next(f for f in frames if f.f_code.co_name == "callback")
-        self.assertIn(
-            tokens["access_token"], str(callback_frame.f_locals["user_tokens"])
+        frames = escaped_frames(
+            lambda: view(request, auth_server="default"), RuntimeError, "callback"
         )
-        reporter_filter = SafeExceptionReporterFilter()
-        for frame in frames[frames.index(callback_frame) :]:
-            variables = dict(reporter_filter.get_traceback_frame_variables(None, frame))
+
+        self.assertIn(tokens["access_token"], str(frames[0].f_locals["user_tokens"]))
+        for frame in frames:
             for value in tokens.values():
-                self.assertNotIn(value, str(variables))
+                self.assertNotIn(value, str(reported_locals(frame)))
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
@@ -1115,21 +1120,13 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         request = self.factory.get("/")
         request.session = {"oidc_id_token": id_token}
 
-        # assertRaises drops the traceback, and the frames are what this checks.
-        try:
-            view(request, auth_server="default")
-        except RuntimeError as exc:
-            escaped = exc
-        else:
-            self.fail("the unexpected error should escape logout")
+        frames = escaped_frames(
+            lambda: view(request, auth_server="default"), RuntimeError, "logout"
+        )
 
-        frames = [frame for frame, _ in traceback.walk_tb(escaped.__traceback__)]
-        logout_frame = next(f for f in frames if f.f_code.co_name == "logout")
-        self.assertEqual(logout_frame.f_locals["id_token_hint"], id_token)
-        reporter_filter = SafeExceptionReporterFilter()
-        for frame in frames[frames.index(logout_frame) :]:
-            variables = dict(reporter_filter.get_traceback_frame_variables(None, frame))
-            self.assertNotIn(id_token, str(variables))
+        self.assertEqual(frames[0].f_locals["id_token_hint"], id_token)
+        for frame in frames:
+            self.assertNotIn(id_token, str(reported_locals(frame)))
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,

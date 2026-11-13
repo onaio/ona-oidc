@@ -1,11 +1,8 @@
 """Tests for module oidc.utils"""
 
-import traceback
-
-from django.core.exceptions import FieldError, ImproperlyConfigured
+from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 from django.test.utils import override_settings
-from django.views.debug import SafeExceptionReporterFilter
 
 import jwt
 from rest_framework.test import APIRequestFactory
@@ -15,6 +12,7 @@ from oidc.utils import (
     get_login_query_param_allowlist,
     is_safe_login_redirect,
 )
+from tests.error_reports import escaped_frames, reported_locals
 
 
 class TestGetLoginQueryParamAllowlist(TestCase):
@@ -134,25 +132,23 @@ class TestAuthenticateSso(TestCase):
         OPENID_CONNECT_VIEWSET_CONFIG={"JWT_SECRET_KEY": "s3cr3t-jwt-value"}
     )
     def test_locals_hidden_from_error_reports(self):
-        """A failed user lookup shows no signing key or cookie in error reports"""
+        """
+        An error from inside jwt.decode shows no signing key or cookie in error
+        reports, in authenticate_sso's frame or in PyJWT's
+        """
         secret = "s3cr3t-jwt-value"
-        cookie = jwt.encode({"no_such_field": "x"}, secret, algorithm="HS256")
+        cookie = jwt.encode({"email": "a@example.com", "exp": 0}, secret)
         request = APIRequestFactory().get("/", HTTP_SSO=cookie)
 
-        # assertRaises drops the traceback, and the frames are what this checks.
-        try:
-            authenticate_sso(request, unique_user_field="no_such_field")
-        except FieldError as exc:
-            escaped = exc
-        else:
-            self.fail("the bad lookup field should escape authenticate_sso")
-
-        frames = [frame for frame, _ in traceback.walk_tb(escaped.__traceback__)]
-        sso_frame = next(f for f in frames if f.f_code.co_name == "authenticate_sso")
-        self.assertEqual(sso_frame.f_locals["secret_key"], secret)
-        variables = dict(
-            SafeExceptionReporterFilter().get_traceback_frame_variables(None, sso_frame)
+        frames = escaped_frames(
+            lambda: authenticate_sso(request),
+            jwt.ExpiredSignatureError,
+            "authenticate_sso",
         )
-        self.assertEqual(variables["unique_user_field"], "no_such_field")
-        for value in (secret, cookie):
-            self.assertNotIn(value, str(variables))
+
+        # PyJWT holds the key under its own name, which a list of names misses.
+        self.assertEqual(frames[1].f_locals["key"], secret)
+        self.assertIn("secret_key", reported_locals(frames[0]))
+        for frame in frames:
+            for value in (secret, cookie):
+                self.assertNotIn(value, str(reported_locals(frame)))

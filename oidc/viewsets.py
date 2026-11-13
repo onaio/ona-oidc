@@ -93,6 +93,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             return
         return super().perform_authentication(request)
 
+    @sensitive_variables()
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         config = get_viewset_config()
@@ -167,7 +168,6 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             config.get("AUTO_CREATE_USER", default_config["AUTO_CREATE_USER"])
         )
 
-    # Also hides the client's own setup, which holds every server's secret.
     @sensitive_variables()
     def _get_client(self, auth_server: str) -> Optional[OpenIDClient]:
         auth_config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
@@ -506,7 +506,6 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             cache.delete(state_cache_key(state))
 
     @action(methods=["POST", "GET"], detail=False)
-    # Also hides the frames it calls, which hold tokens and client secrets.
     @sensitive_variables()
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
         auth_server = kwargs.get("auth_server")

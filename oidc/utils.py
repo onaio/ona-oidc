@@ -13,7 +13,7 @@ from jwt.exceptions import InvalidSignatureError
 import oidc.settings as default
 
 
-@sensitive_variables("config", "secret_key", "sso")
+@sensitive_variables()
 def authenticate_sso(request, unique_user_field: str = "email"):
     config = getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", {})
     secret_key = config.get("JWT_SECRET_KEY", "")

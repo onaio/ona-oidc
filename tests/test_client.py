@@ -13,7 +13,6 @@ from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpResponseRedirect
 from django.test import TestCase
 from django.test.utils import override_settings
-from django.views.debug import SafeExceptionReporterFilter
 
 import jwt
 import requests
@@ -27,6 +26,7 @@ from oidc.client import (
     TokenVerificationFailed,
     state_cache_key,
 )
+from tests.error_reports import escaped_frames, reported_locals
 
 OPENID_CONNECT_AUTH_SERVERS = {
     "default": {
@@ -756,26 +756,19 @@ class OpenIDClientTestCase(TestCase):
         code, verifier = "c0de-value", "v3rifier-value"
         mock_requests_post.side_effect = RuntimeError("unexpected")
 
-        # assertRaises drops the traceback, and the frames are what this checks.
-        try:
-            OpenIDClient("pkce").retrieve_tokens_using_auth_code(code, verifier)
-        except RuntimeError as exc:
-            escaped = exc
-        else:
-            self.fail("the unexpected error should escape the exchange")
+        frames = escaped_frames(
+            lambda: OpenIDClient("pkce").retrieve_tokens_using_auth_code(
+                code, verifier
+            ),
+            RuntimeError,
+            "retrieve_tokens_using_auth_code",
+        )
 
-        frame = next(
-            frame
-            for frame, _ in traceback.walk_tb(escaped.__traceback__)
-            if frame.f_code.co_name == "retrieve_tokens_using_auth_code"
-        )
-        self.assertIn(LEAKY_SECRET, str(frame.f_locals["data"]))
-        variables = dict(
-            SafeExceptionReporterFilter().get_traceback_frame_variables(None, frame)
-        )
-        self.assertIn("data", variables)
-        for value in (LEAKY_SECRET, code, verifier):
-            self.assertNotIn(value, str(variables))
+        self.assertIn(LEAKY_SECRET, str(frames[0].f_locals["data"]))
+        self.assertIn("data", reported_locals(frames[0]))
+        for frame in frames:
+            for value in (LEAKY_SECRET, code, verifier):
+                self.assertNotIn(value, str(reported_locals(frame)))
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=QUERY_MODE_AUTH_SERVERS)
     @patch.object(requests, "post")

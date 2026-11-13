@@ -373,8 +373,9 @@ class OpenIDClient:
             decoded_token[REDIRECT_AFTER_AUTH] = cached_data.get("redirect_after")
         return decoded_token
 
-    # Hide all locals: several hold the client secret, code or verifier, and a
-    # list of names would miss any added later.
+    # A bare sensitive_variables() hides every local here and in the frames this
+    # calls. A list of names would miss values that callees hold under other
+    # names, and locals added later.
     @sensitive_variables()
     def retrieve_tokens_using_auth_code(
         self, code: str, code_verifier: Optional[str] = None

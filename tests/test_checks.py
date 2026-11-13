@@ -31,3 +31,18 @@ class RequestModeCheckTestCase(SimpleTestCase):
     def test_body_request_mode_does_not_warn(self):
         """Auth servers that send credentials in the body raise no warning"""
         self.assertNotIn("oidc.W001", [m.id for m in run_checks()])
+
+    def test_malformed_settings_do_not_crash_checks(self):
+        """A setting that isn't a mapping of mappings is skipped, not raised"""
+        cases = {
+            "unset value": None,
+            "non-mapping entry": {"broken": None, **QUERY_MODE_SERVERS},
+        }
+        for name, servers in cases.items():
+            with (
+                self.subTest(name),
+                override_settings(OPENID_CONNECT_AUTH_SERVERS=servers),
+            ):
+                warned = [m.msg for m in run_checks() if m.id == "oidc.W001"]
+
+                self.assertEqual(len(warned), 0 if servers is None else 1)
