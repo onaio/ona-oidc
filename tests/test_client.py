@@ -96,6 +96,7 @@ class OpenIDClientTestCase(TestCase):
             "scope=openid%20profile&"
             "response_type=code&"
             "response_mode=form_post&"
+            "state=123&"
             "nonce=123"
         )
         client = OpenIDClient("default")
@@ -122,6 +123,22 @@ class OpenIDClientTestCase(TestCase):
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch.object(cache, "set")
     @patch.object(secrets, "token_urlsafe")
+    def test_login_always_carries_state(self, mock_token_urlsafe, _mock_cache_set):
+        """Every login URL carries a state value, with or without PKCE.
+
+        The callback can only bind an authorization response to the
+        browser that started the login if the IdP echoes a state value
+        back, so a flow without state could never be bound.
+        """
+        mock_token_urlsafe.return_value = "123"
+        for auth_server in ("default", "pkce"):
+            with self.subTest(auth_server=auth_server):
+                result_url = OpenIDClient(auth_server).login().url
+                self.assertIn("state=123", result_url)
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch.object(cache, "set")
+    @patch.object(secrets, "token_urlsafe")
     def test_login_forwards_extra_params(self, mock_token_urlsafe, mock_cache_set):
         mock_token_urlsafe.return_value = "123"
         client = OpenIDClient("default")
@@ -144,6 +161,7 @@ class OpenIDClientTestCase(TestCase):
             "kc_idp_hint=onadata&"
             "login_hint=alice%40example.com&"
             "prompt=login&"
+            "state=123&"
             "nonce=123"
         )
         self.assertIsInstance(result, HttpResponseRedirect)
@@ -160,7 +178,7 @@ class OpenIDClientTestCase(TestCase):
         mock_token_urlsafe.return_value = "123"
         client = OpenIDClient("default")
 
-        unchanged_tail = "response_mode=form_post&nonce=123"
+        unchanged_tail = "response_mode=form_post&state=123&nonce=123"
 
         self.assertTrue(client.login(extra_params=None).url.endswith(unchanged_tail))
         self.assertTrue(client.login(extra_params={}).url.endswith(unchanged_tail))
@@ -199,6 +217,7 @@ class OpenIDClientTestCase(TestCase):
             "response_type=code&"
             "response_mode=form_post&"
             "kc_idp_hint=onadata&"
+            "state=123&"
             "nonce=123"
         )
         self.assertEqual(result_url, expected_url)
@@ -371,6 +390,7 @@ class OpenIDClientTestCase(TestCase):
             "scope=openid%20profile&"
             "response_type=code&"
             "response_mode=form_post&"
+            "state=123&"
             "nonce=123"
         )
         client = OpenIDClient("default")

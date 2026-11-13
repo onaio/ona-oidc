@@ -528,6 +528,12 @@ class OpenIDClient:
                     ("state", state),
                 ]
             )
+        else:
+            # The IdP echoes state back verbatim in every response mode,
+            # which is what lets the callback bind the authorization
+            # response to the browser that started the login. Without
+            # PKCE nothing is cached under it.
+            params.append(("state", secrets.token_urlsafe(32)))
 
         if self.cache_nonces or redirect_after:
             nonce = secrets.token_urlsafe(32)
