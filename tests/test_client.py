@@ -1450,7 +1450,7 @@ class PushLoginBindingTestCase(TestCase):
                 self.assertTrue(login_binding_matches(value, state))
 
     def test_corrupt_prior_cookie_starts_a_fresh_binding(self):
-        """A tampered prior value costs old bindings, never the new login."""
+        """A tampered prior value loses old bindings, never the new login."""
         value = push_login_binding(None, "state-1")
         value = push_login_binding(value[:-1], "state-2")
         self.assertTrue(login_binding_matches(value, "state-2"))

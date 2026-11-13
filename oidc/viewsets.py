@@ -215,16 +215,16 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             )
             if client.enforce_browser_binding:
                 state = parse_qs(urlparse(response.url).query)["state"][0]
-                # form_post callbacks are cross-site POSTs from the IdP,
-                # which browsers strip Lax cookies from; SameSite=None
-                # in turn is only accepted over HTTPS.
+                # form_post callbacks are cross-site POSTs from the
+                # IdP, which browsers strip Lax cookies from; browsers
+                # only accept SameSite=None cookies over HTTPS.
                 samesite = "None" if client.response_mode == "form_post" else "Lax"
                 response.set_cookie(
                     LOGIN_BINDING_COOKIE,
                     # Only login starts write this cookie, and each one
                     # reads the previous value first to carry its digests
-                    # forward — overwriting with just the new state would
-                    # strand a login still in flight in another tab.
+                    # forward. Overwriting with only the new state would
+                    # invalidate a login still in flight in another tab.
                     push_login_binding(
                         request.COOKIES.get(LOGIN_BINDING_COOKIE), state
                     ),
@@ -595,10 +595,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             if client.enforce_browser_binding and not login_binding_matches(
                 request.COOKIES.get(LOGIN_BINDING_COOKIE), state_value
             ):
-                # Before any cache entry is consulted or token touched:
-                # an authorization response is only honoured in the
-                # browser whose login() minted its state (login CSRF,
-                # RFC 9700 §4.4).
+                # This runs before the callback consults any cache
+                # entry or touches the token. The callback only honours
+                # an authorization response in the browser whose login()
+                # minted its state (login CSRF, RFC 9700 §4.4).
                 logger.warning(
                     "Rejected authorization response not bound to this "
                     "browser for auth_server=%r",

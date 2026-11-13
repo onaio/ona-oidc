@@ -2469,8 +2469,8 @@ class LoginBrowserBindingTestCase(TestCase):
     def test_login_sets_binding_cookie_that_its_callback_satisfies(self):
         """The login redirect sets a cookie its own callback accepts.
 
-        End to end: the state in the login redirect URL plus the cookie
-        login() set are exactly what the callback requires.
+        The state in the login redirect URL plus the cookie login() set
+        are exactly what the callback requires, end to end.
         """
         login_view = UserModelOpenIDConnectViewset.as_view({"get": "login"})
         login_response = login_view(self.factory.get("/"), auth_server="default")
@@ -2528,7 +2528,7 @@ class LoginBrowserBindingTestCase(TestCase):
             return view(request, auth_server="default")
 
     def test_login_in_second_tab_keeps_first_tab_completable(self):
-        """A newer login start does not strand an older tab's flow.
+        """A newer login start does not invalidate an older tab's login.
 
         The cookie keeps the last three states, so completing with any
         of them succeeds.

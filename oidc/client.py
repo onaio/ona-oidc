@@ -72,11 +72,11 @@ LOGIN_BINDING_COOKIE = "oidc_login_bind"
 # The salt scopes the signature so a value signed by this project for
 # any other purpose can never pass as a login binding.
 _LOGIN_BINDING_SALT = "oidc.login.binding"
-# Must outlive the longest login dance a user plausibly parks on the
-# IdP page; the state/nonce cache TTLs cut a flow off earlier anyway.
+# Must outlive the longest time a user plausibly leaves the IdP page
+# open; the state/nonce cache TTLs end a flow earlier anyway.
 LOGIN_BINDING_MAX_AGE = 1800
 # One digest per concurrently started login the browser can finish;
-# a second tab's login start must not strand the first tab's flow.
+# a second tab's login start must not invalidate the first tab's.
 _LOGIN_BINDING_MAX_STATES = 3
 
 
@@ -86,8 +86,8 @@ def _state_digest(state: str) -> str:
 
 def _load_login_binding(cookie_value: Optional[str]) -> list:
     # A missing, tampered or expired cookie yields an empty list, never
-    # an error: a broken cookie may only cost in-flight attempts, it
-    # must not block starting a new login.
+    # an error. A broken cookie may lose in-flight attempts; it must
+    # not block starting a new login.
     if not cookie_value:
         return []
     try:
@@ -103,8 +103,8 @@ def _load_login_binding(cookie_value: Optional[str]) -> list:
 
 def push_login_binding(cookie_value: Optional[str], state: str) -> str:
     """
-    Return the login binding cookie value after a new login start:
-    the digest of ``state`` plus the newest previous digests, signed.
+    Return the signed cookie value for a new login start, holding
+    the digest of ``state`` followed by the newest previous digests.
 
     ``cookie_value`` is the browser's current cookie, or None; a
     tampered or expired value starts a fresh binding.
@@ -601,10 +601,10 @@ class OpenIDClient:
                 ]
             )
         else:
-            # The IdP echoes state back verbatim in every response mode,
-            # which is what lets the callback bind the authorization
-            # response to the browser that started the login. Without
-            # PKCE nothing is cached under it.
+            # The IdP echoes state back verbatim in every response
+            # mode, so the callback can bind the authorization response
+            # to the browser that started the login. Without PKCE
+            # nothing is cached under it.
             params.append(("state", secrets.token_urlsafe(32)))
 
         if self.cache_nonces or redirect_after:
