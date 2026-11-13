@@ -756,6 +756,19 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         status=status.HTTP_401_UNAUTHORIZED,
                         template_name="oidc/oidc_unrecoverable_error.html",
                     )
+                except TokenVerificationFailed:
+                    return Response(
+                        {
+                            "error": _(
+                                "Unable to validate authentication request; Kindly retry authentication process."
+                            ),
+                            "error_title": _(
+                                "Authentication request verification failed"
+                            ),
+                        },
+                        status=status.HTTP_401_UNAUTHORIZED,
+                        template_name="oidc/oidc_unrecoverable_error.html",
+                    )
                 else:
                     if user:
                         user.last_login = timezone.now()
