@@ -7,6 +7,7 @@ import os
 import time
 from datetime import timedelta
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
@@ -1290,6 +1291,56 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(user.username, "johne")
             self.assertEqual(user.email, "johne@example.com")
             self.assertEqual(user.is_active, False)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "USER_DEFAULTS": {
+                "default": {"is_active": False},
+                "^.*@ona.io$": {"is_active": True},
+            },
+        }
+    )
+    def test_signup_leaves_user_defaults_untouched_for_the_next_signup(self):
+        """One signup's claims never become the next signup's defaults.
+
+        USER_DEFAULTS lives in process-wide settings; merging a user's
+        claims into it hands them to every later signup in the same
+        process.
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        data = {"id_token": "saasdrrw.fdfdfdswg4gdfs.sadadsods"}
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "given_name": "anna",
+                "family_name": "first",
+                "sub": "anna@ona.io",
+            }
+            response = view(
+                self.factory.post("/", data=data), auth_server="default"
+            )
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(User.objects.get(username="anna").last_name, "first")
+
+            # A later first login on the same worker, with no
+            # family_name claim of its own.
+            mock_func.return_value = {"given_name": "ben", "sub": "ben@ona.io"}
+            response = view(
+                self.factory.post("/", data=data), auth_server="default"
+            )
+            self.assertEqual(response.status_code, 302)
+            ben = User.objects.get(username="ben")
+            self.assertEqual(ben.last_name, "")
+            self.assertTrue(ben.is_active)
+        self.assertEqual(
+            settings.OPENID_CONNECT_VIEWSET_CONFIG["USER_DEFAULTS"],
+            {
+                "default": {"is_active": False},
+                "^.*@ona.io$": {"is_active": True},
+            },
+        )
 
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
     def test_direct_access_to_callback_fails(self):

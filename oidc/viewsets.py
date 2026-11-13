@@ -480,7 +480,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 user_default = self.user_default_fields[group]
                 break
 
-        return user_default
+        # Return a copy: callers mutate the result, and user_default is
+        # the dict stored in the process-wide settings, so handing it
+        # out directly leaks one user's claims into the defaults applied
+        # to every later signup in the same process.
+        return dict(user_default)
 
     def _clean_user_data(self, user_data) -> Tuple[dict, Optional[list]]:
         user_data = {
