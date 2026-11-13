@@ -716,10 +716,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
                         self.validate_fields(user_data)
 
-                        create_data = self._get_user_group_defaults(
-                            user_data.get("email")
-                        )
-                        create_data.update(user_data)
+                        create_data = {
+                            **self._get_user_group_defaults(user_data.get("email")),
+                            **user_data,
+                        }
 
                         user = self.create_login_user(create_data)
                 except ValueError as e:
