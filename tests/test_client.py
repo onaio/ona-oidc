@@ -29,6 +29,7 @@ from oidc.client import (
     TokenVerificationFailed,
     state_cache_key,
 )
+from tests.error_reports import escaped_frames, reported_locals
 
 OPENID_CONNECT_AUTH_SERVERS = {
     "default": {
@@ -752,6 +753,27 @@ class OpenIDClientTestCase(TestCase):
                 self.assertIn(expected_log, logged)
                 self.assertNotIn("HTTPError", logged)
                 self._assert_secret_not_exposed(mock_requests_post, logs, raised)
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=QUERY_MODE_AUTH_SERVERS)
+    @patch.object(requests, "post")
+    def test_retrieve_tokens_locals_hidden_from_error_reports(self, mock_requests_post):
+        """An unexpected error from the exchange shows no credentials in error reports"""
+        code, verifier = "c0de-value", "v3rifier-value"
+        mock_requests_post.side_effect = RuntimeError("unexpected")
+
+        frames = escaped_frames(
+            lambda: OpenIDClient("pkce").retrieve_tokens_using_auth_code(
+                code, verifier
+            ),
+            RuntimeError,
+            "retrieve_tokens_using_auth_code",
+        )
+
+        self.assertIn(LEAKY_SECRET, str(frames[0].f_locals["data"]))
+        self.assertIn("data", reported_locals(frames[0]))
+        for frame in frames:
+            for value in (LEAKY_SECRET, code, verifier):
+                self.assertNotIn(value, str(reported_locals(frame)))
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=QUERY_MODE_AUTH_SERVERS)
     @patch.object(requests, "post")

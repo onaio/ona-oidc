@@ -7,12 +7,15 @@ import os
 import time
 from datetime import timedelta
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
+from django.template import TemplateDoesNotExist
 from django.test import TestCase
 from django.test.utils import override_settings
 from django.utils import timezone
+from django.views.debug import SafeExceptionReporterFilter
 
 import jwt
 from mock import MagicMock, patch
@@ -27,6 +30,7 @@ from oidc.viewsets import (
     BaseOpenIDConnectViewset,
     UserModelOpenIDConnectViewset,
 )
+from tests.error_reports import escaped_frames, reported_locals
 
 User = get_user_model()
 
@@ -939,6 +943,98 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertNotIn(secret, str(response.data))
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    def test_callback_post_parameters_hidden_from_error_reports(self):
+        """Django error reports mask the POSTed code and tokens"""
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        data = {
+            "code": "c0de-value",
+            "id_token": "t0ken-value",
+            "access_token": "acc3ss-value",
+            "state": "st4te",
+        }
+        request = self.factory.post("/", data=data)
+
+        response = view(request, auth_server="default")
+
+        # A malformed id_token fails before any request to the provider's JWKS.
+        self.assertEqual(response.status_code, 401)
+        reporter_filter = SafeExceptionReporterFilter()
+        reported = reporter_filter.get_post_parameters(request)
+        self.assertEqual(reported["state"], "st4te")
+        for name in ("code", "id_token", "access_token"):
+            self.assertEqual(reported[name], reporter_filter.cleansed_substitute)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "CLIENT_SECRET": "s3cr3t-login-value",
+                "REQUEST_MODE": "form-post",
+            }
+        }
+    )
+    def test_client_setup_locals_hidden_from_error_reports(self):
+        """A misconfigured client fails login without its secret in error reports"""
+        secret = "s3cr3t-login-value"
+        view = UserModelOpenIDConnectViewset.as_view({"get": "login"})
+
+        frames = escaped_frames(
+            lambda: view(self.factory.get("/"), auth_server="default"),
+            ImproperlyConfigured,
+            "_get_client",
+        )
+
+        self.assertIn(secret, str(frames[0].f_locals["auth_config"]))
+        for frame in frames:
+            self.assertNotIn(secret, str(reported_locals(frame)))
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "JWT_SECRET_KEY": "s3cr3t-jwt-value",
+            "SSO_COOKIE_SAMESITE": "None",
+            "SSO_COOKIE_SECURE": False,
+        }
+    )
+    def test_viewset_setup_locals_hidden_from_error_reports(self):
+        """A misconfigured viewset fails without its JWT secret in error reports"""
+        secret = "s3cr3t-jwt-value"
+
+        frames = escaped_frames(
+            UserModelOpenIDConnectViewset, ImproperlyConfigured, "__init__"
+        )
+
+        self.assertEqual(frames[0].f_locals["config"]["JWT_SECRET_KEY"], secret)
+        for frame in frames:
+            self.assertNotIn(secret, str(reported_locals(frame)))
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch("oidc.viewsets.OpenIDClient.verify_and_decode_id_token")
+    @patch("oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code")
+    def test_callback_locals_hidden_from_error_reports(
+        self, mock_retrieve_tokens_using_auth_code, mock_verify
+    ):
+        """An error the callback doesn't catch shows no tokens in error reports"""
+        tokens = {
+            "access_token": "acc3ss-value",
+            "refresh_token": "r3fresh-value",
+            "id_token": "id-t0ken-value",
+        }
+        mock_retrieve_tokens_using_auth_code.return_value = tokens
+        mock_verify.side_effect = RuntimeError("unexpected")
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        request = self.factory.post("/", data={"code": "c0de-value"})
+
+        frames = escaped_frames(
+            lambda: view(request, auth_server="default"), RuntimeError, "callback"
+        )
+
+        self.assertIn(tokens["access_token"], str(frames[0].f_locals["user_tokens"]))
+        for frame in frames:
+            for value in tokens.values():
+                self.assertNotIn(value, str(reported_locals(frame)))
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
     @patch("oidc.viewsets.OpenIDClient.verify_and_decode_id_token")
     def test_invalid_id_token_renders_error_page_not_500(self, mock_verify):
@@ -1036,6 +1132,63 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertIn("kc_idp_hint=onadata", response.url)
         self.assertNotIn("next=", response.url)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    @patch("oidc.viewsets.OpenIDClient.logout")
+    def test_logout_locals_hidden_from_error_reports(self, mock_client_logout):
+        """An error during logout shows no stashed id_token in error reports"""
+        id_token = "ey.st4shed.jwt"
+        mock_client_logout.side_effect = RuntimeError("unexpected")
+        view = BaseOpenIDConnectViewset.as_view({"get": "logout"})
+        request = self.factory.get("/")
+        request.session = {"oidc_id_token": id_token}
+
+        frames = escaped_frames(
+            lambda: view(request, auth_server="default"), RuntimeError, "logout"
+        )
+
+        self.assertEqual(frames[0].f_locals["id_token_hint"], id_token)
+        for frame in frames:
+            self.assertNotIn(id_token, str(reported_locals(frame)))
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_username_form_render_hides_id_token_from_error_reports(self):
+        """
+        A username form that fails to render, after the view has returned,
+        shows no id_token in error reports
+        """
+        id_token = "id-t0ken-value"
+        viewset = UserModelOpenIDConnectViewset()
+        response = viewset._username_form_response({"id_token": id_token})
+        response.accepted_renderer = next(
+            renderer()
+            for renderer in viewset.renderer_classes
+            if renderer.format == "html"
+        )
+        response.accepted_media_type = "text/html"
+        response.renderer_context = {
+            "request": self.factory.get("/"),
+            "response": response,
+            "view": viewset,
+        }
+        # The form extends base.html, which only the host project supplies.
+        engine = settings.TEMPLATES[0]
+        without_base = {
+            **engine,
+            "DIRS": [d for d in engine["DIRS"] if not d.endswith("tests/templates")],
+        }
+
+        with override_settings(TEMPLATES=[without_base]):
+            frames = escaped_frames(
+                response.render, TemplateDoesNotExist, "rendered_content"
+            )
+
+        self.assertTrue(any(id_token in str(f.f_locals) for f in frames))
+        for frame in frames:
+            self.assertNotIn(id_token, str(reported_locals(frame)))
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,

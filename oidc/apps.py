@@ -14,3 +14,6 @@ class oidcConfig(AppConfig):
     name = "oidc"
     app_label = "oidc"
     verbose_name = _("OpenID Connect")
+
+    def ready(self):
+        import oidc.checks  # noqa: F401 registers the system checks

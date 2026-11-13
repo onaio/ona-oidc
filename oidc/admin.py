@@ -8,6 +8,7 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.core.cache import cache
 from django.http import JsonResponse
 from django.urls import path
+from django.views.decorators.debug import sensitive_variables
 
 import requests
 
@@ -192,6 +193,7 @@ class ImportUserAdmin(BaseUserAdmin):
             )
         )
 
+    @sensitive_variables()
     def search_user(self, request):
         """Admin-protected JSON suggestions for importing a user"""
         config = get_import_conf()
@@ -203,7 +205,13 @@ class ImportUserAdmin(BaseUserAdmin):
         try:
             results = self._search_user(self._get_access_token(), query)
         except requests.RequestException as exc:
-            logger.exception(exc)
+            # The exception text can echo the request.
+            status_code = getattr(exc.response, "status_code", None)
+            logger.error(
+                "User search request failed: %s%s",
+                type(exc).__name__,
+                f" HTTP {status_code}" if status_code else "",
+            )
 
             return JsonResponse([], safe=False, status=200)
 
