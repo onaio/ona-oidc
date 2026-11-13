@@ -10,6 +10,7 @@ from django.core.checks import Tags, Warning, register
 
 @register(Tags.security)
 def check_request_mode(app_configs, **kwargs):
+    """Warn for each auth server that sends credentials in the token URL"""
     servers = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", None)
     if not isinstance(servers, Mapping):
         return []

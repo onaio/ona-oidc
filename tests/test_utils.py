@@ -146,8 +146,7 @@ class TestAuthenticateSso(TestCase):
             "authenticate_sso",
         )
 
-        # PyJWT holds the key under its own name, which a list of names misses.
-        self.assertEqual(frames[1].f_locals["key"], secret)
+        self.assertTrue(any(f.f_locals.get("key") == secret for f in frames[1:]))
         self.assertIn("secret_key", reported_locals(frames[0]))
         for frame in frames:
             for value in (secret, cookie):

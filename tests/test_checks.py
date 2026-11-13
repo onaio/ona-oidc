@@ -3,46 +3,47 @@
 from django.core.checks import run_checks
 from django.test import SimpleTestCase, override_settings
 
-QUERY_MODE_SERVERS = {
-    "legacy": {"REQUEST_MODE": "query"},
+BODY_MODE_SERVERS = {
     "modern": {"REQUEST_MODE": "form_post"},
     "default": {},
 }
+MIXED_MODE_SERVERS = {
+    "legacy": {"REQUEST_MODE": "query"},
+    "partner": {"REQUEST_MODE": "query"},
+    **BODY_MODE_SERVERS,
+}
+
+
+def request_mode_warnings():
+    return [m.msg for m in run_checks() if m.id == "oidc.W001"]
 
 
 class RequestModeCheckTestCase(SimpleTestCase):
     """Tests for the REQUEST_MODE system check"""
 
-    @override_settings(OPENID_CONNECT_AUTH_SERVERS=QUERY_MODE_SERVERS)
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=MIXED_MODE_SERVERS)
     def test_query_request_mode_warns(self):
         """Each auth server in query mode gets a warning"""
-        warnings = [m for m in run_checks() if m.id == "oidc.W001"]
+        warnings = request_mode_warnings()
 
-        self.assertEqual(len(warnings), 1)
-        self.assertIn("legacy", warnings[0].msg)
+        self.assertEqual(len(warnings), 2)
+        self.assertIn("legacy", warnings[0])
+        self.assertIn("partner", warnings[1])
 
-    @override_settings(
-        OPENID_CONNECT_AUTH_SERVERS={
-            name: server
-            for name, server in QUERY_MODE_SERVERS.items()
-            if name != "legacy"
-        }
-    )
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=BODY_MODE_SERVERS)
     def test_body_request_mode_does_not_warn(self):
         """Auth servers that send credentials in the body raise no warning"""
-        self.assertNotIn("oidc.W001", [m.id for m in run_checks()])
+        self.assertEqual(request_mode_warnings(), [])
 
     def test_malformed_settings_do_not_crash_checks(self):
         """A setting that isn't a mapping of mappings is skipped, not raised"""
         cases = {
-            "unset value": None,
-            "non-mapping entry": {"broken": None, **QUERY_MODE_SERVERS},
+            "None value": (None, 0),
+            "non-mapping entry": ({"broken": None, **MIXED_MODE_SERVERS}, 2),
         }
-        for name, servers in cases.items():
+        for name, (servers, expected) in cases.items():
             with (
                 self.subTest(name),
                 override_settings(OPENID_CONNECT_AUTH_SERVERS=servers),
             ):
-                warned = [m.msg for m in run_checks() if m.id == "oidc.W001"]
-
-                self.assertEqual(len(warned), 0 if servers is None else 1)
+                self.assertEqual(len(request_mode_warnings()), expected)

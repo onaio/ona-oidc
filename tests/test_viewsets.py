@@ -4,9 +4,11 @@ Tests for the OpenID Client
 
 import json
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
+from django.template import TemplateDoesNotExist
 from django.test import TestCase
 from django.test.utils import override_settings
 from django.utils import timezone
@@ -938,12 +940,8 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertNotIn(secret, str(response.data))
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
-    @patch("oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code")
-    def test_callback_post_parameters_hidden_from_error_reports(
-        self, mock_retrieve_tokens_using_auth_code
-    ):
-        """Django error reports mask the POSTed code and id_token"""
-        mock_retrieve_tokens_using_auth_code.side_effect = TokenVerificationFailed()
+    def test_callback_post_parameters_hidden_from_error_reports(self):
+        """Django error reports mask the POSTed code and tokens"""
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         data = {
             "code": "c0de-value",
@@ -1125,6 +1123,42 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         )
 
         self.assertEqual(frames[0].f_locals["id_token_hint"], id_token)
+        for frame in frames:
+            self.assertNotIn(id_token, str(reported_locals(frame)))
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_username_form_render_hides_id_token_from_error_reports(self):
+        """
+        A username form that fails to render, after the view has returned,
+        shows no id_token in error reports
+        """
+        id_token = "id-t0ken-value"
+        viewset = UserModelOpenIDConnectViewset()
+        response = viewset._username_form_response({"id_token": id_token})
+        response.accepted_renderer = next(
+            renderer()
+            for renderer in viewset.renderer_classes
+            if renderer.format == "html"
+        )
+        response.accepted_media_type = "text/html"
+        response.renderer_context = {
+            "request": self.factory.get("/"),
+            "response": response,
+            "view": viewset,
+        }
+        # The form extends base.html, which only the host project supplies.
+        engine = settings.TEMPLATES[0]
+        without_base = {
+            **engine,
+            "DIRS": [d for d in engine["DIRS"] if not d.endswith("tests/templates")],
+        }
+
+        with override_settings(TEMPLATES=[without_base]):
+            frames = escaped_frames(
+                response.render, TemplateDoesNotExist, "rendered_content"
+            )
+
+        self.assertTrue(any(id_token in str(f.f_locals) for f in frames))
         for frame in frames:
             self.assertNotIn(id_token, str(reported_locals(frame)))
 

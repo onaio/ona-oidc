@@ -29,7 +29,7 @@ import jwt
 from jwt.exceptions import PyJWTError
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
-from rest_framework.renderers import JSONRenderer, TemplateHTMLRenderer
+from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
 from rest_framework.reverse import reverse
 
@@ -42,6 +42,7 @@ from oidc.client import (
     TokenVerificationFailed,
     state_cache_key,
 )
+from oidc.renderers import SensitiveTemplateHTMLRenderer
 from oidc.utils import (
     authenticate_sso,
     email_usename_to_url_safe,
@@ -85,7 +86,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     """
 
     permission_classes = [permissions.AllowAny]
-    renderer_classes = [JSONRenderer, TemplateHTMLRenderer]
+    renderer_classes = [JSONRenderer, SensitiveTemplateHTMLRenderer]
     user_model = None
 
     def perform_authentication(self, request):
