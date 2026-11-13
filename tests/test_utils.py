@@ -9,6 +9,7 @@ from rest_framework.test import APIRequestFactory
 from oidc.utils import (
     get_login_query_param_allowlist,
     is_safe_login_redirect,
+    str_to_bool,
 )
 
 
@@ -122,3 +123,30 @@ class TestIsSafeLoginRedirect(TestCase):
             is_safe_login_redirect(
                 "https://spa.example.com/x", "default", self._request()
             )
+
+
+class TestStrToBool(TestCase):
+    def test_false_spellings_are_false(self):
+        for val in ["False", "false", "FALSE", "0", "no", "off", " false "]:
+            with self.subTest(val=val):
+                self.assertIs(str_to_bool(val), False)
+
+    def test_true_spellings_are_true(self):
+        for val in ["True", "true", "TRUE", "1", "yes", "on", " true "]:
+            with self.subTest(val=val):
+                self.assertIs(str_to_bool(val), True)
+
+    def test_non_strings_pass_through(self):
+        for val in [True, False, None, 0, 1]:
+            with self.subTest(val=val):
+                self.assertIs(str_to_bool(val), val)
+
+    def test_unrecognized_string_raises_improperly_configured(self):
+        with self.assertRaises(ImproperlyConfigured):
+            str_to_bool("flase")
+
+    def test_blank_string_raises_improperly_configured(self):
+        for val in ["", "   "]:
+            with self.subTest(val=val):
+                with self.assertRaises(ImproperlyConfigured):
+                    str_to_bool(val)

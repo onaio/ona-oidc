@@ -41,10 +41,19 @@ def authenticate_sso(request, unique_user_field: str = "email"):
     return None
 
 
+TRUE_STRINGS = frozenset({"true", "1", "yes", "on"})
+FALSE_STRINGS = frozenset({"false", "0", "no", "off"})
+
+
 def str_to_bool(val):
-    if isinstance(val, str):
-        val = 0 if val == "False" else 1
-    return val
+    if not isinstance(val, str):
+        return val
+    normalized = val.strip().lower()
+    if normalized in TRUE_STRINGS:
+        return True
+    if normalized in FALSE_STRINGS:
+        return False
+    raise ImproperlyConfigured(f"Cannot interpret {val!r} as a boolean setting.")
 
 
 def email_usename_to_url_safe(email_username):
