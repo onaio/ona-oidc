@@ -6,6 +6,7 @@ import json
 import os
 import time
 from datetime import timedelta
+from urllib.parse import parse_qs, urlparse
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -18,7 +19,12 @@ import jwt
 from mock import MagicMock, patch
 from rest_framework.test import APIRequestFactory
 
-from oidc.client import OpenIDClient, TokenVerificationFailed, state_cache_key
+from oidc.client import (
+    LOGIN_BINDING_COOKIE,
+    OpenIDClient,
+    TokenVerificationFailed,
+    state_cache_key,
+)
 from oidc.viewsets import (
     DEFAULT_USERNAME_HELP_TEXT,
     DEFAULT_USERNAME_PATTERN,
@@ -2459,3 +2465,147 @@ class LoginBrowserBindingTestCase(TestCase):
             response = view(request, auth_server="default")
         self.assertEqual(response.status_code, 401)
         mock_verify.assert_not_called()
+
+    def test_login_sets_binding_cookie_that_its_callback_satisfies(self):
+        """The login redirect sets a cookie its own callback accepts.
+
+        End to end: the state in the login redirect URL plus the cookie
+        login() set are exactly what the callback requires.
+        """
+        login_view = UserModelOpenIDConnectViewset.as_view({"get": "login"})
+        login_response = login_view(self.factory.get("/"), auth_server="default")
+        self.assertEqual(login_response.status_code, 302)
+
+        cookie = login_response.cookies.get(LOGIN_BINDING_COOKIE)
+        self.assertIsNotNone(cookie)
+        self.assertTrue(cookie["httponly"])
+
+        state = parse_qs(urlparse(login_response.url).query)["state"][0]
+
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_verify:
+            mock_verify.return_value = {
+                "given_name": "anna",
+                "family_name": "doe",
+                "email": "anna@example.com",
+                "preferred_username": "anna",
+            }
+            request = self.factory.post(
+                "/", data={"id_token": "a.b.c", "state": state}
+            )
+            request.COOKIES[LOGIN_BINDING_COOKIE] = cookie.value
+            response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 302)
+        mock_verify.assert_called_once()
+
+    def _start_login(self, cookies=None):
+        login_view = UserModelOpenIDConnectViewset.as_view({"get": "login"})
+        request = self.factory.get("/")
+        if cookies:
+            request.COOKIES.update(cookies)
+        response = login_view(request, auth_server="default")
+        state = parse_qs(urlparse(response.url).query)["state"][0]
+        return state, response.cookies[LOGIN_BINDING_COOKIE].value
+
+    def _bound_callback(self, state, cookie_value):
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_verify:
+            mock_verify.return_value = {
+                "given_name": "anna",
+                "family_name": "doe",
+                "email": "anna@example.com",
+                "preferred_username": "anna",
+            }
+            request = self.factory.post(
+                "/", data={"id_token": "a.b.c", "state": state}
+            )
+            if cookie_value is not None:
+                request.COOKIES[LOGIN_BINDING_COOKIE] = cookie_value
+            return view(request, auth_server="default")
+
+    def test_login_in_second_tab_keeps_first_tab_completable(self):
+        """A newer login start does not strand an older tab's flow.
+
+        The cookie keeps the last three states, so completing with any
+        of them succeeds.
+        """
+        first_state, first_cookie = self._start_login()
+        _, second_cookie = self._start_login(
+            {LOGIN_BINDING_COOKIE: first_cookie}
+        )
+        response = self._bound_callback(first_state, second_cookie)
+        self.assertEqual(response.status_code, 302)
+
+    def test_binding_cookie_remembers_only_the_last_three_logins(self):
+        """A state older than the last three login starts is rejected."""
+        oldest_state, cookie = self._start_login()
+        for _ in range(3):
+            _, cookie = self._start_login({LOGIN_BINDING_COOKIE: cookie})
+        response = self._bound_callback(oldest_state, cookie)
+        self.assertEqual(response.status_code, 401)
+
+    def test_attacker_state_with_victim_cookie_is_rejected(self):
+        """A response for a login this browser never started is rejected.
+
+        This is the login CSRF attack: the victim's browser holds a
+        binding cookie from their own login start, but the delivered
+        response carries the attacker's state.
+        """
+        _, victim_cookie = self._start_login()
+        attacker_state, _ = self._start_login()
+        response = self._bound_callback(attacker_state, victim_cookie)
+        self.assertEqual(response.status_code, 401)
+
+    def test_tampered_binding_cookie_is_rejected(self):
+        """A binding cookie that fails signature verification binds nothing."""
+        state, cookie = self._start_login()
+        response = self._bound_callback(state, cookie[:-1])
+        self.assertEqual(response.status_code, 401)
+
+    def test_opted_out_server_keeps_the_old_behaviour(self):
+        """ENFORCE_BROWSER_BINDING=False: no cookie set, none required."""
+        with override_settings(
+            OPENID_CONNECT_AUTH_SERVERS={
+                "default": {
+                    **BINDING_AUTH_SERVERS["default"],
+                    "ENFORCE_BROWSER_BINDING": False,
+                }
+            }
+        ):
+            login_view = UserModelOpenIDConnectViewset.as_view({"get": "login"})
+            login_response = login_view(self.factory.get("/"), auth_server="default")
+            self.assertNotIn(LOGIN_BINDING_COOKIE, login_response.cookies)
+            response = self._bound_callback("any-state", None)
+            self.assertEqual(response.status_code, 302)
+
+    def test_binding_cookie_attributes_follow_the_response_mode(self):
+        """form_post needs SameSite=None + Secure; query mode gets Lax.
+
+        The IdP delivers a form_post response as a cross-site POST,
+        which browsers strip Lax cookies from, and they only accept
+        SameSite=None cookies over HTTPS.
+        """
+        login_view = UserModelOpenIDConnectViewset.as_view({"get": "login"})
+
+        cookie = login_view(self.factory.get("/"), auth_server="default").cookies[
+            LOGIN_BINDING_COOKIE
+        ]
+        self.assertEqual(cookie["samesite"], "None")
+        self.assertTrue(cookie["secure"])
+
+        with override_settings(
+            OPENID_CONNECT_AUTH_SERVERS={
+                "default": {
+                    **BINDING_AUTH_SERVERS["default"],
+                    "RESPONSE_MODE": "query",
+                }
+            }
+        ):
+            cookie = login_view(
+                self.factory.get("/"), auth_server="default"
+            ).cookies[LOGIN_BINDING_COOKIE]
+            self.assertEqual(cookie["samesite"], "Lax")

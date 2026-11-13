@@ -8,6 +8,7 @@ import re
 import traceback
 from datetime import UTC, datetime, timedelta
 from typing import List, Optional, Tuple
+from urllib.parse import parse_qs, urlparse
 
 from django.conf import settings
 from django.contrib.auth import get_user_model, login
@@ -35,12 +36,14 @@ from rest_framework.reverse import reverse
 import oidc.settings as default
 from oidc.client import (
     LOGIN_BINDING_COOKIE,
+    LOGIN_BINDING_MAX_AGE,
     REDIRECT_AFTER_AUTH,
     NoJSONWebKeyFound,
     NonceVerificationFailed,
     OpenIDClient,
     TokenVerificationFailed,
     login_binding_matches,
+    push_login_binding,
     state_cache_key,
 )
 from oidc.utils import (
@@ -210,6 +213,23 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 redirect_after=redirect_after,
                 extra_params=extra_params,
             )
+            if client.enforce_browser_binding:
+                state = parse_qs(urlparse(response.url).query)["state"][0]
+                # form_post callbacks are cross-site POSTs from the IdP,
+                # which browsers strip Lax cookies from; SameSite=None
+                # in turn is only accepted over HTTPS.
+                samesite = "None" if client.response_mode == "form_post" else "Lax"
+                response.set_cookie(
+                    LOGIN_BINDING_COOKIE,
+                    push_login_binding(
+                        request.COOKIES.get(LOGIN_BINDING_COOKIE), state
+                    ),
+                    max_age=LOGIN_BINDING_MAX_AGE,
+                    httponly=True,
+                    secure=samesite == "None" or request.is_secure(),
+                    samesite=samesite,
+                    path="/",
+                )
             # Delete only csrftoken for the current domain
             response.delete_cookie(
                 "csrftoken",
@@ -586,9 +606,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             "This sign-in was not started in this browser. "
                             "Kindly retry the authentication process."
                         ),
-                        "error_title": _(
-                            "Authentication request verification failed"
-                        ),
+                        "error_title": _("Authentication request verification failed"),
                     },
                     status=status.HTTP_401_UNAUTHORIZED,
                     template_name="oidc/oidc_unrecoverable_error.html",

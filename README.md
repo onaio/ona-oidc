@@ -119,6 +119,27 @@ When `ISSUER` is not set, the `iss` claim is not checked and every
 verification logs a warning; a future release will require the
 setting.
 
+### Browser binding (login CSRF)
+
+Every login carries a `state` value, and the login redirect sets a
+short-lived, signed, `HttpOnly` cookie remembering the last three of
+them. The callback only honours an authorization response whose echoed
+`state` matches that cookie, so a response captured in one browser
+cannot be replayed into another to log a victim into the attacker's
+account (RFC 9700 §4.4).
+
+- **`ENFORCE_BROWSER_BINDING`** (`bool`, default `True`), per auth
+  server. Set it to `False` only for deployments whose logins do not
+  start at this application's login endpoint — e.g. IdP-initiated
+  logins from the provider's own portal — which can never carry the
+  cookie and would otherwise always be rejected.
+- With `RESPONSE_MODE=form_post` the IdP delivers the response as a
+  cross-site POST, so the cookie is set with `SameSite=None; Secure`
+  and the deployment must be served over HTTPS. `query` mode uses
+  `SameSite=Lax`.
+- Logins in flight when this feature is first deployed predate the
+  cookie and are rejected; retrying the login recovers.
+
 ### SSO cookie security
 
 The `SSO` cookie emitted on successful authentication honours these keys:

@@ -107,17 +107,11 @@ def push_login_binding(cookie_value: Optional[str], state: str) -> str:
     tampered or expired value starts a fresh binding.
     """
     digest = _state_digest(state)
-    digests = [digest] + [
-        d for d in _load_login_binding(cookie_value) if d != digest
-    ]
-    return signing.dumps(
-        digests[:_LOGIN_BINDING_MAX_STATES], salt=_LOGIN_BINDING_SALT
-    )
+    digests = [digest] + [d for d in _load_login_binding(cookie_value) if d != digest]
+    return signing.dumps(digests[:_LOGIN_BINDING_MAX_STATES], salt=_LOGIN_BINDING_SALT)
 
 
-def login_binding_matches(
-    cookie_value: Optional[str], state: Optional[str]
-) -> bool:
+def login_binding_matches(cookie_value: Optional[str], state: Optional[str]) -> bool:
     """
     Whether the browser presenting this authorization response also
     started the login that minted ``state``.
