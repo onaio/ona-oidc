@@ -758,6 +758,13 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         """
         raise NotImplementedError()
 
+    def _create_user_with_unusable_password(self, user_data: dict):
+        # Claims and USER_DEFAULTS must never give an SSO user a local password
+        user = self.user_model(**user_data)
+        user.set_unusable_password()
+        user.save(force_insert=True)
+        return user
+
 
 class UserModelOpenIDConnectViewset(BaseOpenIDConnectViewset):
     """
@@ -768,7 +775,7 @@ class UserModelOpenIDConnectViewset(BaseOpenIDConnectViewset):
     user_model = get_user_model()
 
     def create_login_user(self, user_data: dict):
-        return self.user_model.objects.create(**user_data)
+        return self._create_user_with_unusable_password(user_data)
 
 
 class RapidProOpenIDConnectViewset(BaseOpenIDConnectViewset):
@@ -790,7 +797,7 @@ class RapidProOpenIDConnectViewset(BaseOpenIDConnectViewset):
             "brand": settings.DEFAULT_BRAND,
             "timezone": f"{timezone.utc}",
         }
-        user = self.user_model.objects.create(**user_data)
+        user = self._create_user_with_unusable_password(user_data)
 
         language = self.request.branding.get("language", settings.DEFAULT_LANGUAGE)
         user_settings = user.get_settings()

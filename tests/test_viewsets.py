@@ -722,6 +722,25 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 response.rendered_content.decode("utf-8"),
             )
 
+    def test_created_user_has_unusable_password(self):
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "given_name": "sso",
+                "family_name": "only",
+                "email": "sso@only.com",
+                "preferred_username": "ssoonly",
+            }
+            self.assertFalse(User.objects.filter(username="ssoonly").exists())
+            request = self.factory.post("/", data={"id_token": "a.b.c"})
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 302)
+        user = User.objects.get(username="ssoonly")
+        self.assertFalse(user.has_usable_password())
+
     def test_validates_data(self):
         """
         Test that the endpoint validates whether a username is already

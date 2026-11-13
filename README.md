@@ -242,3 +242,21 @@ OPENID_IMPORT_USER = {
 2. **Search Users**: In the import form, start typing in the search box to find users from your identity provider
 3. **Select User**: Click on a suggestion to populate the form fields with data from the identity provider
 4. **Complete Import**: Fill in any additional required fields and save the user
+
+## Upgrading
+
+### Users created by 2.10.0 and earlier have a usable empty password
+
+ona-oidc 2.10.0 and earlier created SSO users with an empty password. Django treats an empty password as usable, so those users can set a local password through the password reset flow. Later releases give new SSO users an unusable password. Existing users keep the empty one.
+
+To remove it, run this once in your project, for example in a data migration:
+
+```python
+from django.contrib.auth import get_user_model
+
+for user in get_user_model().objects.filter(password="").iterator():
+    user.set_unusable_password()
+    user.save(update_fields=["password"])
+```
+
+ona-oidc does not record which users it created, so this changes every user with an empty password. Check first that your project doesn't create users without a password and then rely on the reset email to let them set one, as an invitation flow might. Those users would stop receiving reset emails.
