@@ -8,6 +8,7 @@ import re
 import traceback
 from datetime import UTC, datetime, timedelta
 from typing import List, Optional, Tuple
+from urllib.parse import parse_qs, urlparse
 
 from django.conf import settings
 from django.contrib.auth import get_user_model, login
@@ -34,11 +35,15 @@ from rest_framework.reverse import reverse
 
 import oidc.settings as default
 from oidc.client import (
+    LOGIN_BINDING_COOKIE,
+    LOGIN_BINDING_MAX_AGE,
     REDIRECT_AFTER_AUTH,
     NoJSONWebKeyFound,
     NonceVerificationFailed,
     OpenIDClient,
     TokenVerificationFailed,
+    login_binding_matches,
+    push_login_binding,
     state_cache_key,
 )
 from oidc.utils import (
@@ -208,6 +213,27 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 redirect_after=redirect_after,
                 extra_params=extra_params,
             )
+            if client.enforce_browser_binding:
+                state = parse_qs(urlparse(response.url).query)["state"][0]
+                # form_post callbacks are cross-site POSTs from the
+                # IdP, which browsers strip Lax cookies from; browsers
+                # only accept SameSite=None cookies over HTTPS.
+                samesite = "None" if client.response_mode == "form_post" else "Lax"
+                response.set_cookie(
+                    LOGIN_BINDING_COOKIE,
+                    # Only login starts write this cookie, and each one
+                    # reads the previous value first to carry its digests
+                    # forward. Overwriting with only the new state would
+                    # invalidate a login still in flight in another tab.
+                    push_login_binding(
+                        request.COOKIES.get(LOGIN_BINDING_COOKIE), state
+                    ),
+                    max_age=LOGIN_BINDING_MAX_AGE,
+                    httponly=True,
+                    secure=samesite == "None" or request.is_secure(),
+                    samesite=samesite,
+                    path="/",
+                )
             # Delete only csrftoken for the current domain
             response.delete_cookie(
                 "csrftoken",
@@ -566,6 +592,29 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 server_response = request.query_params
 
             state_value = server_response.get("state")
+            if client.enforce_browser_binding and not login_binding_matches(
+                request.COOKIES.get(LOGIN_BINDING_COOKIE), state_value
+            ):
+                # This runs before the callback consults any cache
+                # entry or touches the token. The callback only honours
+                # an authorization response in the browser whose login()
+                # minted its state (login CSRF, RFC 9700 §4.4).
+                logger.warning(
+                    "Rejected authorization response not bound to this "
+                    "browser for auth_server=%r",
+                    auth_server,
+                )
+                return Response(
+                    {
+                        "error": _(
+                            "This sign-in was not started in this browser. "
+                            "Kindly retry the authentication process."
+                        ),
+                        "error_title": _("Authentication request verification failed"),
+                    },
+                    status=status.HTTP_401_UNAUTHORIZED,
+                    template_name="oidc/oidc_unrecoverable_error.html",
+                )
             if client.use_pkce and state_value:
                 # Get the original code verifier for PKCE flow. We only
                 # consult the namespaced key — never the raw state value
