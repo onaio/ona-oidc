@@ -34,11 +34,13 @@ from rest_framework.reverse import reverse
 
 import oidc.settings as default
 from oidc.client import (
+    LOGIN_BINDING_COOKIE,
     REDIRECT_AFTER_AUTH,
     NoJSONWebKeyFound,
     NonceVerificationFailed,
     OpenIDClient,
     TokenVerificationFailed,
+    login_binding_matches,
     state_cache_key,
 )
 from oidc.utils import (
@@ -566,6 +568,31 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 server_response = request.query_params
 
             state_value = server_response.get("state")
+            if client.enforce_browser_binding and not login_binding_matches(
+                request.COOKIES.get(LOGIN_BINDING_COOKIE), state_value
+            ):
+                # Before any cache entry is consulted or token touched:
+                # an authorization response is only honoured in the
+                # browser whose login() minted its state (login CSRF,
+                # RFC 9700 §4.4).
+                logger.warning(
+                    "Rejected authorization response not bound to this "
+                    "browser for auth_server=%r",
+                    auth_server,
+                )
+                return Response(
+                    {
+                        "error": _(
+                            "This sign-in was not started in this browser. "
+                            "Kindly retry the authentication process."
+                        ),
+                        "error_title": _(
+                            "Authentication request verification failed"
+                        ),
+                    },
+                    status=status.HTTP_401_UNAUTHORIZED,
+                    template_name="oidc/oidc_unrecoverable_error.html",
+                )
             if client.use_pkce and state_value:
                 # Get the original code verifier for PKCE flow. We only
                 # consult the namespaced key — never the raw state value

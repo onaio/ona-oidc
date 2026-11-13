@@ -47,6 +47,9 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "RESPONSE_MODE": "form_post",
         "USE_NONCES": False,
         "USE_EMAIL_USERNAME": True,
+        # Legacy tests drive the callback directly without a login();
+        # browser binding has its own test class with binding on.
+        "ENFORCE_BROWSER_BINDING": False,
     }
 }
 

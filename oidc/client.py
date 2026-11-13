@@ -4,6 +4,7 @@ Client module for the oidc app
 
 import base64
 import hashlib
+import hmac
 import json
 import logging
 import secrets
@@ -11,6 +12,7 @@ from typing import Any, Callable, Mapping, Optional
 from urllib.parse import quote, urlencode
 
 from django.conf import settings
+from django.core import signing
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpResponseRedirect
@@ -60,6 +62,73 @@ def state_cache_key(state: str) -> str:
     entries (Django sessions, rate-limit counters, etc.).
     """
     return f"{_STATE_CACHE_PREFIX}{state}"
+
+
+# Signed, HttpOnly cookie binding a login to the browser that started
+# it (RFC 9700 §4.4, login CSRF). It holds the digests of the last few
+# states minted by login(); the callback requires the echoed state to
+# match one of them before it consults any cache entry.
+LOGIN_BINDING_COOKIE = "oidc_login_bind"
+# The salt scopes the signature so a value signed by this project for
+# any other purpose can never pass as a login binding.
+_LOGIN_BINDING_SALT = "oidc.login.binding"
+# Must outlive the longest login dance a user plausibly parks on the
+# IdP page; the state/nonce cache TTLs cut a flow off earlier anyway.
+LOGIN_BINDING_MAX_AGE = 1800
+# One digest per concurrently started login the browser can finish;
+# a second tab's login start must not strand the first tab's flow.
+_LOGIN_BINDING_MAX_STATES = 3
+
+
+def _state_digest(state: str) -> str:
+    return hashlib.sha256(state.encode("utf-8")).hexdigest()
+
+
+def _load_login_binding(cookie_value: Optional[str]) -> list:
+    if not cookie_value:
+        return []
+    try:
+        digests = signing.loads(
+            cookie_value,
+            salt=_LOGIN_BINDING_SALT,
+            max_age=LOGIN_BINDING_MAX_AGE,
+        )
+    except signing.BadSignature:
+        return []
+    return digests if isinstance(digests, list) else []
+
+
+def push_login_binding(cookie_value: Optional[str], state: str) -> str:
+    """
+    Return the login binding cookie value after a new login start:
+    the digest of ``state`` plus the newest previous digests, signed.
+
+    ``cookie_value`` is the browser's current cookie, or None; a
+    tampered or expired value starts a fresh binding.
+    """
+    digest = _state_digest(state)
+    digests = [digest] + [
+        d for d in _load_login_binding(cookie_value) if d != digest
+    ]
+    return signing.dumps(
+        digests[:_LOGIN_BINDING_MAX_STATES], salt=_LOGIN_BINDING_SALT
+    )
+
+
+def login_binding_matches(
+    cookie_value: Optional[str], state: Optional[str]
+) -> bool:
+    """
+    Whether the browser presenting this authorization response also
+    started the login that minted ``state``.
+    """
+    if not state:
+        return False
+    expected = _state_digest(state)
+    return any(
+        hmac.compare_digest(str(digest), expected)
+        for digest in _load_login_binding(cookie_value)
+    )
 
 
 RESERVED_AUTHORIZE_PARAMS = frozenset(
@@ -174,6 +243,12 @@ class OpenIDClient:
         )
         self.cache_nonces = str_to_bool(
             config[auth_server].get("USE_NONCES", default_config["USE_NONCES"])
+        )
+        self.enforce_browser_binding = str_to_bool(
+            config[auth_server].get(
+                "ENFORCE_BROWSER_BINDING",
+                default_config["ENFORCE_BROWSER_BINDING"],
+            )
         )
         self.should_verify_access_token = str_to_bool(
             config[auth_server].get(
