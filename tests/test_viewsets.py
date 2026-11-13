@@ -951,8 +951,10 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         }
         request = self.factory.post("/", data=data)
 
-        view(request, auth_server="default")
+        response = view(request, auth_server="default")
 
+        # A malformed id_token fails before any request to the provider's JWKS.
+        self.assertEqual(response.status_code, 401)
         reporter_filter = SafeExceptionReporterFilter()
         reported = reporter_filter.get_post_parameters(request)
         self.assertEqual(reported["state"], "st4te")
