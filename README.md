@@ -25,6 +25,10 @@ INSTALLED_APPS = [
 
 ```
 
+The username-entry form and the error page render on your project's
+`base.html`, which needs `title` and `content` blocks. Without one they
+fall back to the plain `oidc/base.html` the package ships.
+
 3. Set `OPENID_CONNECT_VIEWSET_CONFIG` and `OPENID_CONNECT_AUTH_SERVERS` settings
 
 ```python

@@ -1,4 +1,4 @@
-{% extends 'base.html' %}
+{% extends base_template|default:"base.html" %}
 {% load rest_framework %}
 
 {% block title %}OpenID Connect - User Creation{% endblock %}
