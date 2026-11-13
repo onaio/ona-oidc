@@ -12,6 +12,7 @@ from urllib.parse import quote, urlencode
 
 from django.conf import settings
 from django.core.cache import cache
+from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpResponseRedirect
 
 import jwt
@@ -22,6 +23,7 @@ import oidc.settings as default
 from oidc.utils import str_to_bool
 
 REDIRECT_AFTER_AUTH = "redirect_after_auth"
+REQUEST_MODES = ("form_post", "query")
 
 # Caller-supplied entries matching these keys are dropped: allowing
 # overrides would let an attacker swap the redirect URI / PKCE challenge
@@ -106,6 +108,35 @@ class TokenVerificationFailed(Exception):
     pass
 
 
+def _describe_token_failure(
+    response: Optional[requests.Response], failure_type: Optional[str]
+) -> str:
+    """
+    Summarise a failed token request for the log message.
+
+    Returns the HTTP status and what went wrong, never response or exception
+    text. Providers can echo the request, client secret included, into their
+    error fields.
+    """
+    if response is None:
+        return failure_type or "no response"
+    return " ".join(filter(None, [f"HTTP {response.status_code}", failure_type]))
+
+
+def _token_response_details(response: requests.Response) -> dict:
+    """
+    Describe an unusable token response for error reporting.
+
+    Leaves out the body: a provider can echo the client secret in any
+    encoding, so no redaction can be trusted to catch it.
+    """
+    return {
+        "status_code": response.status_code,
+        "content_type": response.headers.get("Content-Type"),
+        "body_length": len(response.text),
+    }
+
+
 class OpenIDClient:
     """
     OpenID connect client class
@@ -166,6 +197,12 @@ class OpenIDClient:
         self.request_mode = config[auth_server].get(
             "REQUEST_MODE", default_config["REQUEST_MODE"]
         )
+        # Any other value would send the token request with no credentials.
+        if self.request_mode not in REQUEST_MODES:
+            raise ImproperlyConfigured(
+                f"REQUEST_MODE must be one of {REQUEST_MODES}, "
+                f"got {self.request_mode!r}"
+            )
 
     def _retrieve_jwks_related_to_kid(self, kid: str) -> Optional[str]:
         """
@@ -342,6 +379,8 @@ class OpenIDClient:
 
         if code_verifier is not None:
             data["code_verifier"] = code_verifier
+        response = None
+        failure_type = None
         try:
             response = requests.post(
                 self.token_endpoint,
@@ -350,15 +389,27 @@ class OpenIDClient:
                 headers=headers,
             )
             response.raise_for_status()
+            tokens = response.json()
+        except requests.HTTPError:
+            pass  # The status code already says what failed.
+        except (requests.RequestException, ValueError, RecursionError) as exc:
+            failure_type = type(exc).__name__
+        else:
+            if isinstance(tokens, dict):
+                return tokens
+            failure_type = "non-object JSON"
 
-        except requests.RequestException as exc:
-            logger.exception(exc)
-
-            raise TokenVerificationFailed(
-                f"Failed to retrieve ID Token: {exc}"
-            ) from exc
-
-        return response.json()
+        # Raise outside the except block, so nothing raised here chains the
+        # original exception, whose text may include the request URL.
+        extra = None
+        if response is not None:
+            extra = {"token_response": _token_response_details(response)}
+        logger.error(
+            "Token request failed: %s",
+            _describe_token_failure(response, failure_type),
+            extra=extra,
+        )
+        raise TokenVerificationFailed("Failed to retrieve ID Token")
 
     def _generate_pkce_code_verifier(self) -> str:
         """

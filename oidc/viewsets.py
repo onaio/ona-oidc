@@ -567,11 +567,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     user_tokens = client.retrieve_tokens_using_auth_code(
                         server_response.get("code"), code_verifier=code_verifier
                     )
-                except TokenVerificationFailed as e:
+                except TokenVerificationFailed:
                     return Response(
                         {
                             "error": _(
-                                f"Unable to retrieve ID Token; {e}. Kindly retry authentication process."
+                                "Unable to retrieve ID Token. Kindly retry authentication process."
                             ),
                             "error_title": _(
                                 "Authentication request verification failed"

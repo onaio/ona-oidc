@@ -86,6 +86,7 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "REDIRECT_URI": "http://localhost:8000/oidc/msft/callback",
         "RESPONSE_TYPE": "id_token",
         "RESPONSE_MODE": "form_post",
+        "REQUEST_MODE": "form_post",
         "USE_NONCES": True,
         "NONCE_CACHE_TIMEOUT": 1800,
     }
@@ -93,6 +94,11 @@ OPENID_CONNECT_AUTH_SERVERS = {
 ...
 
 ```
+
+`REQUEST_MODE` sets how the authorization code exchange sends the client
+credentials to `TOKEN_ENDPOINT`. The default, `form_post`, sends them in the
+request body. `query` puts them in the URL, where proxy and provider logs keep
+them. Use it only for a provider that requires it.
 
 ### SSO cookie security
 

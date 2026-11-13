@@ -2,10 +2,15 @@
 
 import base64
 import hashlib
+import json
 import secrets
+import traceback
+from itertools import product
 from unittest.mock import MagicMock, patch
+from urllib.parse import quote, urlencode
 
 from django.core.cache import cache
+from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpResponseRedirect
 from django.test import TestCase
 from django.test.utils import override_settings
@@ -15,6 +20,7 @@ import requests
 
 from oidc.client import (
     REDIRECT_AFTER_AUTH,
+    REQUEST_MODES,
     OpenIDClient,
     TokenVerificationFailed,
     state_cache_key,
@@ -52,6 +58,15 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "PKCE_CODE_CHALLENGE_TIMEOUT": 600,
         "PKCE_CODE_VERIFIER_LENGTH": 128,
     },
+}
+
+LEAKY_SECRET = "s3cr3t-value"
+QUERY_MODE_AUTH_SERVERS = {
+    "pkce": {
+        **OPENID_CONNECT_AUTH_SERVERS["pkce"],
+        "CLIENT_SECRET": LEAKY_SECRET,
+        "REQUEST_MODE": "query",
+    }
 }
 
 
@@ -617,6 +632,210 @@ class OpenIDClientTestCase(TestCase):
             },
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
+
+    def test_unknown_request_mode_is_rejected(self):
+        """A REQUEST_MODE other than form_post or query fails at construction"""
+
+        def client_with(mode):
+            server = {**OPENID_CONNECT_AUTH_SERVERS["pkce"], "REQUEST_MODE": mode}
+            with override_settings(OPENID_CONNECT_AUTH_SERVERS={"pkce": server}):
+                return OpenIDClient("pkce")
+
+        for mode in ("form_post", "query"):
+            with self.subTest(mode):
+                self.assertEqual(client_with(mode).request_mode, mode)
+
+        for mode in ("post", "FORM_POST", " form_post"):
+            with self.subTest(mode):
+                with self.assertRaisesMessage(ImproperlyConfigured, repr(mode)):
+                    client_with(mode)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "CLIENT_SECRET": "client_secret",
+            }
+        }
+    )
+    @patch.object(requests, "post")
+    def test_retrieve_tokens_using_auth_code_defaults_to_form_post(
+        self, mock_requests_post
+    ):
+        """Without REQUEST_MODE, credentials go in the request body, not the URL"""
+        self.assertNotIn("REQUEST_MODE", OPENID_CONNECT_AUTH_SERVERS["default"])
+        mock_requests_post.return_value = MagicMock(
+            status_code=200, **{"json.return_value": {"id_token": "id_token"}}
+        )
+
+        result = OpenIDClient("default").retrieve_tokens_using_auth_code("auth_code")
+
+        self.assertEqual(result, {"id_token": "id_token"})
+
+        mock_requests_post.assert_called_once_with(
+            "https://example.com/oauth2/v2.0/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": "auth_code",
+                "client_id": "client",
+                "client_secret": "client_secret",
+                "redirect_uri": "http://localhost:8000/oidc/msft/callback",
+            },
+            params=None,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+    def _assert_secret_not_exposed(self, mock_requests_post, logs, raised):
+        # Only query mode puts the secret in the URL. Without it, the checks
+        # below cannot fail.
+        self.assertIn(
+            LEAKY_SECRET, mock_requests_post.call_args.kwargs["params"].values()
+        )
+        self.assertTrue(all(record.exc_info is None for record in logs.records))
+        self.assertNotIn(LEAKY_SECRET, "\n".join(logs.output))
+        reported = [getattr(r, "token_response", {}) for r in logs.records]
+        self.assertNotIn(LEAKY_SECRET, str(reported))
+        formatted = "".join(
+            traceback.format_exception(type(raised), raised, raised.__traceback__)
+        )
+        self.assertNotIn(LEAKY_SECRET, formatted)
+
+    def _token_response(self, status_code, content, content_type=None):
+        response = requests.Response()
+        response.status_code = status_code
+        if content_type:
+            response.headers["Content-Type"] = content_type
+        response.reason = "Error"
+        response.url = (
+            f"https://example.com/oauth2/v2.0/token?client_secret={LEAKY_SECRET}"
+        )
+        response._content = content
+        return response
+
+    def _retrieve_tokens_expecting_failure(self):
+        with self.assertLogs("oidc.client", level="DEBUG") as logs:
+            with self.assertRaises(TokenVerificationFailed) as raised:
+                OpenIDClient("pkce").retrieve_tokens_using_auth_code("auth_code")
+        return "\n".join(logs.output), logs, raised.exception
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=QUERY_MODE_AUTH_SERVERS)
+    @patch.object(requests, "post")
+    def test_retrieve_tokens_error_response_hides_client_secret(
+        self, mock_requests_post
+    ):
+        """A rejected token request logs its status, never the secret"""
+        cases = {
+            "provider error": (
+                400,
+                json.dumps(
+                    {
+                        "error": "invalid_request",
+                        "error_description": "Sensitive data in the URL.",
+                    }
+                ).encode(),
+                "HTTP 400",
+            ),
+            "html error page": (502, b"<html>Bad Gateway</html>", "HTTP 502"),
+        }
+        for name, (status_code, body, expected_log) in cases.items():
+            with self.subTest(name):
+                mock_requests_post.return_value = self._token_response(
+                    status_code, body
+                )
+
+                logged, logs, raised = self._retrieve_tokens_expecting_failure()
+
+                self.assertIn(expected_log, logged)
+                self.assertNotIn("HTTPError", logged)
+                self._assert_secret_not_exposed(mock_requests_post, logs, raised)
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=QUERY_MODE_AUTH_SERVERS)
+    @patch.object(requests, "post")
+    def test_retrieve_tokens_connection_error_hides_client_secret(
+        self, mock_requests_post
+    ):
+        """A token request that never gets a response does not leak the secret"""
+        mock_requests_post.side_effect = requests.ConnectionError(
+            "HTTPSConnectionPool(host='example.com', port=443): Max retries "
+            f"exceeded with url: /oauth2/v2.0/token?client_secret={LEAKY_SECRET}"
+        )
+
+        logged, logs, raised = self._retrieve_tokens_expecting_failure()
+
+        self.assertIn("ConnectionError", logged)
+        self.assertFalse(hasattr(logs.records[0], "token_response"))
+        self._assert_secret_not_exposed(mock_requests_post, logs, raised)
+
+    @patch.object(requests, "post")
+    def test_retrieve_tokens_failure_omits_encoded_echo(self, mock_requests_post):
+        """
+        A provider that echoes the secret back leaks nothing, whatever the
+        encoding. The report has the response metadata, never the body.
+        """
+        cases = {
+            "form-encoded": (
+                "dummy secret",
+                urlencode({"client_secret": "dummy secret"}),
+                "dummy+secret",
+                "application/x-www-form-urlencoded",
+            ),
+            "json-escaped": (
+                'dummy"secret',
+                json.dumps({"error_description": 'dummy"secret'}),
+                'dummy\\"secret',
+                "application/json",
+            ),
+        }
+        for (name, case), mode in product(cases.items(), REQUEST_MODES):
+            secret, body, echoed, content_type = case
+            # The echo must dodge a plain or percent-encoded match of the secret.
+            self.assertIn(echoed, body)
+            self.assertNotIn(secret, body)
+            self.assertNotIn(quote(secret, safe=""), body)
+            server = {
+                **QUERY_MODE_AUTH_SERVERS["pkce"],
+                "CLIENT_SECRET": secret,
+                "REQUEST_MODE": mode,
+            }
+            mock_requests_post.return_value = self._token_response(
+                400, body.encode(), content_type
+            )
+            with self.subTest(name, mode=mode):
+                with (
+                    override_settings(OPENID_CONNECT_AUTH_SERVERS={"pkce": server}),
+                    self.assertLogs("oidc.client", level="DEBUG") as logs,
+                    self.assertRaises(TokenVerificationFailed),
+                ):
+                    OpenIDClient("pkce").retrieve_tokens_using_auth_code("auth_code")
+
+                record = logs.records[0]
+                self.assertIn("HTTP 400", record.getMessage())
+                self.assertEqual(
+                    record.token_response,
+                    {
+                        "status_code": 400,
+                        "content_type": content_type,
+                        "body_length": len(body),
+                    },
+                )
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=QUERY_MODE_AUTH_SERVERS)
+    @patch.object(requests, "post")
+    def test_retrieve_tokens_success_without_token_object_raises(
+        self, mock_requests_post
+    ):
+        """A 200 whose body is not a JSON object is a handled failure"""
+        cases = {
+            "not json": (b"<html>Gateway login</html>", "HTTP 200 JSONDecodeError"),
+            "json list": (b'["id_token"]', "HTTP 200 non-object JSON"),
+        }
+        for name, (body, expected_log) in cases.items():
+            with self.subTest(name):
+                mock_requests_post.return_value = self._token_response(200, body)
+
+                logged, _logs, _raised = self._retrieve_tokens_expecting_failure()
+
+                self.assertIn(expected_log, logged)
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
