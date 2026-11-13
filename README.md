@@ -87,6 +87,7 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "RESPONSE_TYPE": "id_token",
         "RESPONSE_MODE": "form_post",
         "REQUEST_MODE": "form_post",
+        "ISSUER": "https://login.microsoftonline.com/<tenant-id>/v2.0",
         "USE_NONCES": True,
         "NONCE_CACHE_TIMEOUT": 1800,
     }
@@ -101,6 +102,24 @@ request body. `query` puts them in the URL, where proxy and provider logs keep
 them. Use it only for a provider that requires it. `manage.py check` warns
 (`oidc.W001`) for each auth server in query mode. To keep query mode, add
 `"oidc.W001"` to `SILENCED_SYSTEM_CHECKS`.
+
+### ID token validation
+
+ID tokens must be signed with an algorithm in the per-server
+`ID_TOKEN_ALLOWED_ALGORITHMS` list and carry `exp`, `iat` and `aud`
+claims; tokens that do not are rejected. The list defaults to the
+RSA family (`RS256`/`RS384`/`RS512`/`PS256`/`PS384`/`PS512`) and may
+only contain algorithms from that family — set it to a subset, e.g.
+`["RS256"]`, to accept exactly what your provider signs with. Any
+other value raises `ImproperlyConfigured`. When `ISSUER` is set, the token's
+`iss` claim must match it exactly; use the `issuer` value from the
+provider's `/.well-known/openid-configuration` document. For Microsoft
+Entra ID that value contains your tenant id — tokens never carry the
+literal `common`, so a multi-tenant app on the `common` endpoint
+cannot use a single exact-match `ISSUER` and should leave it unset.
+When `ISSUER` is not set, the `iss` claim is not checked and every
+verification logs a warning; a future release will require the
+setting.
 
 ### SSO cookie security
 
@@ -121,6 +140,18 @@ The `SSO` cookie emitted on successful authentication honours these keys:
 - **`SSO_COOKIE_HTTPONLY`** (`bool`, default `True`). Leave on unless you
   have a specific reason to expose the cookie to JavaScript.
 - **`SSO_COOKIE_PATH`** (`str`, default `"/"`).
+
+The cookie's JWT carries `iat` and `exp` claims: the token expires
+`SSO_COOKIE_MAX_AGE` seconds after it is minted, or after 7 days when
+`SSO_COOKIE_MAX_AGE` is not set. Tokens minted by older releases have
+no `exp` and are rejected; their holders are sent through the OIDC
+login flow once more after upgrading.
+
+`JWT_SECRET_KEY` is required for the SSO features: minting the cookie and
+verifying it with `authenticate_sso` both raise `ImproperlyConfigured`
+when it is missing or empty. Invalid tokens (bad signature, malformed
+value, expired) are an authentication miss — `authenticate_sso` returns
+`None` rather than raising.
 
 Future work: once `Secure=True` is enforced cohort-wide, the cookie name
 can migrate to `__Secure-SSO` for browser-enforced guarantees.

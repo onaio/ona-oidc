@@ -8,7 +8,7 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.debug import sensitive_variables
 
 import jwt
-from jwt.exceptions import InvalidSignatureError
+from jwt.exceptions import InvalidTokenError
 
 import oidc.settings as default
 
@@ -22,8 +22,26 @@ def authenticate_sso(request, unique_user_field: str = "email"):
     if not sso:
         return None
 
+    if not secret_key:
+        # Fail loudly rather than verify against a guessable default.
+        # Older PyJWT versions accept an empty HMAC key, which would make
+        # every SSO token forgeable; newer ones raise InvalidKeyError on
+        # each request instead. Neither is an acceptable failure mode.
+        raise ImproperlyConfigured(
+            "OPENID_CONNECT_VIEWSET_CONFIG['JWT_SECRET_KEY'] must be set "
+            "to verify SSO tokens."
+        )
+
     try:
-        jwt_payload = jwt.decode(sso, secret_key, algorithms=[algorithm])
+        # A token without exp would be a forever-credential: tokens minted
+        # before 2.11 carried none, and are rejected here. Their holders
+        # simply go through the OIDC login flow once more.
+        jwt_payload = jwt.decode(
+            sso,
+            secret_key,
+            algorithms=[algorithm],
+            options={"require": ["exp"]},
+        )
         unique_user_value = jwt_payload.get(unique_user_field)
         if unique_user_value is None and unique_user_field != "email":
             # Older SSO cookies always used the "email" claim name, even when
@@ -38,15 +56,28 @@ def authenticate_sso(request, unique_user_field: str = "email"):
         )
         if user and user.is_active:
             return (user, True)
-    except InvalidSignatureError:
+    except InvalidTokenError:
+        # Bad signature, malformed value, expired token, wrong audience …
+        # are all an authentication miss, never a server error. Key/config
+        # problems (InvalidKeyError) are not InvalidTokenError subclasses
+        # and still propagate.
         pass
     return None
 
 
+TRUE_STRINGS = frozenset({"true", "1", "yes", "on"})
+FALSE_STRINGS = frozenset({"false", "0", "no", "off"})
+
+
 def str_to_bool(val):
-    if isinstance(val, str):
-        val = 0 if val == "False" else 1
-    return val
+    if not isinstance(val, str):
+        return val
+    normalized = val.strip().lower()
+    if normalized in TRUE_STRINGS:
+        return True
+    if normalized in FALSE_STRINGS:
+        return False
+    raise ImproperlyConfigured(f"Cannot interpret {val!r} as a boolean setting.")
 
 
 def email_usename_to_url_safe(email_username):
