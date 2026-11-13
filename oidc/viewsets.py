@@ -221,6 +221,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 samesite = "None" if client.response_mode == "form_post" else "Lax"
                 response.set_cookie(
                     LOGIN_BINDING_COOKIE,
+                    # Only login starts write this cookie, and each one
+                    # reads the previous value first to carry its digests
+                    # forward — overwriting with just the new state would
+                    # strand a login still in flight in another tab.
                     push_login_binding(
                         request.COOKIES.get(LOGIN_BINDING_COOKIE), state
                     ),

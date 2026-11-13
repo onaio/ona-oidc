@@ -85,6 +85,9 @@ def _state_digest(state: str) -> str:
 
 
 def _load_login_binding(cookie_value: Optional[str]) -> list:
+    # A missing, tampered or expired cookie yields an empty list, never
+    # an error: a broken cookie may only cost in-flight attempts, it
+    # must not block starting a new login.
     if not cookie_value:
         return []
     try:
