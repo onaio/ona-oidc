@@ -5,8 +5,9 @@ import hashlib
 import json
 import secrets
 import traceback
+from itertools import product
 from unittest.mock import MagicMock, patch
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
@@ -18,10 +19,8 @@ import jwt
 import requests
 
 from oidc.client import (
-    REDACTED,
     REDIRECT_AFTER_AUTH,
     REQUEST_MODES,
-    TOKEN_RESPONSE_LOG_LIMIT,
     OpenIDClient,
     TokenVerificationFailed,
     state_cache_key,
@@ -701,9 +700,11 @@ class OpenIDClientTestCase(TestCase):
         )
         self.assertNotIn(LEAKY_SECRET, formatted)
 
-    def _token_response(self, status_code, content):
+    def _token_response(self, status_code, content, content_type=None):
         response = requests.Response()
         response.status_code = status_code
+        if content_type:
+            response.headers["Content-Type"] = content_type
         response.reason = "Error"
         response.url = (
             f"https://example.com/oauth2/v2.0/token?client_secret={LEAKY_SECRET}"
@@ -766,46 +767,57 @@ class OpenIDClientTestCase(TestCase):
         self._assert_secret_not_exposed(mock_requests_post, logs, raised)
 
     @patch.object(requests, "post")
-    def test_retrieve_tokens_failure_redacts_echoed_request(self, mock_requests_post):
+    def test_retrieve_tokens_failure_omits_encoded_echo(self, mock_requests_post):
         """
-        A provider that echoes the request into its error fields leaks nothing.
-        The message has only the status, and the report redacts the body.
+        A provider that echoes the secret back leaks nothing, whatever the
+        encoding. The report has the response metadata, never the body.
         """
-        code, verifier = "c0de-value", "v3rifier/value"
-        echoed = f"{LEAKY_SECRET} {code} {quote(verifier, safe='')}"
-        body = {"error": "invalid_grant", "error_description": echoed}
-        for mode in REQUEST_MODES:
-            server = {**QUERY_MODE_AUTH_SERVERS["pkce"], "REQUEST_MODE": mode}
+        cases = {
+            "form-encoded": (
+                "dummy secret",
+                urlencode({"client_secret": "dummy secret"}),
+                "dummy+secret",
+                "application/x-www-form-urlencoded",
+            ),
+            "json-escaped": (
+                'dummy"secret',
+                json.dumps({"error_description": 'dummy"secret'}),
+                'dummy\\"secret',
+                "application/json",
+            ),
+        }
+        for (name, case), mode in product(cases.items(), REQUEST_MODES):
+            secret, body, echoed, content_type = case
+            # The echo must dodge a plain or percent-encoded match of the secret.
+            self.assertIn(echoed, body)
+            self.assertNotIn(secret, body)
+            self.assertNotIn(quote(secret, safe=""), body)
+            server = {
+                **QUERY_MODE_AUTH_SERVERS["pkce"],
+                "CLIENT_SECRET": secret,
+                "REQUEST_MODE": mode,
+            }
             mock_requests_post.return_value = self._token_response(
-                400, json.dumps(body).encode()
+                400, body.encode(), content_type
             )
-            with (
-                self.subTest(mode),
-                override_settings(OPENID_CONNECT_AUTH_SERVERS={"pkce": server}),
-                self.assertLogs("oidc.client", level="DEBUG") as logs,
-                self.assertRaises(TokenVerificationFailed),
-            ):
-                OpenIDClient("pkce").retrieve_tokens_using_auth_code(code, verifier)
+            with self.subTest(name, mode=mode):
+                with (
+                    override_settings(OPENID_CONNECT_AUTH_SERVERS={"pkce": server}),
+                    self.assertLogs("oidc.client", level="DEBUG") as logs,
+                    self.assertRaises(TokenVerificationFailed),
+                ):
+                    OpenIDClient("pkce").retrieve_tokens_using_auth_code("auth_code")
 
-            details = logs.records[0].token_response
-            self.assertIn("HTTP 400", "\n".join(logs.output))
-            self.assertIn("invalid_grant", details["body"])
-            self.assertEqual(details["body"].count(REDACTED), 3)
-            reported = "\n".join(logs.output) + details["body"]
-            for value in (LEAKY_SECRET, code, quote(verifier, safe="")):
-                self.assertNotIn(value, reported)
-
-    @override_settings(OPENID_CONNECT_AUTH_SERVERS=QUERY_MODE_AUTH_SERVERS)
-    @patch.object(requests, "post")
-    def test_retrieve_tokens_failure_report_is_truncated(self, mock_requests_post):
-        """The report keeps only the start of a long response body"""
-        mock_requests_post.return_value = self._token_response(502, b"x" * 5000)
-
-        _logged, logs, _raised = self._retrieve_tokens_expecting_failure()
-
-        details = logs.records[0].token_response
-        self.assertEqual(details["body_length"], 5000)
-        self.assertEqual(details["body"], "x" * TOKEN_RESPONSE_LOG_LIMIT)
+                record = logs.records[0]
+                self.assertIn("HTTP 400", record.getMessage())
+                self.assertEqual(
+                    record.token_response,
+                    {
+                        "status_code": 400,
+                        "content_type": content_type,
+                        "body_length": len(body),
+                    },
+                )
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=QUERY_MODE_AUTH_SERVERS)
     @patch.object(requests, "post")

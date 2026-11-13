@@ -7,7 +7,7 @@ import hashlib
 import json
 import logging
 import secrets
-from typing import Any, Callable, Iterable, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 from urllib.parse import quote, urlencode
 
 from django.conf import settings
@@ -24,8 +24,6 @@ from oidc.utils import str_to_bool
 
 REDIRECT_AFTER_AUTH = "redirect_after_auth"
 REQUEST_MODES = ("form_post", "query")
-TOKEN_RESPONSE_LOG_LIMIT = 1024
-REDACTED = "[redacted]"
 
 # Caller-supplied entries matching these keys are dropped: allowing
 # overrides would let an attacker swap the redirect URI / PKCE challenge
@@ -118,37 +116,24 @@ def _describe_token_failure(
 
     Returns the HTTP status and what went wrong, never response or exception
     text. Providers can echo the request, client secret included, into their
-    error fields, so `_token_response_details` reports the body separately,
-    redacted.
+    error fields.
     """
     if response is None:
         return failure_type or "no response"
     return " ".join(filter(None, [f"HTTP {response.status_code}", failure_type]))
 
 
-def _redact(text: str, secrets_sent: Iterable[Optional[str]]) -> str:
-    for value in filter(None, secrets_sent):
-        for form in {value, quote(value, safe="")}:
-            text = text.replace(form, REDACTED)
-    return text
-
-
-def _token_response_details(
-    response: requests.Response, secrets_sent: Iterable[Optional[str]]
-) -> dict:
+def _token_response_details(response: requests.Response) -> dict:
     """
     Describe an unusable token response for error reporting.
 
-    Some providers echo the request back, so this redacts the values the
-    request sent. It truncates after redacting, so the cut cannot leave part
-    of a value behind.
+    Leaves out the body: a provider can echo the client secret in any
+    encoding, so no redaction can be trusted to catch it.
     """
-    text = response.text
     return {
         "status_code": response.status_code,
         "content_type": response.headers.get("Content-Type"),
-        "body_length": len(text),
-        "body": _redact(text, secrets_sent)[:TOKEN_RESPONSE_LOG_LIMIT],
+        "body_length": len(response.text),
     }
 
 
@@ -418,8 +403,7 @@ class OpenIDClient:
         # original exception, whose text may include the request URL.
         extra = None
         if response is not None:
-            secrets_sent = (self.client_secret, code, code_verifier)
-            extra = {"token_response": _token_response_details(response, secrets_sent)}
+            extra = {"token_response": _token_response_details(response)}
         logger.error(
             "Token request failed: %s",
             _describe_token_failure(response, failure_type),
