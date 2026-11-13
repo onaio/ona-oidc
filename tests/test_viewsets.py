@@ -74,6 +74,9 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "RESPONSE_TYPE": "code",
         "RESPONSE_MODE": "form_post",
         "USE_NONCES": False,
+        # These tests predate browser binding and drive the callback
+        # directly; binding has its own test class below.
+        "ENFORCE_BROWSER_BINDING": False,
     },
     "pkce": {
         "AUTHORIZATION_ENDPOINT": "https://example.com/oauth2/v2.0/authorize",
@@ -90,6 +93,7 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "PKCE_CODE_CHALLENGE_METHOD": "S256",
         "PKCE_CODE_CHALLENGE_TIMEOUT": 600,
         "PKCE_CODE_VERIFIER_LENGTH": 128,
+        "ENFORCE_BROWSER_BINDING": False,
     },
 }
 OPENID_CONNECT_VIEWSET_CONFIG = {
@@ -2754,6 +2758,7 @@ class TestPerProviderTargetUrlAfterAuth(TestCase):
                 "RESPONSE_MODE": "form_post",
                 "USE_NONCES": False,
                 "USE_EMAIL_USERNAME": True,
+                "ENFORCE_BROWSER_BINDING": False,
                 "TARGET_URL_AFTER_AUTH": "https://primary.example.com/landing",
             },
         },
@@ -2791,6 +2796,7 @@ class TestPerProviderTargetUrlAfterAuth(TestCase):
                 "RESPONSE_MODE": "form_post",
                 "USE_NONCES": False,
                 "USE_EMAIL_USERNAME": True,
+                "ENFORCE_BROWSER_BINDING": False,
                 "TARGET_URL_AFTER_AUTH": "https://primary.example.com/landing",
             },
         },
@@ -2829,6 +2835,7 @@ class TestPerProviderTargetUrlAfterAuth(TestCase):
                 "RESPONSE_MODE": "form_post",
                 "USE_NONCES": False,
                 "USE_EMAIL_USERNAME": True,
+                "ENFORCE_BROWSER_BINDING": False,
             },
         },
         OPENID_CONNECT_VIEWSET_CONFIG={
@@ -2865,6 +2872,7 @@ class TestPerProviderTargetUrlAfterAuth(TestCase):
                 "RESPONSE_MODE": "form_post",
                 "USE_NONCES": False,
                 "USE_EMAIL_USERNAME": True,
+                "ENFORCE_BROWSER_BINDING": False,
                 "TARGET_URL_AFTER_AUTH": "https://primary.example.com/landing",
             },
             "secondary": {
@@ -2879,6 +2887,7 @@ class TestPerProviderTargetUrlAfterAuth(TestCase):
                 "RESPONSE_MODE": "form_post",
                 "USE_NONCES": False,
                 "USE_EMAIL_USERNAME": True,
+                "ENFORCE_BROWSER_BINDING": False,
                 "TARGET_URL_AFTER_AUTH": "https://secondary.example.com",
             },
         },
@@ -3219,3 +3228,44 @@ class TestSSOCookieJWTExpiry(TestCase):
             else:
                 os.environ["TZ"] = original_tz
             time.tzset()
+
+
+# Built without ENFORCE_BROWSER_BINDING so these tests exercise the
+# default, which is enforcement ON.
+BINDING_AUTH_SERVERS = {
+    "default": {
+        k: v
+        for k, v in OPENID_CONNECT_AUTH_SERVERS["default"].items()
+        if k != "ENFORCE_BROWSER_BINDING"
+    }
+}
+
+
+@override_settings(
+    OPENID_CONNECT_AUTH_SERVERS=BINDING_AUTH_SERVERS,
+    OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+)
+class LoginBrowserBindingTestCase(TestCase):
+    """Authorization responses must come back to the browser that
+    started the login (login CSRF defense, RFC 9700 4.4)."""
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        cache.clear()
+
+    def test_callback_without_binding_cookie_is_rejected(self):
+        """A callback in a browser that never started a login is rejected.
+
+        The response's state must match the signed cookie login() set,
+        before any cache entry is consulted or any token is verified.
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_verify:
+            request = self.factory.post(
+                "/", data={"id_token": "a.b.c", "state": "attacker-state"}
+            )
+            response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 401)
+        mock_verify.assert_not_called()
