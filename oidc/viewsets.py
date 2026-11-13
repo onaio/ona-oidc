@@ -6,7 +6,7 @@ import importlib
 import logging
 import re
 import traceback
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import List, Optional, Tuple
 
 from django.conf import settings
@@ -408,7 +408,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
         if self.use_sso:
             sso_value = getattr(user, self.sso_cookie, getattr(user, "email", ""))
-            issued_at = timezone.now()
+            # JWT timestamps are UTC by definition; timezone.now() is naive
+            # local time under USE_TZ=False, which PyJWT would read as UTC.
+            issued_at = datetime.now(UTC)
             jwt_max_age = (
                 SSO_JWT_DEFAULT_MAX_AGE
                 if self.cookie_max_age is None

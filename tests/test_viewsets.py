@@ -3,6 +3,8 @@ Tests for the OpenID Client
 """
 
 import json
+import os
+import time
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
@@ -2320,3 +2322,44 @@ class TestSSOCookieJWTExpiry(TestCase):
             options={"verify_exp": False},
         )
         self.assertEqual(payload["exp"] - payload["iat"], 0)
+
+    @override_settings(
+        USE_TZ=False,
+        TIME_ZONE="Africa/Nairobi",
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000",
+        },
+    )
+    def test_minted_jwt_authenticates_under_use_tz_false_ahead_of_utc(self):
+        """A JWT minted with USE_TZ=False in a UTC+3 timezone authenticates.
+
+        JWT timestamps are UTC by definition. A local-time iat from a
+        UTC+3 clock sits three hours in the future, so PyJWT rejects the
+        freshly minted token as immature and SSO authentication breaks.
+
+        Django pins the process timezone to settings.TIME_ZONE when
+        settings first load, which override_settings does not redo, so
+        the naive clock is moved to Nairobi for the duration by hand.
+        """
+        original_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "Africa/Nairobi"
+        time.tzset()
+        try:
+            request = self.factory.get("/")
+            response = BaseOpenIDConnectViewset().generate_successful_response(
+                request, self.user
+            )
+            session_request = self.factory.get("/oidc/default/session")
+            session_request.COOKIES["SSO"] = response.cookies.get("SSO").value
+            session_response = BaseOpenIDConnectViewset.as_view(
+                {"get": "session"}
+            )(session_request, auth_server="default")
+            self.assertEqual(session_response.status_code, 200)
+            self.assertEqual(session_response.data, {"username": "jdoe"})
+        finally:
+            if original_tz is None:
+                del os.environ["TZ"]
+            else:
+                os.environ["TZ"] = original_tz
+            time.tzset()
