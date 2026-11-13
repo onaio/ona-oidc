@@ -414,13 +414,20 @@ class OpenIDClient:
         return decoded_token
 
     def retrieve_tokens_using_auth_code(
-        self, code: str, code_verifier: Optional[str] = None
+        self,
+        code: str,
+        code_verifier: Optional[str] = None,
+        redirect_uri: Optional[str] = None,
     ) -> dict:
         """
         Obtain an ID Token using the Authorization Code flow
 
         :param code: Authorization code returned by the auth server
         :param code_verifier: Code verifier used in PKCE flow
+        :param redirect_uri: Overrides the configured one. RFC 6749 4.1.3
+            requires it to match the value sent on the authorize request, so
+            a flow that used a different callback, such as step-up, must pass
+            it here or the provider rejects the exchange.
         :return: ID Token as a string
         :raises TokenVerificationFailed: If the token retrieval fails
         """
@@ -430,7 +437,7 @@ class OpenIDClient:
             "code": code,
             "client_id": self.client_id,
             "client_secret": self.client_secret,
-            "redirect_uri": self.redirect_uri,
+            "redirect_uri": redirect_uri or self.redirect_uri,
         }
 
         if code_verifier is not None:
@@ -467,7 +474,7 @@ class OpenIDClient:
         )
         raise TokenVerificationFailed("Failed to retrieve ID Token")
 
-    def _generate_pkce_code_verifier(self) -> str:
+    def generate_pkce_code_verifier(self) -> str:
         """
         Generates a code verifier for PKCE
 
@@ -476,7 +483,7 @@ class OpenIDClient:
         length = self.pkce_code_verifier_length
         return secrets.token_urlsafe(length)[:length]
 
-    def _generate_pkce_code_challenge(self, code_verifier: str) -> str:
+    def generate_pkce_code_challenge(self, code_verifier: str) -> str:
         """
         Generates a code challenge for PKCE
 
@@ -509,8 +516,8 @@ class OpenIDClient:
             )
 
         if self.use_pkce:
-            code_verifier = self._generate_pkce_code_verifier()
-            code_challenge = self._generate_pkce_code_challenge(code_verifier)
+            code_verifier = self.generate_pkce_code_verifier()
+            code_challenge = self.generate_pkce_code_challenge(code_verifier)
             # ``state`` is generated independently of ``code_challenge`` so an
             # observer of the redirect URL cannot derive one from the other.
             # The state doubles as the cache key for the verifier we'll need
