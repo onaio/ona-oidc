@@ -93,6 +93,14 @@ RESERVED_END_SESSION_PARAMS = frozenset(
     }
 )
 
+# Signature algorithms a configured ``ID_TOKEN_ALLOWED_ALGORITHMS``
+# list may contain. All are RSA-key algorithms, matching the RSA-only
+# JWKS handling in ``verify_and_decode_id_token``; the token's own
+# ``alg`` header never selects the verification algorithm.
+ID_TOKEN_SUPPORTED_ALGORITHMS = frozenset(
+    {"RS256", "RS384", "RS512", "PS256", "PS384", "PS512"}
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -203,6 +211,29 @@ class OpenIDClient:
                 f"REQUEST_MODE must be one of {REQUEST_MODES}, "
                 f"got {self.request_mode!r}"
             )
+        # Normalized to None so every falsy value means "no iss check";
+        # PyJWT itself only skips the check for None, and would enforce
+        # iss == "" for an empty string.
+        self.issuer = config[auth_server].get("ISSUER") or None
+        allowed_algorithms = config[auth_server].get(
+            "ID_TOKEN_ALLOWED_ALGORITHMS",
+            default_config["ID_TOKEN_ALLOWED_ALGORITHMS"],
+        )
+        # A bare string would hit PyJWT's substring matching, and a
+        # non-RSA entry would send that token's verification down a
+        # code path our RSA-only JWKS handling cannot satisfy, raising
+        # an exception the callback does not treat as a rejection.
+        if (
+            not isinstance(allowed_algorithms, (list, tuple))
+            or not allowed_algorithms
+            or not set(allowed_algorithms) <= ID_TOKEN_SUPPORTED_ALGORITHMS
+        ):
+            raise ImproperlyConfigured(
+                f"OPENID_CONNECT_AUTH_SERVERS[{auth_server!r}]"
+                "['ID_TOKEN_ALLOWED_ALGORITHMS'] must be a non-empty list "
+                f"drawn from {sorted(ID_TOKEN_SUPPORTED_ALGORITHMS)}"
+            )
+        self.id_token_allowed_algorithms = list(allowed_algorithms)
 
     def _retrieve_jwks_related_to_kid(self, kid: str) -> Optional[str]:
         """
@@ -327,12 +358,37 @@ class OpenIDClient:
         if not jwks:
             raise NoJSONWebKeyFound("Failed to retrieve key ID described in Token")
 
-        alg = unverified_header.get("alg")
-        public_key = RSAAlgorithm.from_jwk(json.dumps(jwks))
+        try:
+            public_key = RSAAlgorithm.from_jwk(json.dumps(jwks))
+        except jwt.exceptions.InvalidKeyError as exc:
+            # The kid matched a JWKS entry that is not an RSA key (EC,
+            # OKP, …). InvalidKeyError is not an InvalidTokenError, so
+            # without this translation it would escape the callback's
+            # handled-rejection path as a server error.
+            raise NoJSONWebKeyFound(
+                "ID token key is not usable with the allowed RSA algorithms"
+            ) from exc
         cached_data = {}
 
+        if not self.issuer:
+            logger.warning(
+                "No ISSUER configured for auth server %r; the ID token's "
+                "iss claim is not verified. Set OPENID_CONNECT_AUTH_SERVERS"
+                "[%r]['ISSUER'] to the provider's issuer URL.",
+                self.auth_server,
+                self.auth_server,
+            )
         decoded_token = jwt.decode(
-            id_token, public_key, audience=[self.client_id], algorithms=alg
+            id_token,
+            public_key,
+            audience=[self.client_id],
+            issuer=self.issuer,
+            algorithms=self.id_token_allowed_algorithms,
+            options={"require": ["exp", "iat", "aud"]},
+            # Tolerate small IdP/server clock skew: with iat required,
+            # PyJWT otherwise rejects a token whose iat is seconds ahead
+            # as "not yet valid".
+            leeway=30,
         )
         # ``login()`` writes ``{auth_server, redirect_after}`` under the
         # nonce whenever the caller supplied a ``next``, even when

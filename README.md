@@ -87,6 +87,7 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "RESPONSE_TYPE": "id_token",
         "RESPONSE_MODE": "form_post",
         "REQUEST_MODE": "form_post",
+        "ISSUER": "https://login.microsoftonline.com/<tenant-id>/v2.0",
         "USE_NONCES": True,
         "NONCE_CACHE_TIMEOUT": 1800,
     }
@@ -99,6 +100,24 @@ OPENID_CONNECT_AUTH_SERVERS = {
 credentials to `TOKEN_ENDPOINT`. The default, `form_post`, sends them in the
 request body. `query` puts them in the URL, where proxy and provider logs keep
 them. Use it only for a provider that requires it.
+
+### ID token validation
+
+ID tokens must be signed with an algorithm in the per-server
+`ID_TOKEN_ALLOWED_ALGORITHMS` list and carry `exp`, `iat` and `aud`
+claims; tokens that do not are rejected. The list defaults to the
+RSA family (`RS256`/`RS384`/`RS512`/`PS256`/`PS384`/`PS512`) and may
+only contain algorithms from that family — set it to a subset, e.g.
+`["RS256"]`, to accept exactly what your provider signs with. Any
+other value raises `ImproperlyConfigured`. When `ISSUER` is set, the token's
+`iss` claim must match it exactly; use the `issuer` value from the
+provider's `/.well-known/openid-configuration` document. For Microsoft
+Entra ID that value contains your tenant id — tokens never carry the
+literal `common`, so a multi-tenant app on the `common` endpoint
+cannot use a single exact-match `ISSUER` and should leave it unset.
+When `ISSUER` is not set, the `iss` claim is not checked and every
+verification logs a warning; a future release will require the
+setting.
 
 ### SSO cookie security
 
