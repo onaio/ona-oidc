@@ -1311,6 +1311,29 @@ class IDTokenValidationTestCase(TestCase):
         )
         self.assertEqual(decoded["sub"], "user-1")
 
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                **ID_TOKEN_VALIDATION_AUTH_SERVERS["default"],
+                "ISSUER": "https://idp.example.com/tenant",
+            }
+        }
+    )
+    def test_issuer_substring_match_is_rejected(self):
+        """A token iss that is only a substring of ISSUER is rejected.
+
+        PyJWT 2.10.0 matched issuers by substring containment
+        (GHSA-75c5-xw7c-p5pm) and accepted both of these tokens;
+        setup.cfg requires >=2.10.1 so the match stays exact.
+        """
+        for name, iss in {
+            "prefix of the configured issuer": "https://idp.example.com/",
+            "empty issuer": "",
+        }.items():
+            with self.subTest(name):
+                with self.assertRaises(jwt.InvalidTokenError):
+                    self._verify(self._sign(self._claims(iss=iss)))
+
     def test_missing_issuer_config_logs_warning(self):
         """Verification without a configured ISSUER warns that iss is unchecked."""
         with self.assertLogs("oidc.client", level="WARNING") as logs:
