@@ -119,6 +119,33 @@ When `ISSUER` is not set, the `iss` claim is not checked and every
 verification logs a warning; a future release will require the
 setting.
 
+### The username form
+
+When a new user needs to choose a username, the callback renders
+`oidc/oidc_user_data_entry.html`. The callback keeps the verified token,
+its claims and the login's `state` in the Django cache. The form carries
+only a single-use `login_continuation` key that points at them. The JSON
+rendering of that response carries the same key.
+
+- Every process that serves the callback must share one cache. Django's
+  default `LocMemCache` is per process, so a re-submit that reaches
+  another worker is refused. This applies even with `USE_NONCES=False`.
+- The cache's `delete` must report whether it removed the key. Do not
+  set `default_noreply=True` on a memcached backend.
+- A template override must post `login_continuation` back, not
+  `id_token`:
+
+  ```html
+  <input type="hidden" name="login_continuation" value="{{ login_continuation }}">
+  ```
+
+  A form that posts no continuation is refused, and the callback logs a
+  warning.
+- The form lasts `NONCE_CACHE_TIMEOUT` seconds at most, and never longer
+  than the ID token would still verify. With `USE_PKCE`, the re-submit
+  also needs the PKCE verifier, which expires `PKCE_CODE_CHALLENGE_TIMEOUT`
+  seconds after the login started.
+
 ### SSO cookie security
 
 The `SSO` cookie emitted on successful authentication honours these keys:
