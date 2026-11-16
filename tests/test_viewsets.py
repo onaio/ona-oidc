@@ -1426,6 +1426,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         )
 
         self.assertIn(secret, str(frames[0].f_locals["auth_config"]))
+        self.assertIn("auth_config", reported_locals(frames[0]))
         for frame in frames:
             self.assertNotIn(secret, str(reported_locals(frame)))
 
@@ -1446,6 +1447,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         )
 
         self.assertEqual(frames[0].f_locals["config"]["JWT_SECRET_KEY"], secret)
+        self.assertIn("config", reported_locals(frames[0]))
         for frame in frames:
             self.assertNotIn(secret, str(reported_locals(frame)))
 
@@ -1471,6 +1473,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         )
 
         self.assertIn(tokens["access_token"], str(frames[0].f_locals["user_tokens"]))
+        self.assertIn("user_tokens", reported_locals(frames[0]))
         for frame in frames:
             for value in tokens.values():
                 self.assertNotIn(value, str(reported_locals(frame)))
@@ -1592,18 +1595,21 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         )
 
         self.assertEqual(frames[0].f_locals["id_token_hint"], id_token)
+        self.assertIn("id_token_hint", reported_locals(frames[0]))
         for frame in frames:
             self.assertNotIn(id_token, str(reported_locals(frame)))
 
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
-    def test_username_form_render_hides_id_token_from_error_reports(self):
+    def test_username_form_render_hides_continuation_from_error_reports(self):
         """
         A username form that fails to render, after the view has returned,
-        shows no id_token in error reports
+        shows no login continuation key in error reports
         """
-        id_token = "id-t0ken-value"
+        continuation = "c0ntinuation-key"
         viewset = UserModelOpenIDConnectViewset()
-        response = viewset._username_form_response({"id_token": id_token})
+        response = viewset._username_form_response(
+            {LOGIN_CONTINUATION_FIELD: continuation}
+        )
         response.accepted_renderer = next(
             renderer()
             for renderer in viewset.renderer_classes
@@ -1627,9 +1633,9 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 response.render, TemplateDoesNotExist, "rendered_content"
             )
 
-        self.assertTrue(any(id_token in str(f.f_locals) for f in frames))
+        self.assertTrue(any(continuation in str(f.f_locals) for f in frames))
         for frame in frames:
-            self.assertNotIn(id_token, str(reported_locals(frame)))
+            self.assertNotIn(continuation, str(reported_locals(frame)))
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,

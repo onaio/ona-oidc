@@ -208,7 +208,7 @@ class ImportUserAdmin(BaseUserAdmin):
         """
         status_code = getattr(exc.response, "status_code", None)
         logger.error(
-            "Import user %s failed: %s%s",
+            "User import %s failed: %s%s",
             step,
             type(exc).__name__,
             f" HTTP {status_code}" if status_code else "",
@@ -232,7 +232,7 @@ class ImportUserAdmin(BaseUserAdmin):
         try:
             results = self._search_user(access_token, query)
         except requests.RequestException as exc:
-            return self._failed_search_response("user search", exc)
+            return self._failed_search_response("search", exc)
 
         suggestions = self._parse_search_results(results)
 

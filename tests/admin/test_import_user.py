@@ -237,7 +237,7 @@ class ImportUserAdminTestCase(TestCase):
 
         self.assertEqual(r.json(), [])
         logged = "\n".join(logs.output)
-        self.assertIn("token request failed: HTTPError HTTP 401", logged)
+        self.assertIn("User import token request failed: HTTPError HTTP 401", logged)
         self.assertNotIn(secret, logged)
         self.assertTrue(all(record.exc_info is None for record in logs.records))
 
@@ -269,7 +269,7 @@ class ImportUserAdminTestCase(TestCase):
             r = self.client.get(reverse("admin:auth_user_search"), {"q": "ab"})
 
         self.assertEqual(r.json(), [])
-        self.assertIn("user search failed: HTTPError HTTP 500", logs.output[0])
+        self.assertIn("User import search failed: HTTPError HTTP 500", logs.output[0])
 
     def test_search_user_view_empty_query_returns_empty(self):
         """Search user view empty query returns empty"""
