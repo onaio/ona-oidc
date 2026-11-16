@@ -717,7 +717,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             response = view(request, auth_server="default")
 
         self._assert_unrecoverable_auth_401(response)
-        self.assertIn("at_hash missing or mismatched", logs.output[0])
+        self.assertIn("ID token has no at_hash", logs.output[0])
 
     def test_unrecoverable_error_on_unsupported_id_token_hash_algorithm(self):
         """An ID token alg with no at_hash hash renders the 401, not the username
@@ -753,7 +753,6 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
                 return_value={"sub": "user-1", "at_hash": "abc"},
             ),
-            patch.object(jwt, "get_unverified_header", return_value={"alg": "RS256"}),
             self.assertLogs("oidc.viewsets", level="WARNING") as logs,
         ):
             request = self.factory.post("/", data={"id_token": "hdr.payload.sig"})

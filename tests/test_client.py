@@ -823,6 +823,7 @@ class OpenIDClientTestCase(TestCase):
         decoded_id_token = {
             "sub": "1234567890",
             "name": "John Doe",
+            "at_hash": "some_hash",
             # No email
         }
         id_token = "header.payload.signature"
@@ -833,7 +834,7 @@ class OpenIDClientTestCase(TestCase):
         with self.assertRaises(TokenVerificationFailed) as context:
             client.tokens_to_user_info(decoded_id_token, id_token, access_token)
 
-        self.assertIn("Failed to validate access token", str(context.exception))
+        self.assertIn("at_hash does not match", str(context.exception))
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     def test_tokens_to_user_info_no_email_no_access_token(self):
@@ -877,13 +878,28 @@ class OpenIDClientTestCase(TestCase):
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch.object(jwt, "get_unverified_header")
-    def test_tokens_to_user_info_at_hash_without_access_token(
+    def test_tokens_to_user_info_non_ascii_access_token(
         self, mock_get_unverified_header
     ):
-        """An ID token with at_hash but no access token fails verification."""
+        """A non-ASCII access token fails verification instead of raising
+        UnicodeEncodeError."""
         client = OpenIDClient("default")
         decoded_id_token = {"sub": "1234567890", "at_hash": "some_hash"}
         mock_get_unverified_header.return_value = {"alg": "RS256"}
+
+        with self.assertRaises(TokenVerificationFailed) as context:
+            client.tokens_to_user_info(
+                decoded_id_token, "header.payload.signature", "t\u00f6ken"
+            )
+
+        mock_get_unverified_header.assert_called_once_with("header.payload.signature")
+        self.assertIn("cannot compute at_hash", str(context.exception))
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    def test_tokens_to_user_info_at_hash_without_access_token(self):
+        """An ID token with at_hash but no access token fails verification."""
+        client = OpenIDClient("default")
+        decoded_id_token = {"sub": "1234567890", "at_hash": "some_hash"}
 
         with self.assertRaises(TokenVerificationFailed) as context:
             client.tokens_to_user_info(

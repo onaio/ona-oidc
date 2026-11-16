@@ -293,9 +293,15 @@ class OpenIDClient:
                 "Failed to validate access token: cannot compute at_hash"
             ) from exc
         if not matches:
-            raise TokenVerificationFailed(
-                "Failed to validate access token: at_hash missing or mismatched"
+            # An IdP may legally omit at_hash in the code flow. The fix for
+            # that (VERIFY_ACCESS_TOKEN=False) differs from the fix for a
+            # mismatch, so the logged reason must say which one happened.
+            reason = (
+                "at_hash does not match"
+                if "at_hash" in decoded_id_token
+                else "ID token has no at_hash"
             )
+            raise TokenVerificationFailed(f"Failed to validate access token: {reason}")
 
     def verify_and_decode_id_token(self, id_token: str) -> Optional[dict]:
         """
