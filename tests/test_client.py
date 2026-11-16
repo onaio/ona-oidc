@@ -1092,7 +1092,7 @@ class OpenIDClientTestCase(TestCase):
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     def test_tokens_to_user_info_non_string_access_token(self):
-        """A non-string access token fails verification instead of a 500"""
+        """A non-string access token fails verification with a fixed reason."""
         client = OpenIDClient("default")
 
         with self.assertRaises(TokenVerificationFailed) as context:
@@ -1109,8 +1109,8 @@ class OpenIDClientTestCase(TestCase):
     def test_tokens_to_user_info_non_ascii_access_token(
         self, mock_get_unverified_header
     ):
-        """A non-ASCII access token fails verification instead of raising
-        ``UnicodeEncodeError``."""
+        """A non-ASCII access token fails verification with a fixed reason. The
+        ``UnicodeEncodeError``, which holds the token, is not chained."""
         client = OpenIDClient("default")
         decoded_id_token = {"sub": "1234567890", "at_hash": "some_hash"}
         mock_get_unverified_header.return_value = {"alg": "RS256"}
@@ -1122,6 +1122,7 @@ class OpenIDClientTestCase(TestCase):
 
         mock_get_unverified_header.assert_called_once_with("header.payload.signature")
         self.assertIn("cannot compute at_hash", str(context.exception))
+        self.assertIsNone(context.exception.__context__)
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={

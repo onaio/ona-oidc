@@ -363,11 +363,15 @@ class OpenIDClient:
             matches = self.validate_access_token(
                 decoded_id_token, id_token, access_token
             )
-        except ValueError as exc:
-            # A non-ASCII access token raises UnicodeEncodeError.
+        except ValueError:
+            # A non-ASCII access token raises UnicodeEncodeError, which holds
+            # the whole token. Raising outside this block keeps it off the
+            # exception chain that error reporters record.
+            matches = None
+        if matches is None:
             raise TokenVerificationFailed(
                 "Failed to validate access token: cannot compute at_hash"
-            ) from exc
+            )
         if not matches:
             # The spec lets an IdP omit at_hash in the code flow. Setting
             # VERIFY_ACCESS_TOKEN=False fixes that case but not a mismatch.

@@ -1123,7 +1123,8 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertIn(reason, logs.output[0])
 
     def test_unrecoverable_error_on_non_ascii_access_token(self):
-        """A non-ASCII access token renders the 401, not the username form."""
+        """A non-ASCII access token gets the 401 page. The log names the
+        reason, and neither the log nor the response holds the token."""
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         with (
             patch(
@@ -1148,6 +1149,8 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         mock_header.assert_called_once_with("hdr.payload.sig")
         self._assert_unrecoverable_auth_401(response)
         self.assertIn("cannot compute at_hash", logs.output[0])
+        self.assertNotIn("t\u00f6ken", "\n".join(logs.output))
+        self.assertNotIn("t\u00f6ken", str(response.data))
 
     def test_create_non_existing_user(self):
         """
