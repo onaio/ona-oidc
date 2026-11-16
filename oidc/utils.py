@@ -91,6 +91,29 @@ def replace_characters_in_username(
     return username
 
 
+def _is_positive_number(value) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+
+def parse_requests_timeout(value, setting: str):
+    """
+    Return ``value`` as a ``requests`` timeout: a positive number of
+    seconds, or a ``(connect, read)`` pair of them.
+
+    :raises ImproperlyConfigured: for anything else. ``requests`` reads
+        ``None`` as "wait forever", so it is refused too.
+    """
+    if isinstance(value, (list, tuple)):
+        if len(value) == 2 and all(_is_positive_number(item) for item in value):
+            return tuple(value)
+    elif _is_positive_number(value):
+        return value
+    raise ImproperlyConfigured(
+        f"{setting} must be a positive number or a (connect, read) pair of "
+        f"them, got {value!r}"
+    )
+
+
 def get_viewset_config():
     default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
     return getattr(settings, "OPENID_CONNECT_VIEWSET_CONFIG", default_config)

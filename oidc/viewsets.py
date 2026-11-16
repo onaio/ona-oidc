@@ -43,6 +43,7 @@ from oidc.client import (
     NonceVerificationFailed,
     OpenIDClient,
     TokenVerificationFailed,
+    UserInfoRequestFailed,
     state_cache_key,
 )
 from oidc.utils import (
@@ -722,9 +723,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     user_data = self.map_claims_to_model_field(user_claims)
                     # Custom username provided by the user in case
                     # a user with the same preferred username already exists
-                    form_data = request.POST.dict()
-                    provided_username = form_data.get("username")
-                    if provided_username:
+                    provided_username = request.data.get("username")
+                    if isinstance(provided_username, str) and provided_username:
                         user_data.update({"username": provided_username})
                     filter_kwargs = None
                     q_objects = Q()
@@ -777,7 +777,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                                         server_response.get("state"),
                                     )
                                 }
-                                logger.info("missing_fields: ", missing_fields)
+                                logger.info(
+                                    "Rendering the username form: missing username"
+                                )
                                 return self._username_form_response(data)
                             else:
                                 missing_fields = ", ".join(missing_fields)
@@ -849,7 +851,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         status=status.HTTP_401_UNAUTHORIZED,
                         template_name="oidc/oidc_unrecoverable_error.html",
                     )
-                except (NonceVerificationFailed, NoJSONWebKeyFound) as e:
+                except (
+                    NonceVerificationFailed,
+                    NoJSONWebKeyFound,
+                    UserInfoRequestFailed,
+                ) as e:
                     logger.warning("Login rejected: %s", e)
                     return self._retry_authentication_response()
                 else:
