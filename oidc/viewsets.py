@@ -723,11 +723,14 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         status=status.HTTP_401_UNAUTHORIZED,
                         template_name="oidc/oidc_unrecoverable_error.html",
                     )
-                except TokenVerificationFailed:
+                except TokenVerificationFailed as e:
+                    # The client's messages are fixed text with no token data.
+                    logger.warning("Login rejected: %s", e)
                     return Response(
                         {
                             "error": _(
-                                "Unable to validate authentication request; Kindly retry authentication process."
+                                "Unable to validate authentication request. "
+                                "Kindly retry authentication process."
                             ),
                             "error_title": _(
                                 "Authentication request verification failed"

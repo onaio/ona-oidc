@@ -268,18 +268,34 @@ class OpenIDClient:
         if not self.should_retrieve_user_info(decoded_id_token):
             return decoded_id_token
         if self.should_verify_access_token:
-            try:
-                valid = self.validate_access_token(
-                    decoded_id_token, id_token, access_token
-                )
-            except ValueError as exc:
-                raise TokenVerificationFailed(
-                    "Failed to validate access token"
-                ) from exc
-            if not valid:
-                raise TokenVerificationFailed("Failed to validate access token")
+            self._verify_access_token(decoded_id_token, id_token, access_token)
 
         return self.retrieve_user_info(access_token)
+
+    def _verify_access_token(
+        self,
+        decoded_id_token: dict,
+        id_token: Optional[str],
+        access_token: Optional[str],
+    ) -> None:
+        """Raise TokenVerificationFailed unless the access token matches at_hash."""
+        if not access_token:
+            raise TokenVerificationFailed(
+                "Failed to validate access token: no access token"
+            )
+        try:
+            matches = self.validate_access_token(
+                decoded_id_token, id_token, access_token
+            )
+        except ValueError as exc:
+            # An unsupported ID token alg or a non-ASCII access token.
+            raise TokenVerificationFailed(
+                "Failed to validate access token: cannot compute at_hash"
+            ) from exc
+        if not matches:
+            raise TokenVerificationFailed(
+                "Failed to validate access token: at_hash missing or mismatched"
+            )
 
     def verify_and_decode_id_token(self, id_token: str) -> Optional[dict]:
         """

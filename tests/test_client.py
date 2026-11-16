@@ -872,7 +872,52 @@ class OpenIDClientTestCase(TestCase):
                 decoded_id_token, "header.payload.signature", "access_token_value"
             )
 
-        self.assertIn("Failed to validate access token", str(context.exception))
+        mock_get_unverified_header.assert_called_once_with("header.payload.signature")
+        self.assertIn("cannot compute at_hash", str(context.exception))
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch.object(jwt, "get_unverified_header")
+    def test_tokens_to_user_info_at_hash_without_access_token(
+        self, mock_get_unverified_header
+    ):
+        """An ID token with at_hash but no access token fails verification."""
+        client = OpenIDClient("default")
+        decoded_id_token = {"sub": "1234567890", "at_hash": "some_hash"}
+        mock_get_unverified_header.return_value = {"alg": "RS256"}
+
+        with self.assertRaises(TokenVerificationFailed) as context:
+            client.tokens_to_user_info(
+                decoded_id_token, "header.payload.signature", None
+            )
+
+        self.assertIn("no access token", str(context.exception))
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "VERIFY_ACCESS_TOKEN": False,
+            }
+        }
+    )
+    @patch.object(OpenIDClient, "retrieve_user_info")
+    @patch.object(OpenIDClient, "validate_access_token")
+    def test_tokens_to_user_info_skips_check_when_disabled(
+        self, mock_validate_access_token, mock_retrieve_user_info
+    ):
+        """With VERIFY_ACCESS_TOKEN off, userinfo is fetched without an at_hash
+        check."""
+        mock_retrieve_user_info.return_value = {"email": "jdoe@example.com"}
+        client = OpenIDClient("default")
+        self.assertFalse(client.should_verify_access_token)
+
+        user_info = client.tokens_to_user_info(
+            {"sub": "1234567890"}, "header.payload.signature", "access_token_value"
+        )
+
+        self.assertEqual(user_info, {"email": "jdoe@example.com"})
+        mock_validate_access_token.assert_not_called()
+        mock_retrieve_user_info.assert_called_once_with("access_token_value")
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
