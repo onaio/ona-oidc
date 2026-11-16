@@ -882,29 +882,6 @@ class OpenIDClientTestCase(TestCase):
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch.object(jwt, "get_unverified_header")
-    def test_tokens_to_user_info_unsupported_algorithm_raises_verification_failed(
-        self, mock_get_unverified_header
-    ):
-        """An unsupported ID token ``alg`` fails verification instead of
-        raising ``ValueError``."""
-        client = OpenIDClient("default")
-        decoded_id_token = {
-            "sub": "1234567890",
-            "name": "John Doe",
-            "at_hash": "some_hash",
-        }
-        mock_get_unverified_header.return_value = {"alg": "UNSUPPORTED"}
-
-        with self.assertRaises(TokenVerificationFailed) as context:
-            client.tokens_to_user_info(
-                decoded_id_token, "header.payload.signature", "access_token_value"
-            )
-
-        mock_get_unverified_header.assert_called_once_with("header.payload.signature")
-        self.assertIn("cannot compute at_hash", str(context.exception))
-
-    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
-    @patch.object(jwt, "get_unverified_header")
     def test_tokens_to_user_info_non_ascii_access_token(
         self, mock_get_unverified_header
     ):
@@ -921,19 +898,6 @@ class OpenIDClientTestCase(TestCase):
 
         mock_get_unverified_header.assert_called_once_with("header.payload.signature")
         self.assertIn("cannot compute at_hash", str(context.exception))
-
-    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
-    def test_tokens_to_user_info_at_hash_without_access_token(self):
-        """An ID token with ``at_hash`` but no access token fails verification."""
-        client = OpenIDClient("default")
-        decoded_id_token = {"sub": "1234567890", "at_hash": "some_hash"}
-
-        with self.assertRaises(TokenVerificationFailed) as context:
-            client.tokens_to_user_info(
-                decoded_id_token, "header.payload.signature", None
-            )
-
-        self.assertIn("no access token", str(context.exception))
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={

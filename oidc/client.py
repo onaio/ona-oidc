@@ -293,7 +293,7 @@ class OpenIDClient:
                 decoded_id_token, id_token, access_token
             )
         except ValueError as exc:
-            # An unsupported ID token alg or a non-ASCII access token.
+            # A non-ASCII access token raises UnicodeEncodeError.
             raise TokenVerificationFailed(
                 "Failed to validate access token: cannot compute at_hash"
             ) from exc
