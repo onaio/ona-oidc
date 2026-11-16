@@ -105,6 +105,9 @@ ID_TOKEN_SUPPORTED_ALGORITHMS = frozenset(
 logger = logging.getLogger(__name__)
 
 
+ID_TOKEN_LEEWAY_SECONDS = 30
+
+
 class NonceVerificationFailed(Exception):
     pass
 
@@ -389,17 +392,14 @@ class OpenIDClient:
             # Tolerate small IdP/server clock skew: with iat required,
             # PyJWT otherwise rejects a token whose iat is seconds ahead
             # as "not yet valid".
-            leeway=30,
+            leeway=ID_TOKEN_LEEWAY_SECONDS,
         )
-        # ``login()`` writes ``{auth_server, redirect_after}`` under the
-        # nonce whenever the caller supplied a ``next``, even when
-        # ``USE_NONCES`` is False (line 405: ``self.cache_nonces or
-        # redirect_after``). Read the cache here under the same
-        # condition so the post-auth redirect honors ``next`` regardless
-        # of nonce verification — otherwise the cached entry would
-        # silently expire unread when ``USE_NONCES`` is False (#116).
+        # ``login()`` caches ``{auth_server, redirect_after}`` under the
+        # nonce whenever the caller passes ``next``, even when
+        # ``USE_NONCES`` is False. Consume it in both modes so the
+        # post-auth redirect honors ``next`` (#116).
         nonce = decoded_token.get("nonce")
-        cached_data = cache.get(nonce) if nonce else None
+        cached_data = self._consume_nonce(nonce) if nonce else None
         if self.cache_nonces:
             # Verify that the cached nonce is present and that
             # the provider the nonce was initiated for, is the same
@@ -408,11 +408,31 @@ class OpenIDClient:
                 raise NonceVerificationFailed(
                     "Failed to verify login request. Missing nonce value"
                 )
-            if not cached_data or self.auth_server != cached_data.get("auth_server"):
+            if cached_data is None:
                 raise NonceVerificationFailed("Failed to verify returned nonce value")
         if cached_data and cached_data.get("redirect_after"):
             decoded_token[REDIRECT_AFTER_AUTH] = cached_data.get("redirect_after")
         return decoded_token
+
+    def _consume_nonce(self, nonce: str) -> Optional[dict]:
+        """
+        Return and delete the login data ``login()`` cached under
+        ``nonce`` for this provider, or None.
+
+        A nonce is single-use (OIDC Core 1.0 §15.5.2): only the request
+        whose delete removes the entry gets it, so concurrent replays of
+        one ID token cannot both pass. The nonce is echoed back by the
+        IdP and can name any cache key, so entries ``login()`` did not
+        write for this provider are left alone.
+        """
+        cached_data = cache.get(nonce)
+        if (
+            not isinstance(cached_data, dict)
+            or cached_data.get("auth_server") != self.auth_server
+            or not cache.delete(nonce)
+        ):
+            return None
+        return cached_data
 
     # A bare sensitive_variables() hides every local here and in the frames this
     # calls. A list of names would miss values that callees hold under other
