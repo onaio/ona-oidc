@@ -952,7 +952,9 @@ class OpenIDClientTestCase(TestCase):
         }
         for reason, outcome in cases.items():
             with self.subTest(reason):
-                mock_requests_get.configure_mock(side_effect=None, **outcome)
+                mock_requests_get.configure_mock(
+                    **{"side_effect": None, "return_value": None, **outcome}
+                )
                 with self.assertRaises(UserInfoRequestFailed) as ctx:
                     OpenIDClient("default").retrieve_user_info("access_token_value")
                 self.assertEqual(str(ctx.exception), reason)
