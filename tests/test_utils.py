@@ -14,6 +14,7 @@ from oidc.utils import (
     is_safe_login_redirect,
     str_to_bool,
 )
+from tests.error_reports import escaped_frames, reported_locals
 
 
 class TestAuthenticateSSO(TestCase):
@@ -62,6 +63,32 @@ class TestAuthenticateSSO(TestCase):
                 with override_settings(OPENID_CONNECT_VIEWSET_CONFIG=config):
                     with self.assertRaises(ImproperlyConfigured):
                         authenticate_sso(self._request(token))
+
+    def test_locals_hidden_from_error_reports(self):
+        """
+        An error from inside jwt.decode shows no signing key or cookie in error
+        reports, in authenticate_sso's frame or in PyJWT's
+        """
+        # PyJWT refuses an SSH-key-shaped HMAC secret with InvalidKeyError,
+        # which authenticate_sso lets escape.
+        secret = "ssh-rsa s3cr3t-jwt-value"
+        cookie = jwt.encode({"email": "jdoe@example.com"}, "abc", algorithm="HS256")
+        request = self.factory.get("/", HTTP_SSO=cookie)
+
+        with override_settings(
+            OPENID_CONNECT_VIEWSET_CONFIG={"JWT_SECRET_KEY": secret}
+        ):
+            frames = escaped_frames(
+                lambda: authenticate_sso(request),
+                jwt.InvalidKeyError,
+                "authenticate_sso",
+            )
+
+        self.assertTrue(any(f.f_locals.get("key") == secret for f in frames[1:]))
+        self.assertIn("secret_key", reported_locals(frames[0]))
+        for frame in frames:
+            for value in (secret, cookie):
+                self.assertNotIn(value, str(reported_locals(frame)))
 
 
 class TestGetLoginQueryParamAllowlist(TestCase):
