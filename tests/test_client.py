@@ -220,11 +220,15 @@ class OpenIDClientTestCase(TestCase):
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch.object(cache, "set")
     @patch.object(secrets, "token_urlsafe")
-    def test_login_non_ascii_extra_params(self, mock_token_urlsafe, _mock_cache_set):
+    def test_login_non_ascii_extra_params(
+        self, mock_token_urlsafe, _mock_cache_set
+    ):
         mock_token_urlsafe.return_value = "123"
         client = OpenIDClient("default")
 
-        result_url = client.login(extra_params={"login_hint": "ümlaut@example.com"}).url
+        result_url = client.login(
+            extra_params={"login_hint": "ümlaut@example.com"}
+        ).url
 
         # UTF-8 bytes for ``ü`` percent-encoded as ``%C3%BC``
         self.assertIn("login_hint=%C3%BCmlaut%40example.com", result_url)
@@ -270,7 +274,9 @@ class OpenIDClientTestCase(TestCase):
         separator switches from ``?`` to ``&`` so the URL stays valid."""
         client = OpenIDClient("default")
 
-        result_url = client.logout(extra_params={"id_token_hint": "ey.signed.jwt"}).url
+        result_url = client.logout(
+            extra_params={"id_token_hint": "ey.signed.jwt"}
+        ).url
 
         self.assertEqual(
             result_url,
@@ -871,7 +877,9 @@ class OpenIDClientTestCase(TestCase):
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
             "default": {
-                "AUTHORIZATION_ENDPOINT": ("https://example.com/oauth2/v2.0/authorize"),
+                "AUTHORIZATION_ENDPOINT": (
+                    "https://example.com/oauth2/v2.0/authorize"
+                ),
                 "CLIENT_ID": "client",
                 "JWKS_ENDPOINT": "https://example.com/discovery/v2.0/keys",
                 "SCOPE": "openid profile",
@@ -922,7 +930,9 @@ class OpenIDClientTestCase(TestCase):
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
             "default": {
-                "AUTHORIZATION_ENDPOINT": ("https://example.com/oauth2/v2.0/authorize"),
+                "AUTHORIZATION_ENDPOINT": (
+                    "https://example.com/oauth2/v2.0/authorize"
+                ),
                 "CLIENT_ID": "client",
                 "JWKS_ENDPOINT": "https://example.com/discovery/v2.0/keys",
                 "SCOPE": "openid profile",
