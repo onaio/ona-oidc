@@ -154,6 +154,18 @@ value, expired) are an authentication miss — `authenticate_sso` returns
 Future work: once `Secure=True` is enforced cohort-wide, the cookie name
 can migrate to `__Secure-SSO` for browser-enforced guarantees.
 
+### Credentials in error reports
+
+The token exchange, `authenticate_sso`, the viewsets' token-handling methods
+and the admin user search hide their local variables, and those of every
+function they call, from Django error reports. The viewsets also mask every POSTed value. A subclass that
+sets its own `renderer_classes` should render HTML with
+`oidc.renderers.SensitiveTemplateHTMLRenderer`. Django renders the username
+form after the view returns, and a plain `TemplateHTMLRenderer` lets an error
+report show the sign-in data the form carries. Sentry reads frame locals
+itself and ignores these markers, so hosts that use Sentry need their own
+scrubbing.
+
 ### Forwarding query parameters to the authorization endpoint
 
 The login viewset forwards browser query parameters to the configured
