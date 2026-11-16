@@ -885,7 +885,8 @@ class OpenIDClientTestCase(TestCase):
     def test_tokens_to_user_info_unsupported_algorithm_raises_verification_failed(
         self, mock_get_unverified_header
     ):
-        """Converts the unsupported ``alg`` ``ValueError`` during access token verification."""
+        """An unsupported ID token ``alg`` fails verification instead of
+        raising ``ValueError``."""
         client = OpenIDClient("default")
         decoded_id_token = {
             "sub": "1234567890",

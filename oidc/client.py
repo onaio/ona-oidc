@@ -278,7 +278,8 @@ class OpenIDClient:
         id_token: Optional[str],
         access_token: Optional[str],
     ) -> None:
-        """Raise ``TokenVerificationFailed`` unless the access token matches ``at_hash``."""
+        """Raise ``TokenVerificationFailed`` unless the access token
+        matches ``at_hash``."""
         if not access_token:
             raise TokenVerificationFailed(
                 "Failed to validate access token: no access token"
@@ -297,9 +298,9 @@ class OpenIDClient:
                 "Failed to validate access token: cannot compute at_hash"
             ) from exc
         if not matches:
-            # An IdP may legally omit at_hash in the code flow. The fix for
-            # that (VERIFY_ACCESS_TOKEN=False) differs from the fix for a
-            # mismatch, so the logged reason must say which one happened.
+            # The spec lets an IdP omit at_hash in the code flow. Setting
+            # VERIFY_ACCESS_TOKEN=False fixes that case but not a mismatch.
+            # The logged reason names the case so an operator can tell.
             reason = (
                 "at_hash does not match"
                 if "at_hash" in decoded_id_token

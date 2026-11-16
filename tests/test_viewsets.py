@@ -662,7 +662,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             )
 
     def _assert_unrecoverable_auth_401(self, response):
-        """Assert the fixed 401 page that asks the user to sign in again."""
+        """Assert the generic 401 page that asks the user to sign in again."""
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.template_name, "oidc/oidc_unrecoverable_error.html")
         self.assertEqual(
@@ -676,7 +676,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         )
 
     def test_unrecoverable_error_on_access_token_verification_failed(self):
-        """A failed access-token check is logged and shows the fixed 401 page."""
+        """A failed access-token check is logged and shows the generic 401 page."""
         reason = "Failed to validate access token: test reason"
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         with (
@@ -746,8 +746,8 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertIn("cannot compute at_hash", logs.output[0])
 
     def test_unrecoverable_error_on_at_hash_without_access_token(self):
-        """An ID token posted without an access token fails the at_hash check
-        with a 401, not a 500."""
+        """An ID token posted without an access token fails the ``at_hash``
+        check with a 401, not a 500."""
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         with (
             patch(
