@@ -662,6 +662,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             )
 
     def _assert_unrecoverable_auth_401(self, response):
+        """Assert the fixed 401 page that asks the user to sign in again."""
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.template_name, "oidc/oidc_unrecoverable_error.html")
         self.assertEqual(
@@ -697,9 +698,9 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertIn(reason, logs.output[0])
 
     def test_unrecoverable_error_on_missing_at_hash(self):
-        """Missing at_hash when userinfo is needed renders unrecoverable 401."""
-        # The default claim map has no email for "sub", so the callback needs
-        # userinfo and checks the access token.
+        """Missing ``at_hash`` when userinfo is needed renders unrecoverable 401."""
+        # The global test settings use the default claim map, which does not
+        # map ``sub`` to ``email``, so the callback needs userinfo.
         self.assertTrue(OpenIDClient("default").should_verify_access_token)
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         with (
@@ -720,8 +721,8 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertIn("ID token has no at_hash", logs.output[0])
 
     def test_unrecoverable_error_on_unsupported_id_token_hash_algorithm(self):
-        """An ID token alg with no at_hash hash renders the 401, not the username
-        form."""
+        """An ID token ``alg`` with no hash function for ``at_hash`` renders the
+        401, not the username form."""
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         with (
             patch(

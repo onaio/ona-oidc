@@ -856,7 +856,7 @@ class OpenIDClientTestCase(TestCase):
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     def test_tokens_to_user_info_id_token_without_at_hash(self):
-        """An ID token with no at_hash fails verification with its own reason"""
+        """An ID token with no ``at_hash`` fails verification with its own reason."""
         client = OpenIDClient("default")
 
         with self.assertRaises(TokenVerificationFailed) as context:
@@ -885,7 +885,7 @@ class OpenIDClientTestCase(TestCase):
     def test_tokens_to_user_info_unsupported_algorithm_raises_verification_failed(
         self, mock_get_unverified_header
     ):
-        """Converts unsupported alg ValueError during access token verification."""
+        """Converts the unsupported ``alg`` ``ValueError`` during access token verification."""
         client = OpenIDClient("default")
         decoded_id_token = {
             "sub": "1234567890",
@@ -908,7 +908,7 @@ class OpenIDClientTestCase(TestCase):
         self, mock_get_unverified_header
     ):
         """A non-ASCII access token fails verification instead of raising
-        UnicodeEncodeError."""
+        ``UnicodeEncodeError``."""
         client = OpenIDClient("default")
         decoded_id_token = {"sub": "1234567890", "at_hash": "some_hash"}
         mock_get_unverified_header.return_value = {"alg": "RS256"}
@@ -923,7 +923,7 @@ class OpenIDClientTestCase(TestCase):
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     def test_tokens_to_user_info_at_hash_without_access_token(self):
-        """An ID token with at_hash but no access token fails verification."""
+        """An ID token with ``at_hash`` but no access token fails verification."""
         client = OpenIDClient("default")
         decoded_id_token = {"sub": "1234567890", "at_hash": "some_hash"}
 
@@ -947,7 +947,7 @@ class OpenIDClientTestCase(TestCase):
     def test_tokens_to_user_info_skips_check_when_disabled(
         self, mock_validate_access_token, mock_retrieve_user_info
     ):
-        """With VERIFY_ACCESS_TOKEN off, userinfo is fetched without an at_hash
+        """With ``VERIFY_ACCESS_TOKEN`` off, userinfo is fetched without an ``at_hash``
         check."""
         mock_retrieve_user_info.return_value = {"email": "jdoe@example.com"}
         client = OpenIDClient("default")

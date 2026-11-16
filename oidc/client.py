@@ -278,7 +278,7 @@ class OpenIDClient:
         id_token: Optional[str],
         access_token: Optional[str],
     ) -> None:
-        """Raise TokenVerificationFailed unless the access token matches at_hash."""
+        """Raise ``TokenVerificationFailed`` unless the access token matches ``at_hash``."""
         if not access_token:
             raise TokenVerificationFailed(
                 "Failed to validate access token: no access token"
