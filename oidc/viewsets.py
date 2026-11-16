@@ -724,7 +724,6 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         template_name="oidc/oidc_unrecoverable_error.html",
                     )
                 except TokenVerificationFailed as e:
-                    # The client's messages are fixed text with no token data.
                     logger.warning("Login rejected: %s", e)
                     return Response(
                         {

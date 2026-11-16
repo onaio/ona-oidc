@@ -283,6 +283,10 @@ class OpenIDClient:
             raise TokenVerificationFailed(
                 "Failed to validate access token: no access token"
             )
+        if not isinstance(access_token, str):
+            raise TokenVerificationFailed(
+                "Failed to validate access token: cannot compute at_hash"
+            )
         try:
             matches = self.validate_access_token(
                 decoded_id_token, id_token, access_token
