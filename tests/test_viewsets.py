@@ -2,7 +2,11 @@
 Tests for the OpenID Client
 """
 
+import copy
 import json
+import os
+import time
+from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
@@ -15,10 +19,19 @@ import jwt
 from mock import MagicMock, patch
 from rest_framework.test import APIRequestFactory
 
-from oidc.client import OpenIDClient, TokenVerificationFailed, state_cache_key
+from oidc.client import (
+    ID_TOKEN_LEEWAY_SECONDS,
+    REDIRECT_AFTER_AUTH,
+    NoJSONWebKeyFound,
+    NonceVerificationFailed,
+    OpenIDClient,
+    TokenVerificationFailed,
+    state_cache_key,
+)
 from oidc.viewsets import (
     DEFAULT_USERNAME_HELP_TEXT,
     DEFAULT_USERNAME_PATTERN,
+    LOGIN_CONTINUATION_FIELD,
     USERNAME_FORM_MARKER_FIELD,
     USERNAME_FORM_MARKER_VALUE,
     BaseOpenIDConnectViewset,
@@ -26,6 +39,23 @@ from oidc.viewsets import (
 )
 
 User = get_user_model()
+
+ID_TOKEN = "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia"
+
+
+def stash_login_continuation(
+    decoded_id_token: dict, auth_server="default", state=None
+) -> str:
+    """Stash a verified ID token the way a username-form render does."""
+    viewset = UserModelOpenIDConnectViewset()
+    return viewset._stash_login_continuation(
+        OpenIDClient(auth_server),
+        ID_TOKEN,
+        decoded_id_token,
+        viewset.map_claims_to_model_field(decoded_id_token),
+        state,
+    )
+
 
 OPENID_CONNECT_AUTH_SERVERS = {
     "default": {
@@ -121,82 +151,69 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
 
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
-    def test_username_form_resubmit_clears_state_cache(self):
+    def test_username_form_resubmit_uses_the_stashed_state(self):
         """
-        On a successful re-submit of the username-entry form, the cache
-        entry that client.login() wrote against the OIDC `state` value
-        must be deleted by _clear_login_states. The form carries the
-        original `state` back as a hidden input, the short-circuit
-        threads it into server_response, and cleanup runs as on the
-        non-form-render path. Without this, the entry leaks until cache
-        TTL on every missing-username flow.
+        The re-submit takes ``state`` from the continuation, not the form
+        body, so it stays bound to the login that rendered the form.
         """
-        # Prime the cache the way client.login() actually writes it
-        # (namespaced via state_cache_key).
-        state = "known-state-value"
-        cache.set(state_cache_key(state), "known-code-verifier")
-        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
-        with patch(
-            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
-        ) as mock_decode:
-            mock_decode.return_value = {
-                "name": "Cache User",
-                "preferred_username": "cacheuser@example.com",
-                "given_name": "cache",
+        stashed_state, posted_state = "stashed-state", "posted-state"
+        cache.set(state_cache_key(stashed_state), "stashed-code-verifier")
+        cache.set(state_cache_key(posted_state), "posted-code-verifier")
+        continuation = stash_login_continuation(
+            {
+                "given_name": "ivan",
                 "family_name": "User",
-                "email": "cacheuser@example.com",
-            }
-            request = self.factory.post(
+                "email": "ivan@example.com",
+            },
+            state=stashed_state,
+        )
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        response = view(
+            self.factory.post(
                 "/",
                 data={
-                    "id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia",
-                    "username": "cache_chosen",
-                    "state": state,
+                    LOGIN_CONTINUATION_FIELD: continuation,
+                    "username": "ivan_chosen",
+                    "state": posted_state,
                     USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
                 },
-            )
-            response = view(request, auth_server="default")
-            self.assertEqual(response.status_code, 302)
-            self.assertIsNone(cache.get(state_cache_key(state)))
+            ),
+            auth_server="default",
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIsNone(cache.get(state_cache_key(stashed_state)))
+        self.assertEqual(
+            cache.get(state_cache_key(posted_state)), "posted-code-verifier"
+        )
 
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
-    def test_form_resubmit_attacker_state_does_not_touch_unrelated_cache_entries(self):
+    def test_attacker_state_does_not_touch_unrelated_cache_entries(self):
         """
-        Security boundary: an attacker holding a valid id_token can drive
-        the form re-submit short-circuit with an arbitrary `state` value
-        in the body. _clear_login_states must only delete entries inside
-        the OIDC `oidc:state:` keyspace, never raw keys that other apps
-        (Django sessions, rate-limit counters, feature flags, etc.) own.
-        Pins the state-cache-key namespace as the security boundary.
+        A form_post response carries a caller-chosen ``state``.
+        _clear_login_states must only delete keys in the ``oidc:state:``
+        namespace, never raw keys that other apps own.
         """
         cache.set("unrelated-app-key", "important-data")
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         with patch(
-            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
-        ) as mock_decode:
-            mock_decode.return_value = {
-                "name": "Attacker User",
-                "preferred_username": "attacker@example.com",
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+            return_value={
                 "given_name": "att",
                 "family_name": "Acker",
                 "email": "attacker@example.com",
-            }
-            request = self.factory.post(
-                "/",
-                data={
-                    "id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia",
-                    "username": "att_chosen",
-                    # Attacker chooses the cache key they want deleted.
-                    "state": "unrelated-app-key",
-                    USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
-                },
+                "preferred_username": "att_chosen",
+            },
+        ):
+            response = view(
+                self.factory.post(
+                    "/", data={"id_token": ID_TOKEN, "state": "unrelated-app-key"}
+                ),
+                auth_server="default",
             )
-            response = view(request, auth_server="default")
-            self.assertEqual(response.status_code, 302)
-            # The unrelated entry is untouched. Only the namespaced
-            # equivalent (oidc:state:unrelated-app-key) — which doesn't
-            # exist — would have been deleted.
-            self.assertEqual(cache.get("unrelated-app-key"), "important-data")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(cache.get("unrelated-app-key"), "important-data")
 
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
     def test_form_post_mode_post_with_id_token_no_marker_uses_request_data(self):
@@ -244,24 +261,15 @@ class TestUserModelOpenIDConnectViewset(TestCase):
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
     def test_username_form_resubmit_does_not_re_exchange_code(self):
         """
-        When the user-data-entry form re-POSTs to the callback URL, the
-        original OIDC `?code=...` is still on the URL because the form's
-        action="" preserves the query string. The viewset must NOT try to
-        re-exchange that one-shot code (which would 400 from the IdP as
-        invalid_code) — it should use the id_token already in the form
-        body. The form sends a `from_username_form=1` marker that gates
-        this short-circuit.
+        The username form re-POSTs with the original ``?code=`` still on
+        the URL, because its ``action=""`` keeps the query string. The
+        re-submit must not exchange that spent code again, which the IdP
+        rejects as invalid_code. It continues from the ID token stashed
+        when the form was rendered. The ``from_username_form=1`` marker
+        gates this path.
         """
-        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
-        with (
-            patch(
-                "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code"
-            ) as mock_exchange,
-            patch(
-                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
-            ) as mock_decode,
-        ):
-            mock_decode.return_value = {
+        continuation = stash_login_continuation(
+            {
                 "email_verified": False,
                 "name": "Bob User",
                 "preferred_username": "bob@example.com",
@@ -269,10 +277,15 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 "family_name": "User",
                 "email": "bob@example.com",
             }
+        )
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code"
+        ) as mock_exchange:
             request = self.factory.post(
                 "/?code=stale-already-consumed-code&state=stale-state",
                 data={
-                    "id_token": "sadsdaio3209lkasdlkas0d.sdojdsiad.iosdadia",
+                    LOGIN_CONTINUATION_FIELD: continuation,
                     "username": "bob_chosen",
                     USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
                 },
@@ -281,6 +294,414 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(response.status_code, 302)
             mock_exchange.assert_not_called()
             self.assertTrue(User.objects.filter(username="bob_chosen").exists())
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "USE_EMAIL_USERNAME": False,
+        }
+    )
+    def test_username_form_continuation_is_single_use(self):
+        """
+        The username form carries a single-use continuation, never the
+        raw ID token. The re-submit continues from the stashed claims
+        without verifying the token again (its nonce is already spent),
+        and replaying the same form body is refused.
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_decode:
+            mock_decode.return_value = {
+                "family_name": "User",
+                "given_name": "carol",
+                "email": "carol@example.com",
+            }
+            response = view(
+                self.factory.post("/", data={"id_token": ID_TOKEN}),
+                auth_server="default",
+            )
+            self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
+            self.assertNotIn("id_token", response.data)
+            continuation = response.data[LOGIN_CONTINUATION_FIELD]
+            self.assertTrue(continuation)
+
+            resubmit = {
+                LOGIN_CONTINUATION_FIELD: continuation,
+                "username": "carol_chosen",
+                USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+            }
+            response = view(
+                self.factory.post("/", data=resubmit), auth_server="default"
+            )
+            self.assertEqual(response.status_code, 302)
+            self.assertTrue(User.objects.filter(username="carol_chosen").exists())
+            mock_decode.assert_called_once_with(ID_TOKEN)
+
+            User.objects.filter(username="carol_chosen").delete()
+            response = view(
+                self.factory.post("/", data=resubmit), auth_server="default"
+            )
+            self.assertEqual(response.status_code, 401)
+            self.assertEqual(
+                response.template_name, "oidc/oidc_unrecoverable_error.html"
+            )
+            self.assertFalse(User.objects.filter(username="carol_chosen").exists())
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "USE_EMAIL_USERNAME": False,
+        }
+    )
+    def test_username_form_resubmit_reuses_userinfo_claims(self):
+        """
+        An IdP that gives the email only through userinfo can finish the
+        username form. The re-submit has no access token, so it reuses the
+        claims fetched with the first request's access token.
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with (
+            patch(
+                "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code",
+                return_value={"id_token": ID_TOKEN, "access_token": "at"},
+            ),
+            patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+                return_value={"given_name": "dave", "family_name": "User"},
+            ),
+            patch(
+                "oidc.viewsets.OpenIDClient.validate_access_token",
+                side_effect=lambda _decoded, _id_token, access_token: (
+                    access_token == "at"
+                ),
+            ),
+            patch(
+                "oidc.viewsets.OpenIDClient.retrieve_user_info",
+                return_value={
+                    "email": "dave@example.com",
+                    "given_name": "dave",
+                    "family_name": "User",
+                },
+            ) as mock_userinfo,
+        ):
+            response = view(
+                self.factory.post("/", data={"code": "SplxlOBeZQQYbYS6WxSbIA"}),
+                auth_server="default",
+            )
+            self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
+            mock_userinfo.assert_called_once_with("at")
+
+            response = view(
+                self.factory.post(
+                    "/",
+                    data={
+                        LOGIN_CONTINUATION_FIELD: response.data[
+                            LOGIN_CONTINUATION_FIELD
+                        ],
+                        "username": "dave_chosen",
+                        USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+                    },
+                ),
+                auth_server="default",
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            User.objects.get(username="dave_chosen").email, "dave@example.com"
+        )
+        mock_userinfo.assert_called_once_with("at")
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS,
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+    )
+    def test_username_form_continuation_is_bound_to_its_provider(self):
+        """A continuation stashed for one provider is refused by another"""
+        continuation = stash_login_continuation(
+            {
+                "given_name": "erin",
+                "family_name": "User",
+                "email": "erin@example.com",
+            },
+            auth_server="pkce",
+        )
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        request = self.factory.post(
+            "/",
+            data={
+                LOGIN_CONTINUATION_FIELD: continuation,
+                "username": "erin_chosen",
+                USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+            },
+        )
+        response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(User.objects.filter(username="erin_chosen").exists())
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "USE_EMAIL_USERNAME": False,
+        }
+    )
+    def test_username_form_resubmit_keeps_next(self):
+        """The post-auth redirect from ``next`` survives the username form."""
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+            return_value={
+                "given_name": "heidi",
+                "family_name": "User",
+                "email": "heidi@example.com",
+                REDIRECT_AFTER_AUTH: "https://app.example.com/next",
+            },
+        ):
+            response = view(
+                self.factory.post("/", data={"id_token": ID_TOKEN}),
+                auth_server="default",
+            )
+            self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
+
+            response = view(
+                self.factory.post(
+                    "/",
+                    data={
+                        LOGIN_CONTINUATION_FIELD: response.data[
+                            LOGIN_CONTINUATION_FIELD
+                        ],
+                        "username": "heidi_chosen",
+                        USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+                    },
+                ),
+                auth_server="default",
+            )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, "https://app.example.com/next")
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            **OPENID_CONNECT_AUTH_SERVERS,
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "RESPONSE_MODE": "query",
+            },
+        }
+    )
+    def test_username_form_without_continuation_is_refused(self):
+        """
+        A username form that posts no continuation, such as a template
+        override that still posts id_token, gets the retry error. It neither
+        verifies the posted token nor re-exchanges the code on the URL.
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with (
+            patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+            ) as mock_decode,
+            patch(
+                "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code"
+            ) as mock_exchange,
+            self.assertLogs("oidc.viewsets", level="WARNING") as logs,
+        ):
+            response = view(
+                self.factory.post(
+                    "/?code=stale-already-consumed-code",
+                    data={
+                        "id_token": ID_TOKEN,
+                        "username": "mallory_chosen",
+                        USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+                    },
+                ),
+                auth_server="default",
+            )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.template_name, "oidc/oidc_unrecoverable_error.html")
+        mock_decode.assert_not_called()
+        mock_exchange.assert_not_called()
+        self.assertIn(LOGIN_CONTINUATION_FIELD, logs.output[0])
+        self.assertFalse(User.objects.filter(username="mallory_chosen").exists())
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "USE_EMAIL_USERNAME": False,
+        }
+    )
+    def test_failed_userinfo_does_not_render_username_form(self):
+        """
+        A userinfo response that is not JSON, or not a JSON object, gets the
+        retry error. A username form could never finish: its re-submit has no
+        access token to fetch the claims again.
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        for userinfo in (
+            {"side_effect": ValueError("Expecting value: line 1 column 1")},
+            {"return_value": "abc"},
+            {"return_value": None},
+        ):
+            with (
+                self.subTest(**{k: repr(v) for k, v in userinfo.items()}),
+                patch(
+                    "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code",
+                    return_value={"id_token": ID_TOKEN, "access_token": "at"},
+                ),
+                patch(
+                    "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+                    return_value={"given_name": "erin", "family_name": "User"},
+                ),
+                patch(
+                    "oidc.viewsets.OpenIDClient.validate_access_token",
+                    return_value=True,
+                ),
+                patch(
+                    "oidc.viewsets.OpenIDClient.retrieve_user_info", **userinfo
+                ) as mock_userinfo,
+            ):
+                response = view(
+                    self.factory.post("/", data={"code": "SplxlOBeZQQYbYS6WxSbIA"}),
+                    auth_server="default",
+                )
+
+                mock_userinfo.assert_called_once_with("at")
+                self.assertEqual(response.status_code, 401)
+                self.assertEqual(
+                    response.template_name, "oidc/oidc_unrecoverable_error.html"
+                )
+                self.assertNotIn(LOGIN_CONTINUATION_FIELD, response.data)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "USE_EMAIL_USERNAME": False,
+        }
+    )
+    def test_username_form_rerenders_issue_fresh_continuations(self):
+        """
+        An invalid username and a taken username each re-render the
+        form with a new continuation, and the last one completes login.
+        """
+        User.objects.create(username="taken_name", email="other@example.com")
+        continuation = stash_login_continuation(
+            {
+                "given_name": "heidi",
+                "family_name": "User",
+                "email": "heidi@example.com",
+            }
+        )
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+
+        def submit(key, username):
+            return view(
+                self.factory.post(
+                    "/",
+                    data={
+                        LOGIN_CONTINUATION_FIELD: key,
+                        "username": username,
+                        USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+                    },
+                ),
+                auth_server="default",
+            )
+
+        seen = {continuation}
+        for username, status_code in (("ab", 400), ("taken_name", 200)):
+            response = submit(continuation, username)
+            self.assertEqual(response.status_code, status_code)
+            self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
+            self.assertNotIn("id_token", response.data)
+            continuation = response.data[LOGIN_CONTINUATION_FIELD]
+            self.assertNotIn(continuation, seen)
+            seen.add(continuation)
+
+        response = submit(continuation, "heidi_chosen")
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(User.objects.filter(username="heidi_chosen").exists())
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_username_form_continuation_does_not_outlive_id_token(self):
+        """
+        A continuation lasts as long as its ID token would still verify,
+        including the clock-skew leeway.
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        for name, exp, status_code in (
+            ("ivan", time.time() - ID_TOKEN_LEEWAY_SECONDS - 10, 401),
+            ("ines", str(int(time.time() - ID_TOKEN_LEEWAY_SECONDS - 10)), 401),
+            ("iris", time.time() - 10, 302),
+            ("ivy", time.time() + 60, 302),
+        ):
+            continuation = stash_login_continuation(
+                {
+                    "given_name": name,
+                    "family_name": "User",
+                    "email": f"{name}@example.com",
+                    "exp": exp,
+                }
+            )
+            request = self.factory.post(
+                "/",
+                data={
+                    LOGIN_CONTINUATION_FIELD: continuation,
+                    "username": f"{name}_chosen",
+                    USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+                },
+            )
+            response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, status_code)
+            self.assertEqual(
+                User.objects.filter(username=f"{name}_chosen").exists(),
+                status_code == 302,
+            )
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_malformed_continuation_is_refused_without_cache_lookup(self):
+        """
+        A malformed or non-string continuation key gets a 401 without a cache
+        read. Some cache backends raise on keys with spaces or over 250
+        characters.
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        for key in ("has spaces", "x" * 300, 7):
+            with patch.object(cache, "get") as mock_get:
+                request = self.factory.post(
+                    "/",
+                    data={
+                        LOGIN_CONTINUATION_FIELD: key,
+                        "username": "judy_chosen",
+                        USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+                    },
+                    format="json",
+                )
+                response = view(request, auth_server="default")
+            self.assertEqual(response.status_code, 401)
+            mock_get.assert_not_called()
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    def test_continuation_consumed_by_concurrent_request_is_refused(self):
+        """Only the request whose delete removes the continuation uses it"""
+        continuation = stash_login_continuation(
+            {
+                "given_name": "kim",
+                "family_name": "User",
+                "email": "kim@example.com",
+            }
+        )
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        request = self.factory.post(
+            "/",
+            data={
+                LOGIN_CONTINUATION_FIELD: continuation,
+                "username": "kim_chosen",
+                USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+            },
+        )
+        with patch.object(cache, "delete", return_value=False):
+            response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(User.objects.filter(username="kim_chosen").exists())
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
@@ -394,11 +815,15 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         rendered = render_to_string(
             "oidc/oidc_user_data_entry.html",
             {
-                "id_token": "tok",
+                LOGIN_CONTINUATION_FIELD: "continuation-key",
                 "username_pattern": "^test$",
                 "username_help_text": "test help",
             },
         )
+        self.assertIn(
+            f'name="{LOGIN_CONTINUATION_FIELD}" value="continuation-key"', rendered
+        )
+        self.assertNotIn('name="id_token"', rendered)
         self.assertIn(f'name="{USERNAME_FORM_MARKER_FIELD}"', rendered)
         self.assertIn(f'value="{USERNAME_FORM_MARKER_VALUE}"', rendered)
 
@@ -667,7 +1092,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(response.template_name, "oidc/oidc_unrecoverable_error.html")
         self.assertEqual(
             response.data.get("error"),
-            "Unable to validate authentication request. "
+            "Unable to validate authentication request; "
             "Kindly retry authentication process.",
         )
         self.assertEqual(
@@ -784,6 +1209,25 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 "Missing required fields",
                 response.rendered_content.decode("utf-8"),
             )
+
+    def test_created_user_has_unusable_password(self):
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_func:
+            mock_func.return_value = {
+                "given_name": "sso",
+                "family_name": "only",
+                "email": "sso@only.com",
+                "preferred_username": "ssoonly",
+            }
+            self.assertFalse(User.objects.filter(username="ssoonly").exists())
+            request = self.factory.post("/", data={"id_token": "a.b.c"})
+            response = view(request, auth_server="default")
+
+        self.assertEqual(response.status_code, 302)
+        user = User.objects.get(username="ssoonly")
+        self.assertFalse(user.has_usable_password())
 
     def test_validates_data(self):
         """
@@ -974,6 +1418,52 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         # Redirects to the redirect url on successful user creation
         self.assertEqual(response.status_code, 302)
         self.assertEqual(response.url, "http://localhost:3000")
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch("oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code")
+    def test_auth_code_flow_token_failure_hides_exception_detail(
+        self, mock_retrieve_tokens_using_auth_code
+    ):
+        """A failed code exchange shows a fixed message, never the exception text"""
+        secret = "s3cr3t-value"
+        mock_retrieve_tokens_using_auth_code.side_effect = TokenVerificationFailed(
+            f"https://example.com/oauth2/v2.0/token?client_secret={secret}"
+        )
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        request = self.factory.post("/", data={"code": "SplxlOBeZQQYbYS6WxSbIA"})
+        response = view(request, auth_server="default")
+
+        mock_retrieve_tokens_using_auth_code.assert_called_once()
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.template_name, "oidc/oidc_unrecoverable_error.html")
+        self.assertEqual(
+            response.data["error"],
+            "Unable to retrieve ID Token. Kindly retry authentication process.",
+        )
+        self.assertNotIn(secret, str(response.data))
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
+    @patch("oidc.viewsets.OpenIDClient.verify_and_decode_id_token")
+    def test_invalid_id_token_renders_error_page_not_500(self, mock_verify):
+        """Any token-validation failure shows the error page, logged, not a crash."""
+        failures = {
+            "expired": jwt.exceptions.ExpiredSignatureError("expired"),
+            "missing claim": jwt.exceptions.MissingRequiredClaimError("exp"),
+            "wrong issuer": jwt.exceptions.InvalidIssuerError("bad iss"),
+            "disallowed algorithm": jwt.exceptions.InvalidAlgorithmError("alg"),
+        }
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        for name, failure in failures.items():
+            with self.subTest(name):
+                mock_verify.side_effect = failure
+                request = self.factory.post("/", data={"id_token": "stale"})
+                with self.assertLogs("oidc.viewsets", level="WARNING"):
+                    response = view(request, auth_server="default")
+                self.assertEqual(response.status_code, 401)
+                self.assertEqual(
+                    response.template_name, "oidc/oidc_unrecoverable_error.html"
+                )
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
@@ -1305,6 +1795,34 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             self.assertEqual(user.email, "johne@example.com")
             self.assertEqual(user.is_active, False)
 
+    def test_user_defaults_not_shared_between_users(self):
+        ona_defaults = {"is_active": True}
+        config = {
+            **copy.deepcopy(OPENID_CONNECT_VIEWSET_CONFIG),
+            "USER_DEFAULTS": {"^.*@ona.io$": ona_defaults},
+        }
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        data = {"id_token": "a.b.c"}
+        with (
+            override_settings(OPENID_CONNECT_VIEWSET_CONFIG=config),
+            patch("oidc.viewsets.OpenIDClient.verify_and_decode_id_token") as mock_func,
+        ):
+            mock_func.return_value = {
+                "given_name": "anna",
+                "family_name": "first",
+                "sub": "anna@ona.io",
+            }
+            response = view(self.factory.post("/", data=data), auth_server="default")
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(User.objects.get(username="anna").last_name, "first")
+
+            mock_func.return_value = {"given_name": "ben", "sub": "ben@ona.io"}
+            response = view(self.factory.post("/", data=data), auth_server="default")
+            self.assertEqual(response.status_code, 302)
+
+        self.assertEqual(User.objects.get(username="ben").last_name, "")
+        self.assertEqual(ona_defaults, {"is_active": True})
+
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
     def test_direct_access_to_callback_fails(self):
         """
@@ -1590,6 +2108,36 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 "Kindly retry authentication process."
             ),
         )
+
+    def test_nonce_and_key_failures_show_a_fixed_message(self):
+        """A nonce or signing-key failure shows a fixed message and logs the
+        reason."""
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        for error in (
+            NonceVerificationFailed("Failed to verify returned nonce value"),
+            NoJSONWebKeyFound("Failed to retrieve key ID described in Token"),
+        ):
+            with (
+                self.subTest(error=type(error).__name__),
+                patch(
+                    "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+                    side_effect=error,
+                ),
+                self.assertLogs("oidc.viewsets", level="WARNING") as logs,
+            ):
+                response = view(
+                    self.factory.post("/", data={"id_token": ID_TOKEN}),
+                    auth_server="default",
+                )
+
+                self.assertEqual(response.status_code, 401)
+                self.assertEqual(
+                    response.data["error"],
+                    "Unable to validate authentication request; "
+                    "Kindly retry authentication process.",
+                )
+                self.assertNotIn(str(error), str(response.data))
+                self.assertIn(str(error), logs.output[0])
 
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
@@ -2130,6 +2678,9 @@ class TestSessionAction(TestCase):
         )
 
     def _sso_token(self, value, claim="email", **claims):
+        # Tokens must carry exp to be accepted at all; exp-less tokens
+        # have their own rejection test in tests.test_utils.
+        claims.setdefault("exp", timezone.now() + timedelta(minutes=5))
         return jwt.encode({claim: value, **claims}, "abc", algorithm="HS256")
 
     def _get_session(self, sso=None):
@@ -2249,7 +2800,7 @@ class TestSessionAction(TestCase):
         )
         sso = response.cookies.get("SSO").value
         payload = jwt.decode(sso, "abc", algorithms=["HS256"])
-        self.assertEqual(payload, {"username": "jdoe"})
+        self.assertEqual(payload["username"], "jdoe")
 
         session_response = self._get_session(sso)
         self.assertEqual(session_response.status_code, 200)
@@ -2268,3 +2819,155 @@ class TestSessionAction(TestCase):
         )
         self.assertEqual(response.status_code, 401)
         self.assertFalse(response.has_header("WWW-Authenticate"))
+
+
+class TestSSOCookieJWTExpiry(TestCase):
+    """The SSO cookie's JWT must be a bounded credential, not a forever token."""
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.user = User.objects.create(
+            username="jdoe", email="jdoe@example.com", is_active=True
+        )
+
+    def _minted_payload(self):
+        request = self.factory.get("/")
+        response = BaseOpenIDConnectViewset().generate_successful_response(
+            request, self.user
+        )
+        return jwt.decode(
+            response.cookies.get("SSO").value, "abc", algorithms=["HS256"]
+        )
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000",
+        }
+    )
+    def test_minted_sso_jwt_expires_after_cookie_max_age(self):
+        """The minted JWT carries iat/exp, expiring SSO_COOKIE_MAX_AGE later."""
+        payload = self._minted_payload()
+        self.assertEqual(payload["email"], "jdoe@example.com")
+        # OPENID_CONNECT_VIEWSET_CONFIG sets SSO_COOKIE_MAX_AGE to 30 days.
+        self.assertEqual(payload["exp"] - payload["iat"], 60 * 60 * 24 * 30)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **{
+                k: v
+                for k, v in OPENID_CONNECT_VIEWSET_CONFIG.items()
+                if k != "SSO_COOKIE_MAX_AGE"
+            },
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000",
+        }
+    )
+    def test_minted_sso_jwt_gets_default_expiry_without_cookie_max_age(self):
+        """A session cookie (no max age) still carries a bounded JWT: 7 days."""
+        payload = self._minted_payload()
+        self.assertEqual(payload["exp"] - payload["iat"], 60 * 60 * 24 * 7)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000",
+        }
+    )
+    def test_minting_without_jwt_secret_raises_improperly_configured(self):
+        """USE_SSO_COOKIE without JWT_SECRET_KEY is a config error, not a crash."""
+        request = self.factory.get("/")
+        with self.assertRaises(ImproperlyConfigured):
+            BaseOpenIDConnectViewset().generate_successful_response(
+                request, self.user
+            )
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            "JWT_SECRET_KEY": "abc",
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000",
+        }
+    )
+    def test_minting_defaults_to_hs256_when_algorithm_unset(self):
+        """A config with a secret but no JWT_ALGORITHM mints with HS256."""
+        payload = self._minted_payload()
+        self.assertEqual(payload["email"], "jdoe@example.com")
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            "USE_AUTH_BACKEND": True,
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000",
+        }
+    )
+    def test_missing_jwt_secret_is_rejected_before_login(self):
+        """The config error must fire before a session is established.
+
+        The factory request has no session, so login() would raise an
+        unrelated error if it ran first; seeing ImproperlyConfigured
+        proves the config check comes before login().
+        """
+        request = self.factory.get("/")
+        with self.assertRaises(ImproperlyConfigured):
+            BaseOpenIDConnectViewset().generate_successful_response(
+                request, self.user
+            )
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "SSO_COOKIE_MAX_AGE": 0,
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000",
+        }
+    )
+    def test_explicit_zero_cookie_max_age_is_honoured(self):
+        """SSO_COOKIE_MAX_AGE=0 mints an already-expired JWT, not a 7-day one."""
+        request = self.factory.get("/")
+        response = BaseOpenIDConnectViewset().generate_successful_response(
+            request, self.user
+        )
+        payload = jwt.decode(
+            response.cookies.get("SSO").value,
+            "abc",
+            algorithms=["HS256"],
+            options={"verify_exp": False},
+        )
+        self.assertEqual(payload["exp"] - payload["iat"], 0)
+
+    @override_settings(
+        USE_TZ=False,
+        TIME_ZONE="Africa/Nairobi",
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "REDIRECT_AFTER_AUTH": "http://localhost:3000",
+        },
+    )
+    def test_minted_jwt_authenticates_under_use_tz_false_ahead_of_utc(self):
+        """A JWT minted with USE_TZ=False in a UTC+3 timezone authenticates.
+
+        JWT timestamps are UTC by definition. A local-time iat from a
+        UTC+3 clock sits three hours in the future, so PyJWT rejects the
+        freshly minted token as immature and SSO authentication breaks.
+
+        Django pins the process timezone to settings.TIME_ZONE when
+        settings first load, which override_settings does not redo, so
+        the naive clock is moved to Nairobi for the duration by hand.
+        """
+        original_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "Africa/Nairobi"
+        time.tzset()
+        try:
+            request = self.factory.get("/")
+            response = BaseOpenIDConnectViewset().generate_successful_response(
+                request, self.user
+            )
+            session_request = self.factory.get("/oidc/default/session")
+            session_request.COOKIES["SSO"] = response.cookies.get("SSO").value
+            session_response = BaseOpenIDConnectViewset.as_view(
+                {"get": "session"}
+            )(session_request, auth_server="default")
+            self.assertEqual(session_response.status_code, 200)
+            self.assertEqual(session_response.data, {"username": "jdoe"})
+        finally:
+            if original_tz is None:
+                del os.environ["TZ"]
+            else:
+                os.environ["TZ"] = original_tz
+            time.tzset()

@@ -12,6 +12,7 @@ from urllib.parse import quote, urlencode
 
 from django.conf import settings
 from django.core.cache import cache
+from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpResponseRedirect
 
 import jwt
@@ -22,6 +23,7 @@ import oidc.settings as default
 from oidc.utils import str_to_bool
 
 REDIRECT_AFTER_AUTH = "redirect_after_auth"
+REQUEST_MODES = ("form_post", "query")
 
 # Caller-supplied entries matching these keys are dropped: allowing
 # overrides would let an attacker swap the redirect URI / PKCE challenge
@@ -91,7 +93,18 @@ RESERVED_END_SESSION_PARAMS = frozenset(
     }
 )
 
+# Signature algorithms a configured ``ID_TOKEN_ALLOWED_ALGORITHMS``
+# list may contain. All are RSA-key algorithms, matching the RSA-only
+# JWKS handling in ``verify_and_decode_id_token``; the token's own
+# ``alg`` header never selects the verification algorithm.
+ID_TOKEN_SUPPORTED_ALGORITHMS = frozenset(
+    {"RS256", "RS384", "RS512", "PS256", "PS384", "PS512"}
+)
+
 logger = logging.getLogger(__name__)
+
+
+ID_TOKEN_LEEWAY_SECONDS = 30
 
 
 class NonceVerificationFailed(Exception):
@@ -104,6 +117,35 @@ class NoJSONWebKeyFound(Exception):
 
 class TokenVerificationFailed(Exception):
     pass
+
+
+def _describe_token_failure(
+    response: Optional[requests.Response], failure_type: Optional[str]
+) -> str:
+    """
+    Summarise a failed token request for the log message.
+
+    Returns the HTTP status and what went wrong, never response or exception
+    text. Providers can echo the request, client secret included, into their
+    error fields.
+    """
+    if response is None:
+        return failure_type or "no response"
+    return " ".join(filter(None, [f"HTTP {response.status_code}", failure_type]))
+
+
+def _token_response_details(response: requests.Response) -> dict:
+    """
+    Describe an unusable token response for error reporting.
+
+    Leaves out the body: a provider can echo the client secret in any
+    encoding, so no redaction can be trusted to catch it.
+    """
+    return {
+        "status_code": response.status_code,
+        "content_type": response.headers.get("Content-Type"),
+        "body_length": len(response.text),
+    }
 
 
 class OpenIDClient:
@@ -166,6 +208,35 @@ class OpenIDClient:
         self.request_mode = config[auth_server].get(
             "REQUEST_MODE", default_config["REQUEST_MODE"]
         )
+        # Any other value would send the token request with no credentials.
+        if self.request_mode not in REQUEST_MODES:
+            raise ImproperlyConfigured(
+                f"REQUEST_MODE must be one of {REQUEST_MODES}, "
+                f"got {self.request_mode!r}"
+            )
+        # Normalized to None so every falsy value means "no iss check";
+        # PyJWT itself only skips the check for None, and would enforce
+        # iss == "" for an empty string.
+        self.issuer = config[auth_server].get("ISSUER") or None
+        allowed_algorithms = config[auth_server].get(
+            "ID_TOKEN_ALLOWED_ALGORITHMS",
+            default_config["ID_TOKEN_ALLOWED_ALGORITHMS"],
+        )
+        # A bare string would hit PyJWT's substring matching, and a
+        # non-RSA entry would send that token's verification down a
+        # code path our RSA-only JWKS handling cannot satisfy, raising
+        # an exception the callback does not treat as a rejection.
+        if (
+            not isinstance(allowed_algorithms, (list, tuple))
+            or not allowed_algorithms
+            or not set(allowed_algorithms) <= ID_TOKEN_SUPPORTED_ALGORITHMS
+        ):
+            raise ImproperlyConfigured(
+                f"OPENID_CONNECT_AUTH_SERVERS[{auth_server!r}]"
+                "['ID_TOKEN_ALLOWED_ALGORITHMS'] must be a non-empty list "
+                f"drawn from {sorted(ID_TOKEN_SUPPORTED_ALGORITHMS)}"
+            )
+        self.id_token_allowed_algorithms = list(allowed_algorithms)
 
     def _retrieve_jwks_related_to_kid(self, kid: str) -> Optional[str]:
         """
@@ -324,22 +395,44 @@ class OpenIDClient:
         if not jwks:
             raise NoJSONWebKeyFound("Failed to retrieve key ID described in Token")
 
-        alg = unverified_header.get("alg")
-        public_key = RSAAlgorithm.from_jwk(json.dumps(jwks))
+        try:
+            public_key = RSAAlgorithm.from_jwk(json.dumps(jwks))
+        except jwt.exceptions.InvalidKeyError as exc:
+            # The kid matched a JWKS entry that is not an RSA key (EC,
+            # OKP, …). InvalidKeyError is not an InvalidTokenError, so
+            # without this translation it would escape the callback's
+            # handled-rejection path as a server error.
+            raise NoJSONWebKeyFound(
+                "ID token key is not usable with the allowed RSA algorithms"
+            ) from exc
         cached_data = {}
 
+        if not self.issuer:
+            logger.warning(
+                "No ISSUER configured for auth server %r; the ID token's "
+                "iss claim is not verified. Set OPENID_CONNECT_AUTH_SERVERS"
+                "[%r]['ISSUER'] to the provider's issuer URL.",
+                self.auth_server,
+                self.auth_server,
+            )
         decoded_token = jwt.decode(
-            id_token, public_key, audience=[self.client_id], algorithms=alg
+            id_token,
+            public_key,
+            audience=[self.client_id],
+            issuer=self.issuer,
+            algorithms=self.id_token_allowed_algorithms,
+            options={"require": ["exp", "iat", "aud"]},
+            # Tolerate small IdP/server clock skew: with iat required,
+            # PyJWT otherwise rejects a token whose iat is seconds ahead
+            # as "not yet valid".
+            leeway=ID_TOKEN_LEEWAY_SECONDS,
         )
-        # ``login()`` writes ``{auth_server, redirect_after}`` under the
-        # nonce whenever the caller supplied a ``next``, even when
-        # ``USE_NONCES`` is False (line 405: ``self.cache_nonces or
-        # redirect_after``). Read the cache here under the same
-        # condition so the post-auth redirect honors ``next`` regardless
-        # of nonce verification — otherwise the cached entry would
-        # silently expire unread when ``USE_NONCES`` is False (#116).
+        # ``login()`` caches ``{auth_server, redirect_after}`` under the
+        # nonce whenever the caller passes ``next``, even when
+        # ``USE_NONCES`` is False. Consume it in both modes so the
+        # post-auth redirect honors ``next`` (#116).
         nonce = decoded_token.get("nonce")
-        cached_data = cache.get(nonce) if nonce else None
+        cached_data = self._consume_nonce(nonce) if nonce else None
         if self.cache_nonces:
             # Verify that the cached nonce is present and that
             # the provider the nonce was initiated for, is the same
@@ -348,11 +441,31 @@ class OpenIDClient:
                 raise NonceVerificationFailed(
                     "Failed to verify login request. Missing nonce value"
                 )
-            if not cached_data or self.auth_server != cached_data.get("auth_server"):
+            if cached_data is None:
                 raise NonceVerificationFailed("Failed to verify returned nonce value")
         if cached_data and cached_data.get("redirect_after"):
             decoded_token[REDIRECT_AFTER_AUTH] = cached_data.get("redirect_after")
         return decoded_token
+
+    def _consume_nonce(self, nonce: str) -> Optional[dict]:
+        """
+        Return and delete the login data ``login()`` cached under
+        ``nonce`` for this provider, or None.
+
+        A nonce is single-use (OIDC Core 1.0 §15.5.2): only the request
+        whose delete removes the entry gets it, so concurrent replays of
+        one ID token cannot both pass. The nonce is echoed back by the
+        IdP and can name any cache key, so entries ``login()`` did not
+        write for this provider are left alone.
+        """
+        cached_data = cache.get(nonce)
+        if (
+            not isinstance(cached_data, dict)
+            or cached_data.get("auth_server") != self.auth_server
+            or not cache.delete(nonce)
+        ):
+            return None
+        return cached_data
 
     def retrieve_tokens_using_auth_code(
         self, code: str, code_verifier: Optional[str] = None
@@ -376,6 +489,8 @@ class OpenIDClient:
 
         if code_verifier is not None:
             data["code_verifier"] = code_verifier
+        response = None
+        failure_type = None
         try:
             response = requests.post(
                 self.token_endpoint,
@@ -384,15 +499,27 @@ class OpenIDClient:
                 headers=headers,
             )
             response.raise_for_status()
+            tokens = response.json()
+        except requests.HTTPError:
+            pass  # The status code already says what failed.
+        except (requests.RequestException, ValueError, RecursionError) as exc:
+            failure_type = type(exc).__name__
+        else:
+            if isinstance(tokens, dict):
+                return tokens
+            failure_type = "non-object JSON"
 
-        except requests.RequestException as exc:
-            logger.exception(exc)
-
-            raise TokenVerificationFailed(
-                f"Failed to retrieve ID Token: {exc}"
-            ) from exc
-
-        return response.json()
+        # Raise outside the except block, so nothing raised here chains the
+        # original exception, whose text may include the request URL.
+        extra = None
+        if response is not None:
+            extra = {"token_response": _token_response_details(response)}
+        logger.error(
+            "Token request failed: %s",
+            _describe_token_failure(response, failure_type),
+            extra=extra,
+        )
+        raise TokenVerificationFailed("Failed to retrieve ID Token")
 
     def _generate_pkce_code_verifier(self) -> str:
         """

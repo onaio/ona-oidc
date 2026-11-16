@@ -2,19 +2,30 @@
 
 import base64
 import hashlib
+import json
 import secrets
+import time
+import traceback
+from itertools import product
 from unittest.mock import MagicMock, patch
+from urllib.parse import quote, urlencode
 
 from django.core.cache import cache
+from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpResponseRedirect
 from django.test import TestCase
 from django.test.utils import override_settings
 
 import jwt
 import requests
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 
 from oidc.client import (
     REDIRECT_AFTER_AUTH,
+    REQUEST_MODES,
+    NoJSONWebKeyFound,
+    NonceVerificationFailed,
     OpenIDClient,
     TokenVerificationFailed,
     state_cache_key,
@@ -52,6 +63,15 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "PKCE_CODE_CHALLENGE_TIMEOUT": 600,
         "PKCE_CODE_VERIFIER_LENGTH": 128,
     },
+}
+
+LEAKY_SECRET = "s3cr3t-value"
+QUERY_MODE_AUTH_SERVERS = {
+    "pkce": {
+        **OPENID_CONNECT_AUTH_SERVERS["pkce"],
+        "CLIENT_SECRET": LEAKY_SECRET,
+        "REQUEST_MODE": "query",
+    }
 }
 
 
@@ -618,6 +638,210 @@ class OpenIDClientTestCase(TestCase):
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
 
+    def test_unknown_request_mode_is_rejected(self):
+        """A REQUEST_MODE other than form_post or query fails at construction"""
+
+        def client_with(mode):
+            server = {**OPENID_CONNECT_AUTH_SERVERS["pkce"], "REQUEST_MODE": mode}
+            with override_settings(OPENID_CONNECT_AUTH_SERVERS={"pkce": server}):
+                return OpenIDClient("pkce")
+
+        for mode in ("form_post", "query"):
+            with self.subTest(mode):
+                self.assertEqual(client_with(mode).request_mode, mode)
+
+        for mode in ("post", "FORM_POST", " form_post"):
+            with self.subTest(mode):
+                with self.assertRaisesMessage(ImproperlyConfigured, repr(mode)):
+                    client_with(mode)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "CLIENT_SECRET": "client_secret",
+            }
+        }
+    )
+    @patch.object(requests, "post")
+    def test_retrieve_tokens_using_auth_code_defaults_to_form_post(
+        self, mock_requests_post
+    ):
+        """Without REQUEST_MODE, credentials go in the request body, not the URL"""
+        self.assertNotIn("REQUEST_MODE", OPENID_CONNECT_AUTH_SERVERS["default"])
+        mock_requests_post.return_value = MagicMock(
+            status_code=200, **{"json.return_value": {"id_token": "id_token"}}
+        )
+
+        result = OpenIDClient("default").retrieve_tokens_using_auth_code("auth_code")
+
+        self.assertEqual(result, {"id_token": "id_token"})
+
+        mock_requests_post.assert_called_once_with(
+            "https://example.com/oauth2/v2.0/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": "auth_code",
+                "client_id": "client",
+                "client_secret": "client_secret",
+                "redirect_uri": "http://localhost:8000/oidc/msft/callback",
+            },
+            params=None,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+    def _assert_secret_not_exposed(self, mock_requests_post, logs, raised):
+        # Only query mode puts the secret in the URL. Without it, the checks
+        # below cannot fail.
+        self.assertIn(
+            LEAKY_SECRET, mock_requests_post.call_args.kwargs["params"].values()
+        )
+        self.assertTrue(all(record.exc_info is None for record in logs.records))
+        self.assertNotIn(LEAKY_SECRET, "\n".join(logs.output))
+        reported = [getattr(r, "token_response", {}) for r in logs.records]
+        self.assertNotIn(LEAKY_SECRET, str(reported))
+        formatted = "".join(
+            traceback.format_exception(type(raised), raised, raised.__traceback__)
+        )
+        self.assertNotIn(LEAKY_SECRET, formatted)
+
+    def _token_response(self, status_code, content, content_type=None):
+        response = requests.Response()
+        response.status_code = status_code
+        if content_type:
+            response.headers["Content-Type"] = content_type
+        response.reason = "Error"
+        response.url = (
+            f"https://example.com/oauth2/v2.0/token?client_secret={LEAKY_SECRET}"
+        )
+        response._content = content
+        return response
+
+    def _retrieve_tokens_expecting_failure(self):
+        with self.assertLogs("oidc.client", level="DEBUG") as logs:
+            with self.assertRaises(TokenVerificationFailed) as raised:
+                OpenIDClient("pkce").retrieve_tokens_using_auth_code("auth_code")
+        return "\n".join(logs.output), logs, raised.exception
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=QUERY_MODE_AUTH_SERVERS)
+    @patch.object(requests, "post")
+    def test_retrieve_tokens_error_response_hides_client_secret(
+        self, mock_requests_post
+    ):
+        """A rejected token request logs its status, never the secret"""
+        cases = {
+            "provider error": (
+                400,
+                json.dumps(
+                    {
+                        "error": "invalid_request",
+                        "error_description": "Sensitive data in the URL.",
+                    }
+                ).encode(),
+                "HTTP 400",
+            ),
+            "html error page": (502, b"<html>Bad Gateway</html>", "HTTP 502"),
+        }
+        for name, (status_code, body, expected_log) in cases.items():
+            with self.subTest(name):
+                mock_requests_post.return_value = self._token_response(
+                    status_code, body
+                )
+
+                logged, logs, raised = self._retrieve_tokens_expecting_failure()
+
+                self.assertIn(expected_log, logged)
+                self.assertNotIn("HTTPError", logged)
+                self._assert_secret_not_exposed(mock_requests_post, logs, raised)
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=QUERY_MODE_AUTH_SERVERS)
+    @patch.object(requests, "post")
+    def test_retrieve_tokens_connection_error_hides_client_secret(
+        self, mock_requests_post
+    ):
+        """A token request that never gets a response does not leak the secret"""
+        mock_requests_post.side_effect = requests.ConnectionError(
+            "HTTPSConnectionPool(host='example.com', port=443): Max retries "
+            f"exceeded with url: /oauth2/v2.0/token?client_secret={LEAKY_SECRET}"
+        )
+
+        logged, logs, raised = self._retrieve_tokens_expecting_failure()
+
+        self.assertIn("ConnectionError", logged)
+        self.assertFalse(hasattr(logs.records[0], "token_response"))
+        self._assert_secret_not_exposed(mock_requests_post, logs, raised)
+
+    @patch.object(requests, "post")
+    def test_retrieve_tokens_failure_omits_encoded_echo(self, mock_requests_post):
+        """
+        A provider that echoes the secret back leaks nothing, whatever the
+        encoding. The report has the response metadata, never the body.
+        """
+        cases = {
+            "form-encoded": (
+                "dummy secret",
+                urlencode({"client_secret": "dummy secret"}),
+                "dummy+secret",
+                "application/x-www-form-urlencoded",
+            ),
+            "json-escaped": (
+                'dummy"secret',
+                json.dumps({"error_description": 'dummy"secret'}),
+                'dummy\\"secret',
+                "application/json",
+            ),
+        }
+        for (name, case), mode in product(cases.items(), REQUEST_MODES):
+            secret, body, echoed, content_type = case
+            # The echo must dodge a plain or percent-encoded match of the secret.
+            self.assertIn(echoed, body)
+            self.assertNotIn(secret, body)
+            self.assertNotIn(quote(secret, safe=""), body)
+            server = {
+                **QUERY_MODE_AUTH_SERVERS["pkce"],
+                "CLIENT_SECRET": secret,
+                "REQUEST_MODE": mode,
+            }
+            mock_requests_post.return_value = self._token_response(
+                400, body.encode(), content_type
+            )
+            with self.subTest(name, mode=mode):
+                with (
+                    override_settings(OPENID_CONNECT_AUTH_SERVERS={"pkce": server}),
+                    self.assertLogs("oidc.client", level="DEBUG") as logs,
+                    self.assertRaises(TokenVerificationFailed),
+                ):
+                    OpenIDClient("pkce").retrieve_tokens_using_auth_code("auth_code")
+
+                record = logs.records[0]
+                self.assertIn("HTTP 400", record.getMessage())
+                self.assertEqual(
+                    record.token_response,
+                    {
+                        "status_code": 400,
+                        "content_type": content_type,
+                        "body_length": len(body),
+                    },
+                )
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=QUERY_MODE_AUTH_SERVERS)
+    @patch.object(requests, "post")
+    def test_retrieve_tokens_success_without_token_object_raises(
+        self, mock_requests_post
+    ):
+        """A 200 whose body is not a JSON object is a handled failure"""
+        cases = {
+            "not json": (b"<html>Gateway login</html>", "HTTP 200 JSONDecodeError"),
+            "json list": (b'["id_token"]', "HTTP 200 non-object JSON"),
+        }
+        for name, (body, expected_log) in cases.items():
+            with self.subTest(name):
+                mock_requests_post.return_value = self._token_response(200, body)
+
+                logged, _logs, _raised = self._retrieve_tokens_expecting_failure()
+
+                self.assertIn(expected_log, logged)
+
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
             "default": {
@@ -975,9 +1199,12 @@ class OpenIDClientTestCase(TestCase):
         client = OpenIDClient("default")
         client.login(redirect_after="/dashboard")
 
+        self.assertIsNotNone(cache.get("n1"))
+
         decoded = client.verify_and_decode_id_token("h.p.s")
 
         self.assertEqual(decoded[REDIRECT_AFTER_AUTH], "/dashboard")
+        self.assertIsNone(cache.get("n1"))
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
@@ -1021,3 +1248,321 @@ class OpenIDClientTestCase(TestCase):
         decoded = client.verify_and_decode_id_token("h.p.s")
 
         self.assertNotIn(REDIRECT_AFTER_AUTH, decoded)
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch("oidc.client.RSAAlgorithm.from_jwk")
+    @patch("oidc.client.jwt.decode")
+    @patch("oidc.client.jwt.get_unverified_header")
+    @patch.object(OpenIDClient, "_retrieve_jwks_related_to_kid")
+    @patch.object(secrets, "token_urlsafe")
+    def test_nonce_is_single_use(
+        self,
+        mock_token_urlsafe,
+        mock_jwks,
+        mock_get_header,
+        mock_jwt_decode,
+        _mock_from_jwk,
+    ):
+        """Replaying an ID token after its nonce was verified fails (#143)."""
+        mock_token_urlsafe.return_value = "n1"
+        mock_jwks.return_value = {"kty": "RSA"}
+        mock_get_header.return_value = {"kid": "k1", "alg": "RS256"}
+        mock_jwt_decode.return_value = {"sub": "1", "nonce": "n1"}
+
+        client = OpenIDClient("default")
+        self.assertTrue(client.cache_nonces)
+        client.login()
+        self.assertIsNotNone(cache.get("n1"))
+
+        self.assertEqual(client.verify_and_decode_id_token("h.p.s")["sub"], "1")
+        self.assertIsNone(cache.get("n1"))
+
+        with self.assertRaises(NonceVerificationFailed):
+            client.verify_and_decode_id_token("h.p.s")
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch("oidc.client.RSAAlgorithm.from_jwk")
+    @patch("oidc.client.jwt.decode")
+    @patch("oidc.client.jwt.get_unverified_header")
+    @patch.object(OpenIDClient, "_retrieve_jwks_related_to_kid")
+    @patch.object(secrets, "token_urlsafe")
+    def test_nonce_consumed_by_concurrent_request_is_refused(
+        self,
+        mock_token_urlsafe,
+        mock_jwks,
+        mock_get_header,
+        mock_jwt_decode,
+        _mock_from_jwk,
+    ):
+        """Two requests can read the nonce before either deletes it; the
+        one whose delete finds nothing left must fail."""
+        mock_token_urlsafe.return_value = "n1"
+        mock_jwks.return_value = {"kty": "RSA"}
+        mock_get_header.return_value = {"kid": "k1", "alg": "RS256"}
+        mock_jwt_decode.return_value = {"sub": "1", "nonce": "n1"}
+
+        client = OpenIDClient("default")
+        client.login()
+        self.assertIsNotNone(cache.get("n1"))
+
+        with patch.object(cache, "delete", return_value=False) as mock_delete:
+            with self.assertRaises(NonceVerificationFailed):
+                client.verify_and_decode_id_token("h.p.s")
+        mock_delete.assert_called_once_with("n1")
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch("oidc.client.RSAAlgorithm.from_jwk")
+    @patch("oidc.client.jwt.decode")
+    @patch("oidc.client.jwt.get_unverified_header")
+    @patch.object(OpenIDClient, "_retrieve_jwks_related_to_kid")
+    def test_nonce_naming_unrelated_cache_entry_leaves_it_alone(
+        self,
+        mock_jwks,
+        mock_get_header,
+        mock_jwt_decode,
+        _mock_from_jwk,
+    ):
+        """The IdP echoes whatever nonce the authorize URL carried, so a
+        user can make it name any cache key. Only entries ``login()`` wrote
+        for this provider may be consumed."""
+        mock_jwks.return_value = {"kty": "RSA"}
+        mock_get_header.return_value = {"kid": "k1", "alg": "RS256"}
+        unrelated = {
+            "throttle_login_1.2.3.4": [1, 2, 3],
+            "lockout": {"attempts": 5},
+            "pkce-nonce": {"auth_server": "pkce", "redirect_after": None},
+        }
+        cache.set_many(unrelated)
+        client = OpenIDClient("default")
+
+        for key, value in unrelated.items():
+            mock_jwt_decode.return_value = {"sub": "1", "nonce": key}
+            with self.assertRaises(NonceVerificationFailed):
+                client.verify_and_decode_id_token("h.p.s")
+            self.assertEqual(cache.get(key), value)
+
+
+ID_TOKEN_VALIDATION_AUTH_SERVERS = {
+    "default": {
+        **OPENID_CONNECT_AUTH_SERVERS["default"],
+        "USE_NONCES": False,
+    }
+}
+
+
+@override_settings(OPENID_CONNECT_AUTH_SERVERS=ID_TOKEN_VALIDATION_AUTH_SERVERS)
+class IDTokenValidationTestCase(TestCase):
+    """Signature-level tests for ID token verification.
+
+    These sign real tokens with a real RSA keypair and run real
+    verification; only the JWKS network fetch is mocked.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.private_key = rsa.generate_private_key(
+            public_exponent=65537, key_size=2048
+        )
+        jwk = json.loads(RSAAlgorithm.to_jwk(cls.private_key.public_key()))
+        jwk["kid"] = "test-kid"
+        cls.jwks = {"keys": [jwk]}
+
+    def _claims(self, **overrides):
+        now = int(time.time())
+        claims = {"aud": "client", "iat": now, "exp": now + 300, "sub": "user-1"}
+        claims.update(overrides)
+        return {k: v for k, v in claims.items() if v is not None}
+
+    def _sign(self, claims):
+        return jwt.encode(
+            claims, self.private_key, algorithm="RS256", headers={"kid": "test-kid"}
+        )
+
+    def _verify(self, token):
+        jwks_response = MagicMock(
+            status_code=200, **{"json.return_value": self.jwks}
+        )
+        with patch.object(requests, "get", return_value=jwks_response):
+            return OpenIDClient("default").verify_and_decode_id_token(token)
+
+    def test_valid_rs256_token_decodes(self):
+        """A properly signed RS256 token with the expected audience decodes."""
+        decoded = self._verify(self._sign(self._claims()))
+        self.assertEqual(decoded["sub"], "user-1")
+
+    def test_header_chosen_algorithm_outside_allowlist_is_rejected(self):
+        """The token's own alg header cannot select the verification algorithm."""
+        cases = {
+            "HS256 with a guessed shared secret": jwt.encode(
+                self._claims(), "guess", algorithm="HS256", headers={"kid": "test-kid"}
+            ),
+            "unsigned alg=none": jwt.encode(
+                self._claims(), None, algorithm="none", headers={"kid": "test-kid"}
+            ),
+        }
+        for name, token in cases.items():
+            with self.subTest(name):
+                with self.assertRaises(jwt.InvalidTokenError):
+                    self._verify(token)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                **ID_TOKEN_VALIDATION_AUTH_SERVERS["default"],
+                "ID_TOKEN_ALLOWED_ALGORITHMS": ["RS256"],
+            }
+        }
+    )
+    def test_configured_algorithm_allowlist_narrows_the_default(self):
+        """A configured allowlist rejects an RSA-family algorithm it omits."""
+        rs384_token = jwt.encode(
+            self._claims(),
+            self.private_key,
+            algorithm="RS384",
+            headers={"kid": "test-kid"},
+        )
+        with self.assertRaises(jwt.InvalidTokenError):
+            self._verify(rs384_token)
+        decoded = self._verify(self._sign(self._claims()))
+        self.assertEqual(decoded["sub"], "user-1")
+
+    def test_default_allowlist_covers_the_rsa_family(self):
+        """With no allowlist configured, other RSA-family algorithms verify."""
+        rs384_token = jwt.encode(
+            self._claims(),
+            self.private_key,
+            algorithm="RS384",
+            headers={"kid": "test-kid"},
+        )
+        decoded = self._verify(rs384_token)
+        self.assertEqual(decoded["sub"], "user-1")
+
+    def test_invalid_algorithm_allowlist_config_is_rejected(self):
+        """An allowlist outside the RSA family fails at client construction."""
+        for name, value in {
+            "symmetric algorithm": ["RS256", "HS256"],
+            "non-RSA asymmetric algorithm": ["ES256"],
+            "empty list": [],
+            "bare string instead of a list": "RS256",
+        }.items():
+            with self.subTest(name):
+                with override_settings(
+                    OPENID_CONNECT_AUTH_SERVERS={
+                        "default": {
+                            **ID_TOKEN_VALIDATION_AUTH_SERVERS["default"],
+                            "ID_TOKEN_ALLOWED_ALGORITHMS": value,
+                        }
+                    }
+                ):
+                    with self.assertRaises(ImproperlyConfigured):
+                        OpenIDClient("default")
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                **ID_TOKEN_VALIDATION_AUTH_SERVERS["default"],
+                "ISSUER": "https://idp.example.com",
+            }
+        }
+    )
+    def test_configured_issuer_is_enforced(self):
+        """With ISSUER set, a token with the wrong or no iss is rejected."""
+        for name, iss in {
+            "wrong issuer": "https://evil.example.com",
+            "missing issuer": None,
+        }.items():
+            with self.subTest(name):
+                with self.assertRaises(jwt.InvalidTokenError):
+                    self._verify(self._sign(self._claims(iss=iss)))
+        decoded = self._verify(
+            self._sign(self._claims(iss="https://idp.example.com"))
+        )
+        self.assertEqual(decoded["sub"], "user-1")
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                **ID_TOKEN_VALIDATION_AUTH_SERVERS["default"],
+                "ISSUER": "https://idp.example.com/tenant",
+            }
+        }
+    )
+    def test_issuer_substring_match_is_rejected(self):
+        """A token iss that is only a substring of ISSUER is rejected.
+
+        PyJWT 2.10.0 matched issuers by substring containment
+        (GHSA-75c5-xw7c-p5pm) and accepted both of these tokens;
+        setup.cfg requires >=2.10.1 so the match stays exact.
+        """
+        for name, iss in {
+            "prefix of the configured issuer": "https://idp.example.com/",
+            "empty issuer": "",
+        }.items():
+            with self.subTest(name):
+                with self.assertRaises(jwt.InvalidTokenError):
+                    self._verify(self._sign(self._claims(iss=iss)))
+
+    def test_missing_issuer_config_logs_warning(self):
+        """Verification without a configured ISSUER warns that iss is unchecked."""
+        with self.assertLogs("oidc.client", level="WARNING") as logs:
+            self._verify(self._sign(self._claims()))
+        self.assertIn("ISSUER", "\n".join(logs.output))
+
+    def test_token_missing_required_claims_is_rejected(self):
+        """A token lacking exp or iat is rejected despite a valid signature."""
+        for missing in ("exp", "iat"):
+            with self.subTest(missing=missing):
+                with self.assertRaises(jwt.InvalidTokenError):
+                    self._verify(self._sign(self._claims(**{missing: None})))
+
+    def test_kid_resolving_to_non_rsa_key_is_a_handled_rejection(self):
+        """A kid that resolves to a non-RSA JWKS key rejects, not crashes."""
+        ec_key = ec.generate_private_key(ec.SECP256R1())
+        jwk = json.loads(ECAlgorithm.to_jwk(ec_key.public_key()))
+        jwk["kid"] = "ec-kid"
+        token = jwt.encode(
+            self._claims(), ec_key, algorithm="ES256", headers={"kid": "ec-kid"}
+        )
+        jwks_response = MagicMock(
+            status_code=200, **{"json.return_value": {"keys": [jwk]}}
+        )
+        with patch.object(requests, "get", return_value=jwks_response):
+            with self.assertRaises(NoJSONWebKeyFound):
+                OpenIDClient("default").verify_and_decode_id_token(token)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {**ID_TOKEN_VALIDATION_AUTH_SERVERS["default"], "ISSUER": ""}
+        }
+    )
+    def test_empty_issuer_behaves_like_unset(self):
+        """ISSUER='' skips the iss check with the warning, same as unset."""
+        with self.assertLogs("oidc.client", level="WARNING"):
+            decoded = self._verify(self._sign(self._claims()))
+        self.assertEqual(decoded["sub"], "user-1")
+
+    def test_small_clock_skew_is_tolerated(self):
+        """A token whose iat is seconds ahead (IdP clock skew) verifies."""
+        decoded = self._verify(self._sign(self._claims(iat=int(time.time()) + 10)))
+        self.assertEqual(decoded["sub"], "user-1")
+
+    def test_expired_token_is_rejected(self):
+        """A token past its exp, beyond any leeway, is rejected."""
+        past = int(time.time()) - 3600
+        with self.assertRaises(jwt.InvalidTokenError):
+            self._verify(self._sign(self._claims(iat=past, exp=past + 300)))
+
+    def test_token_signed_with_a_different_key_is_rejected(self):
+        """A signature from any key other than the JWKS key fails."""
+        other = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        token = jwt.encode(
+            self._claims(), other, algorithm="RS256", headers={"kid": "test-kid"}
+        )
+        with self.assertRaises(jwt.InvalidTokenError):
+            self._verify(token)
+
+    def test_wrong_audience_is_rejected(self):
+        """A token minted for a different client id is rejected."""
+        with self.assertRaises(jwt.InvalidTokenError):
+            self._verify(self._sign(self._claims(aud="other-client")))

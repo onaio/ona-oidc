@@ -36,7 +36,7 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "SCOPE": "openid",
         "RESPONSE_TYPE": "id_token",
         "RESPONSE_MODE": "form_post",
-        "REQUEST_MODE": "query",
+        "REQUEST_MODE": "form_post",
         "USE_NONCES": True,
         "VERIFY_ACCESS_TOKEN": True,
         "NONCE_CACHE_TIMEOUT": 1800,
@@ -44,6 +44,14 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "PKCE_CODE_CHALLENGE_METHOD": "S256",
         "PKCE_CODE_CHALLENGE_TIMEOUT": 600,
         "PKCE_CODE_VERIFIER_LENGTH": 64,
+        "ID_TOKEN_ALLOWED_ALGORITHMS": [
+            "RS256",
+            "RS384",
+            "RS512",
+            "PS256",
+            "PS384",
+            "PS512",
+        ],
     }
 }
 

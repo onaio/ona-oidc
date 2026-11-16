@@ -86,6 +86,8 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "REDIRECT_URI": "http://localhost:8000/oidc/msft/callback",
         "RESPONSE_TYPE": "id_token",
         "RESPONSE_MODE": "form_post",
+        "REQUEST_MODE": "form_post",
+        "ISSUER": "https://login.microsoftonline.com/<tenant-id>/v2.0",
         "USE_NONCES": True,
         "NONCE_CACHE_TIMEOUT": 1800,
     }
@@ -93,6 +95,56 @@ OPENID_CONNECT_AUTH_SERVERS = {
 ...
 
 ```
+
+`REQUEST_MODE` sets how the authorization code exchange sends the client
+credentials to `TOKEN_ENDPOINT`. The default, `form_post`, sends them in the
+request body. `query` puts them in the URL, where proxy and provider logs keep
+them. Use it only for a provider that requires it.
+
+### ID token validation
+
+ID tokens must be signed with an algorithm in the per-server
+`ID_TOKEN_ALLOWED_ALGORITHMS` list and carry `exp`, `iat` and `aud`
+claims; tokens that do not are rejected. The list defaults to the
+RSA family (`RS256`/`RS384`/`RS512`/`PS256`/`PS384`/`PS512`) and may
+only contain algorithms from that family — set it to a subset, e.g.
+`["RS256"]`, to accept exactly what your provider signs with. Any
+other value raises `ImproperlyConfigured`. When `ISSUER` is set, the token's
+`iss` claim must match it exactly; use the `issuer` value from the
+provider's `/.well-known/openid-configuration` document. For Microsoft
+Entra ID that value contains your tenant id — tokens never carry the
+literal `common`, so a multi-tenant app on the `common` endpoint
+cannot use a single exact-match `ISSUER` and should leave it unset.
+When `ISSUER` is not set, the `iss` claim is not checked and every
+verification logs a warning; a future release will require the
+setting.
+
+### The username form
+
+When a new user needs to choose a username, the callback renders
+`oidc/oidc_user_data_entry.html`. The callback keeps the verified token,
+its claims and the login's `state` in the Django cache. The form carries
+only a single-use `login_continuation` key that points at them. The JSON
+rendering of that response carries the same key.
+
+- Every process that serves the callback must share one cache. Django's
+  default `LocMemCache` is per process, so a re-submit that reaches
+  another worker is refused. This applies even with `USE_NONCES=False`.
+- The cache's `delete` must report whether it removed the key. Do not
+  set `default_noreply=True` on a memcached backend.
+- A template override must post `login_continuation` back, not
+  `id_token`:
+
+  ```html
+  <input type="hidden" name="login_continuation" value="{{ login_continuation }}">
+  ```
+
+  A form that posts no continuation is refused, and the callback logs a
+  warning.
+- The form lasts `NONCE_CACHE_TIMEOUT` seconds at most, and never longer
+  than the ID token would still verify. With `USE_PKCE`, the re-submit
+  also needs the PKCE verifier, which expires `PKCE_CODE_CHALLENGE_TIMEOUT`
+  seconds after the login started.
 
 ### SSO cookie security
 
@@ -113,6 +165,18 @@ The `SSO` cookie emitted on successful authentication honours these keys:
 - **`SSO_COOKIE_HTTPONLY`** (`bool`, default `True`). Leave on unless you
   have a specific reason to expose the cookie to JavaScript.
 - **`SSO_COOKIE_PATH`** (`str`, default `"/"`).
+
+The cookie's JWT carries `iat` and `exp` claims: the token expires
+`SSO_COOKIE_MAX_AGE` seconds after it is minted, or after 7 days when
+`SSO_COOKIE_MAX_AGE` is not set. Tokens minted by older releases have
+no `exp` and are rejected; their holders are sent through the OIDC
+login flow once more after upgrading.
+
+`JWT_SECRET_KEY` is required for the SSO features: minting the cookie and
+verifying it with `authenticate_sso` both raise `ImproperlyConfigured`
+when it is missing or empty. Invalid tokens (bad signature, malformed
+value, expired) are an authentication miss — `authenticate_sso` returns
+`None` rather than raising.
 
 Future work: once `Secure=True` is enforced cohort-wide, the cookie name
 can migrate to `__Secure-SSO` for browser-enforced guarantees.
@@ -236,3 +300,21 @@ OPENID_IMPORT_USER = {
 2. **Search Users**: In the import form, start typing in the search box to find users from your identity provider
 3. **Select User**: Click on a suggestion to populate the form fields with data from the identity provider
 4. **Complete Import**: Fill in any additional required fields and save the user
+
+## Upgrading
+
+### Users created by 2.10.0 and earlier have a usable empty password
+
+ona-oidc 2.10.0 and earlier created SSO users with an empty password. Django treats an empty password as usable, so those users can set a local password through the password reset flow. Later releases give new SSO users an unusable password. Existing users keep the empty one.
+
+To remove it, run this once in your project, for example in a data migration:
+
+```python
+from django.contrib.auth import get_user_model
+
+for user in get_user_model().objects.filter(password="").iterator():
+    user.set_unusable_password()
+    user.save(update_fields=["password"])
+```
+
+ona-oidc does not record which users it created, so this changes every user with an empty password. Check first that your project doesn't create users without a password and then rely on the reset email to let them set one, as an invitation flow might. Those users would stop receiving reset emails.
