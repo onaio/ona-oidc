@@ -156,10 +156,14 @@ server signs in to the same accounts, so turn the check on for each
 server whose users can register their own addresses.
 
 Blank addresses never match an account, whatever the settings. The
-callback ignores an `email` claim or `emails` entry that is empty or
-only spaces. Claims left with no address are treated like claims that
-never had one: the callback asks the userinfo endpoint, and refuses the
-login if `email` is a required field.
+callback ignores an `email` claim or `emails` entry that is empty, only
+spaces, or not a string, and an SSO cookie with a blank value signs in
+to no account. Claims left with no address are handled like claims that
+never had one. The callback falls back to the userinfo endpoint, which
+needs an access token, so with the default `id_token` response type the
+login is refused. An account created without an address gets only the
+`default` entry of `USER_DEFAULTS`. Accounts stored with a blank email
+can no longer be reached through a blank `email` claim.
 
 Some providers, such as Microsoft Entra ID, omit the claim. With the
 check on, their addresses are trusted. Set `REQUIRE_VERIFIED_EMAIL` to

@@ -55,6 +55,7 @@ from oidc.utils import (
     get_login_query_param_allowlist,
     get_logout_query_param_allowlist,
     get_viewset_config,
+    has_email_address,
     is_safe_login_redirect,
     replace_characters_in_username,
     str_to_bool,
@@ -554,11 +555,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     )
 
     def _get_user_group_defaults(self, email: Optional[str]) -> dict:
-        groups = [key for key in self.user_default_fields.keys() if key != "default"]
-
         user_default = self.user_default_fields.get("default", {})
         if not email:
             return user_default
+
+        groups = [key for key in self.user_default_fields.keys() if key != "default"]
         for group in groups:
             match = re.match(group, email)
             if match:
@@ -612,7 +613,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         """
         if not client.check_email_verified:
             return False
-        if not (user_data.get("email") or user_data.get("emails")):
+        if not has_email_address(user_data):
             return False
         if "email_verified" not in claims:
             return bool(client.require_verified_email)

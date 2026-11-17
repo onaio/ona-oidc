@@ -47,7 +47,10 @@ def authenticate_sso(request, unique_user_field: str = "email"):
             # Older SSO cookies always used the "email" claim name, even when
             # SSO_COOKIE_DATA pointed at a different user model field.
             unique_user_value = jwt_payload.get("email")
-        if unique_user_value is None:
+        if unique_user_value is None or (
+            isinstance(unique_user_value, str) and not unique_user_value.strip()
+        ):
+            # A blank value would match every account stored without one.
             return None
         user = (
             get_user_model()
@@ -80,25 +83,31 @@ def str_to_bool(val):
     raise ImproperlyConfigured(f"Cannot interpret {val!r} as a boolean setting.")
 
 
-def is_email_address(value: object) -> bool:
+def _is_nonblank_str(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
 def without_blank_emails(claims: dict) -> dict:
     """
-    Drop blank ``email`` and ``emails`` values, which would otherwise match
-    every account stored without an email.
+    Drop an ``email`` that is blank or not a string, and ``emails`` entries
+    that are, or the whole ``emails`` claim if it is not a list. A blank
+    value would otherwise match every account stored without an email.
     """
     cleaned = {k: v for k, v in claims.items() if k not in ("email", "emails")}
-    if is_email_address(claims.get("email")):
+    if _is_nonblank_str(claims.get("email")):
         cleaned["email"] = claims["email"]
     emails = claims.get("emails")
     addresses = (
-        [e for e in emails if is_email_address(e)] if isinstance(emails, list) else []
+        [e for e in emails if _is_nonblank_str(e)] if isinstance(emails, list) else []
     )
     if addresses:
         cleaned["emails"] = addresses
     return cleaned
+
+
+def has_email_address(claims: dict) -> bool:
+    cleaned = without_blank_emails(claims)
+    return "email" in cleaned or "emails" in cleaned
 
 
 def email_usename_to_url_safe(email_username):

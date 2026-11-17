@@ -136,8 +136,9 @@ class EmailVerifiedTestCase(TestCase):
     def test_blank_email_does_not_link_to_a_blank_email_account(self):
         """A blank address matches no account, verified or not.
 
-        Claims without a usable address go to userinfo, so the userinfo
-        result is patched to return the same claims.
+        Claims without a usable address go to userinfo. The userinfo result
+        is patched to return the same claims, so each case reaches the
+        account lookup.
         """
         blank = User.objects.create_user(username="blank", email="")
         self.assertTrue(User.objects.filter(email__iexact="").exists())
@@ -145,6 +146,10 @@ class EmailVerifiedTestCase(TestCase):
         cases = {
             "verified, check on": (
                 {**no_email, "email": "", "email_verified": True},
+                auth_servers(CHECK_EMAIL_VERIFIED=True),
+            ),
+            "unverified, check on": (
+                {**no_email, "email": "", "email_verified": False},
                 auth_servers(CHECK_EMAIL_VERIFIED=True),
             ),
             "unverified, check off": (
@@ -179,7 +184,11 @@ class EmailVerifiedTestCase(TestCase):
                 self.assertEqual(User.objects.count(), 2)
 
     def test_blank_addresses_are_skipped_for_the_next_usable_one(self):
-        """A blank ``email`` or ``emails`` entry gives way to a real address."""
+        """A blank ``email`` or ``emails`` entry gives way to a real address.
+
+        ``tokens_to_user_info`` is not patched: a usable address keeps the
+        client from falling back to userinfo.
+        """
         blank = User.objects.create_user(username="blank", email="")
         no_email = {k: v for k, v in CLAIMS.items() if k != "email"}
         for name, claims in {
@@ -198,7 +207,7 @@ class EmailVerifiedTestCase(TestCase):
         config = {
             **settings.OPENID_CONNECT_VIEWSET_CONFIG,
             "REQUIRED_USER_CREATION_FIELDS": ["first_name", "username"],
-            "USER_DEFAULTS": {r"^.*@ona\.io$": {"is_active": False}},
+            "USER_DEFAULTS": {".*": {"is_active": False}},
         }
         claims = {**CLAIMS, "email": "", "email_verified": True}
         self.user.delete()
@@ -211,6 +220,22 @@ class EmailVerifiedTestCase(TestCase):
         created = User.objects.get()
         self.assertEqual(created.email, "")
         self.assertTrue(created.is_active)
+
+    def test_blank_email_in_the_implicit_flow_is_refused(self):
+        """Without an access token, a blank address can't fall back to userinfo.
+
+        The default ``id_token`` response type carries no access token, so
+        the fallback fails and the login is refused before any lookup.
+        """
+        blank = User.objects.create_user(username="blank", email="")
+        server = settings.OPENID_CONNECT_AUTH_SERVERS["default"]
+        self.assertEqual(server["RESPONSE_TYPE"], "id_token")
+        response = self._callback({**CLAIMS, "email": "", "email_verified": True})
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn("SSO", response.cookies)
+        blank.refresh_from_db()
+        self.assertIsNone(blank.last_login)
+        self.assertEqual(User.objects.count(), 2)
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS=auth_servers(REQUIRE_VERIFIED_EMAIL=True)
