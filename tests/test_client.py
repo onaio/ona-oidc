@@ -28,6 +28,7 @@ from oidc.client import (
     NonceVerificationFailed,
     OpenIDClient,
     TokenVerificationFailed,
+    UserInfoRequestFailed,
     state_cache_key,
 )
 
@@ -590,6 +591,7 @@ class OpenIDClientTestCase(TestCase):
             },
             params=None,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=(5, 30),
         )
 
     @override_settings(
@@ -636,6 +638,7 @@ class OpenIDClientTestCase(TestCase):
                 "code_verifier": "123",
             },
             headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=(5, 30),
         )
 
     def test_unknown_request_mode_is_rejected(self):
@@ -654,6 +657,51 @@ class OpenIDClientTestCase(TestCase):
             with self.subTest(mode):
                 with self.assertRaisesMessage(ImproperlyConfigured, repr(mode)):
                     client_with(mode)
+
+    def test_requests_timeout_setting(self):
+        """``REQUESTS_TIMEOUT`` defaults to ``(5, 30)``. It takes a positive
+        number or a pair of them, and anything else fails at construction."""
+
+        def client_with(**extra):
+            server = {**OPENID_CONNECT_AUTH_SERVERS["pkce"], **extra}
+            with override_settings(OPENID_CONNECT_AUTH_SERVERS={"pkce": server}):
+                return OpenIDClient("pkce")
+
+        self.assertEqual(client_with().requests_timeout, (5, 30))
+        for value, expected in (
+            (10, 10),
+            (2.5, 2.5),
+            ((3, 60), (3, 60)),
+            ([3, 60], (3, 60)),
+        ):
+            with self.subTest(value=value):
+                timeout = client_with(REQUESTS_TIMEOUT=value).requests_timeout
+                self.assertEqual(timeout, expected)
+
+        for value in (None, 0, -1, True, "30", (5,), (5, 0), (5, None), (1, 2, 3)):
+            with self.subTest(value=value):
+                with self.assertRaisesMessage(ImproperlyConfigured, "REQUESTS_TIMEOUT"):
+                    client_with(REQUESTS_TIMEOUT=value)
+
+    def test_non_positive_nonce_cache_timeout_is_rejected(self):
+        """Django's cache treats a timeout of 0 or less as already expired,
+        so the username form could never be submitted."""
+
+        def client_with(timeout):
+            server = {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "NONCE_CACHE_TIMEOUT": timeout,
+            }
+            with override_settings(OPENID_CONNECT_AUTH_SERVERS={"default": server}):
+                return OpenIDClient("default")
+
+        self.assertEqual(client_with(1).nonce_cache_timeout, 1)
+        for timeout in (0, -1, "0"):
+            with self.subTest(timeout=timeout):
+                with self.assertRaisesMessage(
+                    ImproperlyConfigured, "NONCE_CACHE_TIMEOUT"
+                ):
+                    client_with(timeout)
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
@@ -688,6 +736,7 @@ class OpenIDClientTestCase(TestCase):
             },
             params=None,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=(5, 30),
         )
 
     def _assert_secret_not_exposed(self, mock_requests_post, logs, raised):
@@ -872,6 +921,59 @@ class OpenIDClientTestCase(TestCase):
         mock_requests_get.assert_called_once_with(
             "https://example.com/oauth2/userinfo",
             headers={"Authorization": "Bearer access_token_value"},
+            timeout=(5, 30),
+        )
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "USER_INFO_ENDPOINT": "https://example.com/oauth2/userinfo",
+            }
+        }
+    )
+    @patch.object(requests, "get")
+    def test_failed_user_info_request_raises(self, mock_requests_get):
+        """A userinfo request that fails, gets an error status or gets a
+        body that is not JSON raises ``UserInfoRequestFailed``. The reason
+        names no URL or token."""
+        not_json = MagicMock(status_code=200)
+        not_json.json.side_effect = ValueError("Expecting value")
+        cases = {
+            "Userinfo request failed: Timeout": {
+                "side_effect": requests.Timeout(
+                    "https://example.com/oauth2/userinfo timed out"
+                )
+            },
+            "Userinfo request failed: status 401": {
+                "return_value": MagicMock(status_code=401)
+            },
+            "Userinfo response is not JSON": {"return_value": not_json},
+        }
+        for reason, outcome in cases.items():
+            with self.subTest(reason):
+                mock_requests_get.configure_mock(
+                    **{"side_effect": None, "return_value": None, **outcome}
+                )
+                with self.assertRaises(UserInfoRequestFailed) as ctx:
+                    OpenIDClient("default").retrieve_user_info("access_token_value")
+                self.assertEqual(str(ctx.exception), reason)
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch.object(requests, "get")
+    def test_failed_jwks_request_raises_no_jwk_found(self, mock_requests_get):
+        """A JWKS request that times out is a signing-key failure, which the
+        callback turns into a 401. The reason names no URL."""
+        mock_requests_get.side_effect = requests.Timeout(
+            "https://example.com/discovery/v2.0/keys timed out"
+        )
+
+        with self.assertRaises(NoJSONWebKeyFound) as ctx:
+            OpenIDClient("default")._retrieve_jwks_related_to_kid("kid")
+
+        self.assertEqual(str(ctx.exception), "JWKS request failed: Timeout")
+        mock_requests_get.assert_called_once_with(
+            "https://example.com/discovery/v2.0/keys", timeout=(5, 30)
         )
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)

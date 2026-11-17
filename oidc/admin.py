@@ -16,6 +16,7 @@ from oidc.forms import ImportUserForm
 from oidc.utils import (
     email_usename_to_url_safe,
     get_viewset_config,
+    parse_requests_timeout,
     replace_characters_in_username,
     str_to_bool,
 )
@@ -42,6 +43,12 @@ def get_import_conf() -> dict:
         ]
 
     return conf
+
+
+def _requests_timeout(config: dict):
+    return parse_requests_timeout(
+        config["REQUESTS_TIMEOUT"], "OPENID_IMPORT_USER['REQUESTS_TIMEOUT']"
+    )
 
 
 class ImportUserAdmin(BaseUserAdmin):
@@ -81,6 +88,7 @@ class ImportUserAdmin(BaseUserAdmin):
                 "client_id": config["CLIENT_ID"],
                 "client_secret": config["CLIENT_SECRET"],
             },
+            timeout=_requests_timeout(config),
         )
         response.raise_for_status()
         return response.json()
@@ -130,8 +138,9 @@ class ImportUserAdmin(BaseUserAdmin):
             config["QUERY_PARAM"]: query,
         }
         headers = {"Authorization": f"Bearer {token}"}
+        timeout = _requests_timeout(config)
         response = requests.get(
-            config["SEARCH_ENDPOINT"], params=params, headers=headers
+            config["SEARCH_ENDPOINT"], params=params, headers=headers, timeout=timeout
         )
 
         if response.status_code == 401:
@@ -139,7 +148,10 @@ class ImportUserAdmin(BaseUserAdmin):
             new_token = self._get_access_token(force_refresh=True)
             headers["Authorization"] = f"Bearer {new_token}"
             response = requests.get(
-                config["SEARCH_ENDPOINT"], params=params, headers=headers
+                config["SEARCH_ENDPOINT"],
+                params=params,
+                headers=headers,
+                timeout=timeout,
             )
 
         response.raise_for_status()
