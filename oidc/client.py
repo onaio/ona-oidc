@@ -66,67 +66,66 @@ def state_cache_key(state: str) -> str:
 
 
 # Signed, HttpOnly cookie binding a login to the browser that started
-# it (RFC 9700 §4.4, login CSRF). It holds the digests of the last few
-# states minted by login(); the callback requires the echoed state to
-# match one of them before it consults any cache entry.
-LOGIN_BINDING_COOKIE = "oidc_login_bind"
+# it (RFC 9700 §4.4, login CSRF). Each login start sets its own cookie
+# — named after the state it minted — so overlapping starts (other
+# tabs, other providers) never rewrite one another's binding and a
+# query-mode start can never downgrade the SameSite=None cookie a
+# form_post login still needs. The callback requires the echoed state
+# to match its own cookie before it consults any cache entry.
+LOGIN_BINDING_COOKIE_PREFIX = "oidc_login_bind_"
 # The salt scopes the signature so a value signed by this project for
 # any other purpose can never pass as a login binding.
 _LOGIN_BINDING_SALT = "oidc.login.binding"
 # Must outlive the longest time a user plausibly leaves the IdP page
 # open; the state/nonce cache TTLs end a flow earlier anyway.
 LOGIN_BINDING_MAX_AGE = 1800
-# One digest per concurrently started login the browser can finish;
-# a second tab's login start must not invalidate the first tab's.
-_LOGIN_BINDING_MAX_STATES = 3
 
 
 def _state_digest(state: str) -> str:
     return hashlib.sha256(state.encode("utf-8")).hexdigest()
 
 
-def _load_login_binding(cookie_value: Optional[str]) -> list:
-    # A missing, tampered or expired cookie yields an empty list, never
-    # an error. A broken cookie may lose in-flight attempts; it must
-    # not block starting a new login.
+def login_binding_cookie_name(state: str) -> str:
+    """
+    Return the cookie name for the login attempt that minted ``state``.
+
+    The name carries a short digest prefix only to keep it readable;
+    the match is decided by the signed full digest in the value, so a
+    name collision alone can never satisfy the callback's check.
+    """
+    return LOGIN_BINDING_COOKIE_PREFIX + _state_digest(state)[:16]
+
+
+def seal_login_binding(state: str) -> str:
+    """
+    Return the signed cookie value binding ``state`` to the browser
+    the login redirect is sent to.
+    """
+    return signing.dumps(_state_digest(state), salt=_LOGIN_BINDING_SALT)
+
+
+def login_binding_matches(cookies: Mapping[str, str], state: Optional[str]) -> bool:
+    """
+    Whether the browser presenting this authorization response also
+    started the login that minted ``state``.
+
+    ``cookies`` is the request's cookie mapping; a missing, tampered
+    or expired binding cookie matches nothing, never raises.
+    """
+    if not state:
+        return False
+    cookie_value = cookies.get(login_binding_cookie_name(state))
     if not cookie_value:
-        return []
+        return False
     try:
-        digests = signing.loads(
+        digest = signing.loads(
             cookie_value,
             salt=_LOGIN_BINDING_SALT,
             max_age=LOGIN_BINDING_MAX_AGE,
         )
     except signing.BadSignature:
-        return []
-    return digests if isinstance(digests, list) else []
-
-
-def push_login_binding(cookie_value: Optional[str], state: str) -> str:
-    """
-    Return the signed cookie value for a new login start, holding
-    the digest of ``state`` followed by the newest previous digests.
-
-    ``cookie_value`` is the browser's current cookie, or None; a
-    tampered or expired value starts a fresh binding.
-    """
-    digest = _state_digest(state)
-    digests = [digest] + [d for d in _load_login_binding(cookie_value) if d != digest]
-    return signing.dumps(digests[:_LOGIN_BINDING_MAX_STATES], salt=_LOGIN_BINDING_SALT)
-
-
-def login_binding_matches(cookie_value: Optional[str], state: Optional[str]) -> bool:
-    """
-    Whether the browser presenting this authorization response also
-    started the login that minted ``state``.
-    """
-    if not state:
         return False
-    expected = _state_digest(state)
-    return any(
-        hmac.compare_digest(str(digest), expected)
-        for digest in _load_login_binding(cookie_value)
-    )
+    return isinstance(digest, str) and hmac.compare_digest(digest, _state_digest(state))
 
 
 RESERVED_AUTHORIZE_PARAMS = frozenset(

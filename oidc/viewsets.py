@@ -41,7 +41,6 @@ from rest_framework.reverse import reverse
 import oidc.settings as default
 from oidc.client import (
     ID_TOKEN_LEEWAY_SECONDS,
-    LOGIN_BINDING_COOKIE,
     LOGIN_BINDING_MAX_AGE,
     REDIRECT_AFTER_AUTH,
     NoJSONWebKeyFound,
@@ -49,8 +48,9 @@ from oidc.client import (
     OpenIDClient,
     TokenVerificationFailed,
     UserInfoRequestFailed,
+    login_binding_cookie_name,
     login_binding_matches,
-    push_login_binding,
+    seal_login_binding,
     state_cache_key,
 )
 from oidc.renderers import SensitiveTemplateHTMLRenderer
@@ -240,15 +240,14 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 # IdP, which browsers strip Lax cookies from; browsers
                 # only accept SameSite=None cookies over HTTPS.
                 samesite = "None" if client.response_mode == "form_post" else "Lax"
+                # Each login attempt gets its own cookie, named after
+                # its state. A start never reads or rewrites another
+                # attempt's cookie, so overlapping logins (other tabs,
+                # other providers, either response mode) stay
+                # independently completable.
                 response.set_cookie(
-                    LOGIN_BINDING_COOKIE,
-                    # Only login starts write this cookie, and each one
-                    # reads the previous value first to carry its digests
-                    # forward. Overwriting with only the new state would
-                    # invalidate a login still in flight in another tab.
-                    push_login_binding(
-                        request.COOKIES.get(LOGIN_BINDING_COOKIE), state
-                    ),
+                    login_binding_cookie_name(state),
+                    seal_login_binding(state),
                     max_age=LOGIN_BINDING_MAX_AGE,
                     httponly=True,
                     secure=samesite == "None" or request.is_secure(),
@@ -721,7 +720,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
             state_value = server_response.get("state")
             if client.enforce_browser_binding and not login_binding_matches(
-                request.COOKIES.get(LOGIN_BINDING_COOKIE), state_value
+                request.COOKIES, state_value
             ):
                 # This runs before the callback consults any cache
                 # entry or touches the token. The callback only honours

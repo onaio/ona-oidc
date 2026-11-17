@@ -23,6 +23,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 
 from oidc.client import (
+    LOGIN_BINDING_COOKIE_PREFIX,
     LOGIN_BINDING_MAX_AGE,
     REDIRECT_AFTER_AUTH,
     REQUEST_MODES,
@@ -31,8 +32,9 @@ from oidc.client import (
     OpenIDClient,
     TokenVerificationFailed,
     UserInfoRequestFailed,
+    login_binding_cookie_name,
     login_binding_matches,
-    push_login_binding,
+    seal_login_binding,
     state_cache_key,
 )
 from tests.error_reports import escaped_frames, reported_locals
@@ -1806,72 +1808,73 @@ class IDTokenValidationTestCase(TestCase):
                 self.assertEqual(decoded["aud"], "client")
 
 
-class PushLoginBindingTestCase(TestCase):
-    """Contract of the value push_login_binding mints for the cookie."""
+class SealLoginBindingTestCase(TestCase):
+    """Contract of the per-attempt binding cookie name and value."""
 
-    def test_fresh_binding_remembers_only_the_new_state(self):
-        """With no prior cookie, only the pushed state is bound."""
-        value = push_login_binding(None, "state-1")
-        self.assertTrue(login_binding_matches(value, "state-1"))
-        self.assertFalse(login_binding_matches(value, "state-2"))
+    def test_sealed_value_matches_only_its_own_state(self):
+        """A sealed cookie binds the state it was minted for, no other."""
+        cookies = {
+            login_binding_cookie_name("state-1"): seal_login_binding("state-1")
+        }
+        self.assertTrue(login_binding_matches(cookies, "state-1"))
+        self.assertFalse(login_binding_matches(cookies, "state-2"))
 
-    def test_pushing_carries_earlier_states_forward(self):
-        """A new login start keeps the previous starts bound."""
-        value = push_login_binding(None, "state-1")
-        value = push_login_binding(value, "state-2")
-        self.assertTrue(login_binding_matches(value, "state-1"))
-        self.assertTrue(login_binding_matches(value, "state-2"))
+    def test_each_state_gets_its_own_cookie_name(self):
+        """Two login attempts never share a cookie name."""
+        self.assertNotEqual(
+            login_binding_cookie_name("state-1"),
+            login_binding_cookie_name("state-2"),
+        )
 
-    def test_the_fourth_push_evicts_the_oldest_state(self):
-        """Only the newest three states stay bound."""
-        value = None
-        for state in ("state-1", "state-2", "state-3", "state-4"):
-            value = push_login_binding(value, state)
-        self.assertFalse(login_binding_matches(value, "state-1"))
-        for state in ("state-2", "state-3", "state-4"):
-            with self.subTest(state=state):
-                self.assertTrue(login_binding_matches(value, state))
+    def test_cookie_names_carry_the_public_prefix(self):
+        """Every attempt's cookie name starts with the shared prefix."""
+        self.assertTrue(
+            login_binding_cookie_name("state-1").startswith(
+                LOGIN_BINDING_COOKIE_PREFIX
+            )
+        )
 
-    def test_corrupt_prior_cookie_starts_a_fresh_binding(self):
-        """A tampered prior value loses old bindings, never the new login."""
-        value = push_login_binding(None, "state-1")
-        value = push_login_binding(value[:-1], "state-2")
-        self.assertTrue(login_binding_matches(value, "state-2"))
-        self.assertFalse(login_binding_matches(value, "state-1"))
+    def test_value_sealed_for_another_state_never_matches(self):
+        """A sealed value filed under another state's cookie name fails.
+
+        The signed value holds the full state digest, so colliding or
+        swapping cookie names alone can never satisfy the check.
+        """
+        cookies = {
+            login_binding_cookie_name("state-1"): seal_login_binding("state-2")
+        }
+        self.assertFalse(login_binding_matches(cookies, "state-1"))
 
 
 class LoginBindingMatchesTestCase(TestCase):
     """Contract of the callback-side login binding check."""
 
     def setUp(self):
-        self.value = push_login_binding(None, "state-1")
+        self.cookie_name = login_binding_cookie_name("state-1")
+        self.cookies = {self.cookie_name: seal_login_binding("state-1")}
 
     def test_missing_cookie_binds_nothing(self):
-        """Without a cookie no state is bound."""
-        self.assertFalse(login_binding_matches(None, "state-1"))
-        self.assertFalse(login_binding_matches("", "state-1"))
+        """Without this attempt's cookie no state is bound."""
+        self.assertFalse(login_binding_matches({}, "state-1"))
+        self.assertFalse(login_binding_matches({"other": "value"}, "state-1"))
 
     def test_missing_state_never_matches(self):
-        """A response without a state cannot be bound, cookie or not."""
-        self.assertFalse(login_binding_matches(self.value, None))
-        self.assertFalse(login_binding_matches(self.value, ""))
-
-    def test_only_the_bound_state_matches(self):
-        """The pushed state matches; any other value does not."""
-        self.assertTrue(login_binding_matches(self.value, "state-1"))
-        self.assertFalse(login_binding_matches(self.value, "state-2"))
+        """A response without a state cannot be bound, cookies or not."""
+        self.assertFalse(login_binding_matches(self.cookies, None))
+        self.assertFalse(login_binding_matches(self.cookies, ""))
 
     def test_tampered_cookie_matches_nothing(self):
         """A value failing signature verification binds no state."""
-        self.assertFalse(login_binding_matches(self.value[:-1], "state-1"))
+        tampered = {self.cookie_name: self.cookies[self.cookie_name][:-1]}
+        self.assertFalse(login_binding_matches(tampered, "state-1"))
 
     def test_cookie_expires_after_the_max_age(self):
         """The binding holds just before the max age and lapses after it."""
         now = time.time()
         with patch("time.time", return_value=now + LOGIN_BINDING_MAX_AGE - 60):
-            self.assertTrue(login_binding_matches(self.value, "state-1"))
+            self.assertTrue(login_binding_matches(self.cookies, "state-1"))
         with patch("time.time", return_value=now + LOGIN_BINDING_MAX_AGE + 1):
-            self.assertFalse(login_binding_matches(self.value, "state-1"))
+            self.assertFalse(login_binding_matches(self.cookies, "state-1"))
 
     def test_value_signed_without_the_binding_salt_matches_nothing(self):
         """A signature minted for any other purpose cannot bind a login.
@@ -1880,4 +1883,6 @@ class LoginBindingMatchesTestCase(TestCase):
         without the binding salt.
         """
         digest = hashlib.sha256(b"state-1").hexdigest()
-        self.assertFalse(login_binding_matches(signing.dumps([digest]), "state-1"))
+        self.assertFalse(
+            login_binding_matches({self.cookie_name: signing.dumps(digest)}, "state-1")
+        )

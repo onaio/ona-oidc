@@ -29,7 +29,6 @@ from oidc.client import (
     REDIRECT_AFTER_AUTH,
     NoJSONWebKeyFound,
     NonceVerificationFailed,
-    LOGIN_BINDING_COOKIE,
     OpenIDClient,
     TokenVerificationFailed,
     state_cache_key,
@@ -3232,6 +3231,11 @@ class TestSSOCookieJWTExpiry(TestCase):
             time.tzset()
 
 
+# The browser-visible name prefix of the per-attempt binding cookie.
+# Deliberately a literal, not an import: renaming the cookie the
+# deployed browsers already hold must fail a test.
+BINDING_COOKIE_PREFIX = "oidc_login_bind"
+
 # Built without ENFORCE_BROWSER_BINDING so these tests exercise the
 # default, which is enforcement ON.
 BINDING_AUTH_SERVERS = {
@@ -3278,15 +3282,14 @@ class LoginBrowserBindingTestCase(TestCase):
         The state in the login redirect URL plus the cookie login() set
         are exactly what the callback requires, end to end.
         """
-        login_view = UserModelOpenIDConnectViewset.as_view({"get": "login"})
-        login_response = login_view(self.factory.get("/"), auth_server="default")
+        jar = {}
+        state, login_response = self._start_login_response(jar)
         self.assertEqual(login_response.status_code, 302)
 
-        cookie = login_response.cookies.get(LOGIN_BINDING_COOKIE)
-        self.assertIsNotNone(cookie)
-        self.assertTrue(cookie["httponly"])
-
-        state = parse_qs(urlparse(login_response.url).query)["state"][0]
+        binding_cookies = self._binding_cookies(login_response)
+        self.assertEqual(len(binding_cookies), 1)
+        self.assertTrue(next(iter(binding_cookies.values()))["httponly"])
+        self._store_cookies(jar, login_response)
 
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         with patch(
@@ -3301,21 +3304,45 @@ class LoginBrowserBindingTestCase(TestCase):
             request = self.factory.post(
                 "/", data={"id_token": "a.b.c", "state": state}
             )
-            request.COOKIES[LOGIN_BINDING_COOKIE] = cookie.value
+            request.COOKIES.update(self._cross_site_post_cookies(jar))
             response = view(request, auth_server="default")
         self.assertEqual(response.status_code, 302)
         mock_verify.assert_called_once()
 
-    def _start_login(self, cookies=None):
-        login_view = UserModelOpenIDConnectViewset.as_view({"get": "login"})
-        request = self.factory.get("/")
-        if cookies:
-            request.COOKIES.update(cookies)
-        response = login_view(request, auth_server="default")
-        state = parse_qs(urlparse(response.url).query)["state"][0]
-        return state, response.cookies[LOGIN_BINDING_COOKIE].value
+    @staticmethod
+    def _binding_cookies(response):
+        """The binding cookie morsels a response sets, by cookie name."""
+        return {
+            name: morsel
+            for name, morsel in response.cookies.items()
+            if name.startswith(BINDING_COOKIE_PREFIX) and morsel["max-age"] != 0
+        }
 
-    def _bound_callback(self, state, cookie_value):
+    @staticmethod
+    def _store_cookies(jar, response):
+        """Apply a response's Set-Cookie headers to a simulated browser jar."""
+        for name, morsel in response.cookies.items():
+            if morsel["max-age"] == 0:
+                # delete_cookie sends Max-Age=0; a browser drops the cookie.
+                jar.pop(name, None)
+            else:
+                jar[name] = morsel
+
+    @staticmethod
+    def _cross_site_post_cookies(jar):
+        """The subset of ``jar`` a browser sends on a cross-site POST.
+
+        Browsers withhold SameSite=Lax (and Strict) cookies from
+        cross-site POSTs, which is how a form_post IdP delivers the
+        authorization response.
+        """
+        return {
+            name: morsel.value
+            for name, morsel in jar.items()
+            if morsel["samesite"] == "None"
+        }
+
+    def _callback_with_cookies(self, state, cookies, auth_server="default"):
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         with patch(
             "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
@@ -3329,30 +3356,90 @@ class LoginBrowserBindingTestCase(TestCase):
             request = self.factory.post(
                 "/", data={"id_token": "a.b.c", "state": state}
             )
-            if cookie_value is not None:
-                request.COOKIES[LOGIN_BINDING_COOKIE] = cookie_value
-            return view(request, auth_server="default")
+            request.COOKIES.update(cookies)
+            return view(request, auth_server=auth_server)
+
+    def _start_login_response(self, jar, auth_server="default"):
+        """GET the login action sending ``jar``'s cookies; return (state, response)."""
+        login_view = UserModelOpenIDConnectViewset.as_view({"get": "login"})
+        request = self.factory.get("/")
+        request.COOKIES.update(
+            {name: morsel.value for name, morsel in jar.items()}
+        )
+        response = login_view(request, auth_server=auth_server)
+        state = parse_qs(urlparse(response.url).query)["state"][0]
+        return state, response
+
+    def test_overlapping_login_starts_can_both_complete(self):
+        """Two logins started before either response lands can both finish.
+
+        Both requests go out with the same initial cookie jar — neither
+        start sees the other's Set-Cookie — and the browser then stores
+        both responses' cookies. Neither callback may be rejected.
+        """
+        jar = {}
+        first_state, first_response = self._start_login_response(jar)
+        second_state, second_response = self._start_login_response(jar)
+        self._store_cookies(jar, first_response)
+        self._store_cookies(jar, second_response)
+        for state in (first_state, second_state):
+            with self.subTest(state=state):
+                response = self._callback_with_cookies(
+                    state, self._cross_site_post_cookies(jar)
+                )
+                self.assertEqual(response.status_code, 302)
+
+    def test_query_login_start_keeps_form_post_login_completable(self):
+        """A query-mode login start does not break a form_post login in flight.
+
+        The form_post provider's callback is a cross-site POST, which
+        the browser only sends SameSite=None cookies on. A later login
+        start against a query-mode provider must not leave the first
+        login's binding in a cookie the browser withholds from that POST.
+        """
+        with override_settings(
+            OPENID_CONNECT_AUTH_SERVERS={
+                **BINDING_AUTH_SERVERS,
+                "queryidp": {
+                    **BINDING_AUTH_SERVERS["default"],
+                    "RESPONSE_MODE": "query",
+                },
+            }
+        ):
+            jar = {}
+            form_post_state, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+            _, response = self._start_login_response(jar, auth_server="queryidp")
+            self._store_cookies(jar, response)
+            response = self._callback_with_cookies(
+                form_post_state, self._cross_site_post_cookies(jar)
+            )
+            self.assertEqual(response.status_code, 302)
 
     def test_login_in_second_tab_keeps_first_tab_completable(self):
-        """A newer login start does not invalidate an older tab's login.
-
-        The cookie keeps the last three states, so completing with any
-        of them succeeds.
-        """
-        first_state, first_cookie = self._start_login()
-        _, second_cookie = self._start_login(
-            {LOGIN_BINDING_COOKIE: first_cookie}
+        """A newer login start does not invalidate an older tab's login."""
+        jar = {}
+        first_state, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
+        _, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
+        response = self._callback_with_cookies(
+            first_state, self._cross_site_post_cookies(jar)
         )
-        response = self._bound_callback(first_state, second_cookie)
         self.assertEqual(response.status_code, 302)
 
-    def test_binding_cookie_remembers_only_the_last_three_logins(self):
-        """A state older than the last three login starts is rejected."""
-        oldest_state, cookie = self._start_login()
+    def test_many_sequential_login_starts_keep_the_oldest_completable(self):
+        """No number of newer login starts evicts an older attempt's binding."""
+        jar = {}
+        oldest_state, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
         for _ in range(3):
-            _, cookie = self._start_login({LOGIN_BINDING_COOKIE: cookie})
-        response = self._bound_callback(oldest_state, cookie)
-        self.assertEqual(response.status_code, 401)
+            _, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+        response = self._callback_with_cookies(
+            oldest_state, self._cross_site_post_cookies(jar)
+        )
+        self.assertEqual(response.status_code, 302)
 
     def test_attacker_state_with_victim_cookie_is_rejected(self):
         """A response for a login this browser never started is rejected.
@@ -3361,15 +3448,25 @@ class LoginBrowserBindingTestCase(TestCase):
         binding cookie from their own login start, but the delivered
         response carries the attacker's state.
         """
-        _, victim_cookie = self._start_login()
-        attacker_state, _ = self._start_login()
-        response = self._bound_callback(attacker_state, victim_cookie)
+        victim_jar = {}
+        _, response = self._start_login_response(victim_jar)
+        self._store_cookies(victim_jar, response)
+        attacker_state, _ = self._start_login_response({})
+        response = self._callback_with_cookies(
+            attacker_state, self._cross_site_post_cookies(victim_jar)
+        )
         self.assertEqual(response.status_code, 401)
 
     def test_tampered_binding_cookie_is_rejected(self):
         """A binding cookie that fails signature verification binds nothing."""
-        state, cookie = self._start_login()
-        response = self._bound_callback(state, cookie[:-1])
+        jar = {}
+        state, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
+        cookies = {
+            name: value[:-1]
+            for name, value in self._cross_site_post_cookies(jar).items()
+        }
+        response = self._callback_with_cookies(state, cookies)
         self.assertEqual(response.status_code, 401)
 
     def test_opted_out_server_keeps_the_old_behaviour(self):
@@ -3382,10 +3479,9 @@ class LoginBrowserBindingTestCase(TestCase):
                 }
             }
         ):
-            login_view = UserModelOpenIDConnectViewset.as_view({"get": "login"})
-            login_response = login_view(self.factory.get("/"), auth_server="default")
-            self.assertNotIn(LOGIN_BINDING_COOKIE, login_response.cookies)
-            response = self._bound_callback("any-state", None)
+            _, login_response = self._start_login_response({})
+            self.assertEqual(self._binding_cookies(login_response), {})
+            response = self._callback_with_cookies("any-state", {})
             self.assertEqual(response.status_code, 302)
 
     def test_binding_cookie_attributes_follow_the_response_mode(self):
@@ -3395,11 +3491,8 @@ class LoginBrowserBindingTestCase(TestCase):
         which browsers strip Lax cookies from, and they only accept
         SameSite=None cookies over HTTPS.
         """
-        login_view = UserModelOpenIDConnectViewset.as_view({"get": "login"})
-
-        cookie = login_view(self.factory.get("/"), auth_server="default").cookies[
-            LOGIN_BINDING_COOKIE
-        ]
+        _, response = self._start_login_response({})
+        (cookie,) = self._binding_cookies(response).values()
         self.assertEqual(cookie["samesite"], "None")
         self.assertTrue(cookie["secure"])
 
@@ -3411,7 +3504,6 @@ class LoginBrowserBindingTestCase(TestCase):
                 }
             }
         ):
-            cookie = login_view(
-                self.factory.get("/"), auth_server="default"
-            ).cookies[LOGIN_BINDING_COOKIE]
+            _, response = self._start_login_response({})
+            (cookie,) = self._binding_cookies(response).values()
             self.assertEqual(cookie["samesite"], "Lax")
