@@ -3416,6 +3416,59 @@ class LoginBrowserBindingTestCase(TestCase):
             )
             self.assertEqual(response.status_code, 302)
 
+    def test_completed_login_expires_only_its_own_binding_cookie(self):
+        """The success response deletes the finished attempt's cookie, no other.
+
+        A still-pending attempt's cookie survives and that login stays
+        completable; the browser is left with no cookie for the spent
+        state.
+        """
+        jar = {}
+        first_state, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
+        second_state, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
+
+        response = self._callback_with_cookies(
+            first_state, self._cross_site_post_cookies(jar)
+        )
+        self.assertEqual(response.status_code, 302)
+        self._store_cookies(jar, response)
+        remaining = [
+            name for name in jar if name.startswith(BINDING_COOKIE_PREFIX)
+        ]
+        self.assertEqual(len(remaining), 1)
+
+        response = self._callback_with_cookies(
+            second_state, self._cross_site_post_cookies(jar)
+        )
+        self.assertEqual(response.status_code, 302)
+
+    def test_rejected_unknown_user_login_expires_its_binding_cookie(self):
+        """The not-authorized response also deletes the attempt's cookie.
+
+        With AUTO_CREATE_USER off and no matching account the flow ends
+        at that 401, so the attempt's cookie must not linger.
+        """
+        with override_settings(
+            OPENID_CONNECT_VIEWSET_CONFIG={
+                **OPENID_CONNECT_VIEWSET_CONFIG,
+                "AUTO_CREATE_USER": False,
+            }
+        ):
+            jar = {}
+            state, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+            response = self._callback_with_cookies(
+                state, self._cross_site_post_cookies(jar)
+            )
+            self.assertEqual(response.status_code, 401)
+            self._store_cookies(jar, response)
+            self.assertEqual(
+                [name for name in jar if name.startswith(BINDING_COOKIE_PREFIX)],
+                [],
+            )
+
     def test_login_in_second_tab_keeps_first_tab_completable(self):
         """A newer login start does not invalidate an older tab's login."""
         jar = {}

@@ -671,6 +671,25 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         if state:
             cache.delete(state_cache_key(state))
 
+    @staticmethod
+    def _expire_login_binding(
+        response: HttpResponse, client: OpenIDClient, state: Optional[str]
+    ) -> None:
+        """Expire a finished login attempt's binding cookie.
+
+        Called on the callback's terminal responses, alongside
+        ``_clear_login_states``: the attempt is over, so its cookie is
+        deleted instead of lingering until max age. Other attempts'
+        cookies are untouched. The attributes mirror the ones login()
+        set so the deletion addresses the same cookie.
+        """
+        if client.enforce_browser_binding and state:
+            response.delete_cookie(
+                login_binding_cookie_name(state),
+                path="/",
+                samesite="None" if client.response_mode == "form_post" else "Lax",
+            )
+
     @action(methods=["POST", "GET"], detail=False)
     @sensitive_variables()
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
@@ -849,7 +868,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
                     if not user and not self.auto_create_user:
                         self._clear_login_states(server_response)
-                        return Response(
+                        response = Response(
                             {
                                 "error": _(
                                     "The request is not authorized. Please contact the administrator."
@@ -859,6 +878,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             status=status.HTTP_401_UNAUTHORIZED,
                             template_name="oidc/oidc_unrecoverable_error.html",
                         )
+                        self._expire_login_binding(
+                            response, client, server_response.get("state")
+                        )
+                        return response
 
                     if not user:
                         user_data, missing_fields = self._clean_user_data(user_data)
@@ -963,12 +986,16 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         user.last_login = timezone.now()
                         user.save(update_fields=["last_login"])
                         self._clear_login_states(server_response)
-                        return self.generate_successful_response(
+                        response = self.generate_successful_response(
                             request,
                             user,
                             redirect_after=redirect_after,
                             auth_server=auth_server,
                         )
+                        self._expire_login_binding(
+                            response, client, server_response.get("state")
+                        )
+                        return response
         auth_servers = list(settings.OPENID_CONNECT_AUTH_SERVERS.keys())
         default_auth_server = auth_servers[0] if auth_servers else "default"
         return Response(
