@@ -600,19 +600,37 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
         return user_data, missing_fields
 
+    @staticmethod
+    def _without_blank_emails(user_data: dict) -> dict:
+        """
+        Drop blank addresses, which would otherwise match every account
+        stored without an email.
+        """
+
+        def is_address(value: object) -> bool:
+            return isinstance(value, str) and bool(value.strip())
+
+        cleaned = {k: v for k, v in user_data.items() if k not in ("email", "emails")}
+        if is_address(user_data.get("email")):
+            cleaned["email"] = user_data["email"]
+        emails = user_data.get("emails")
+        addresses = (
+            [e for e in emails if is_address(e)] if isinstance(emails, list) else []
+        )
+        if addresses:
+            cleaned["emails"] = addresses
+        return cleaned
+
     def _email_is_unverified(
         self, client: OpenIDClient, claims: dict, user_data: dict
     ) -> bool:
         """
         Return ``True`` when the claims carry an address that the provider
         has not marked verified.
-
-        An ``email`` key counts even when blank, matching the account
-        lookup in ``callback``.
         """
         if not client.check_email_verified:
             return False
-        if "email" not in user_data and not user_data.get("emails"):
+        if not (user_data.get("email") or user_data.get("emails")):
             return False
         if "email_verified" not in claims:
             return bool(client.require_verified_email)
@@ -764,7 +782,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     user_claims = dict(fetched_claims)
                     if user_claims.get(REDIRECT_AFTER_AUTH):
                         redirect_after = user_claims.pop(REDIRECT_AFTER_AUTH)
-                    user_data = self.map_claims_to_model_field(user_claims)
+                    user_data = self._without_blank_emails(
+                        self.map_claims_to_model_field(user_claims)
+                    )
                     # Custom username provided by the user in case
                     # a user with the same preferred username already exists
                     provided_username = request.data.get("username")
