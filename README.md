@@ -116,14 +116,21 @@ admin's token and search requests.
 ### ID token validation
 
 ID tokens must be signed with an algorithm in the per-server
-`ID_TOKEN_ALLOWED_ALGORITHMS` list and carry `exp`, `iat` and `aud`
+`ID_TOKEN_ALLOWED_ALGORITHMS` list and carry `exp`, `iat`, `aud` and `sub`
 claims; tokens that do not are rejected. The list defaults to the
 RSA family (`RS256`/`RS384`/`RS512`/`PS256`/`PS384`/`PS512`) and may
 only contain algorithms from that family — set it to a subset, e.g.
 `["RS256"]`, to accept exactly what your provider signs with. Any
-other value raises `ImproperlyConfigured`. When `ISSUER` is set, the token's
-`iss` claim must match it exactly; use the `issuer` value from the
-provider's `/.well-known/openid-configuration` document. For Microsoft
+other value raises `ImproperlyConfigured`. A token with more than one
+distinct audience must also carry an `azp` claim equal to `CLIENT_ID`.
+The `sub` and `azp` checks are on by default, and each can be turned
+off per server. Set `ID_TOKEN_REQUIRE_SUB` to `False` for a provider
+that omits `sub`. Set `ID_TOKEN_VERIFY_AZP` to `False` only for a
+provider that sends several audiences without `azp`. Turning it off
+also accepts a token whose `azp` names another client. When
+`ISSUER` is set, the token's `iss` claim must match it exactly; use the
+`issuer` value from the provider's
+`/.well-known/openid-configuration` document. For Microsoft
 Entra ID that value contains your tenant id — tokens never carry the
 literal `common`, so a multi-tenant app on the `common` endpoint
 cannot use a single exact-match `ISSUER` and should leave it unset.
