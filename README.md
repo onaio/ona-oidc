@@ -211,11 +211,14 @@ rendering of that response carries the same key.
 ### Browser binding (login CSRF)
 
 Every login carries a `state` value, and the login redirect sets a
-short-lived, signed, `HttpOnly` cookie holding the last three of them.
-The callback only honours an authorization response whose echoed
-`state` matches that cookie, so an attacker cannot replay a response
-captured in one browser into another to log a victim into the
-attacker's account (RFC 9700 §4.4).
+short-lived, signed, `HttpOnly` cookie bound to that one login
+attempt. The callback only honours an authorization response whose
+echoed `state` matches the cookie set when its login started, so an
+attacker cannot replay a response captured in one browser into
+another to log a victim into the attacker's account (RFC 9700 §4.4).
+Each attempt has its own cookie, so logins started in other tabs or
+against other configured providers stay independently completable;
+a cookie lapses 30 minutes after its login starts.
 
 - **`ENFORCE_BROWSER_BINDING`** (`bool`, default `True`), per auth
   server. Set it to `False` only for deployments whose logins do not
