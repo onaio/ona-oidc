@@ -47,6 +47,8 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "REQUESTS_TIMEOUT": (5, 30),
         "ID_TOKEN_VERIFY_AZP": True,
         "ID_TOKEN_REQUIRE_SUB": True,
+        "CHECK_EMAIL_VERIFIED": False,
+        "REQUIRE_VERIFIED_EMAIL": False,
         "ID_TOKEN_ALLOWED_ALGORITHMS": [
             "RS256",
             "RS384",

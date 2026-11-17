@@ -21,7 +21,7 @@ import requests
 from jwt.algorithms import RSAAlgorithm
 
 import oidc.settings as default
-from oidc.utils import parse_requests_timeout, str_to_bool
+from oidc.utils import has_email_address, parse_requests_timeout, str_to_bool
 
 REDIRECT_AFTER_AUTH = "redirect_after_auth"
 REQUEST_MODES = ("form_post", "query")
@@ -206,6 +206,19 @@ class OpenIDClient:
             ),
             f"OPENID_CONNECT_AUTH_SERVERS[{auth_server!r}]['REQUESTS_TIMEOUT']",
         )
+        self.require_verified_email = str_to_bool(
+            config[auth_server].get(
+                "REQUIRE_VERIFIED_EMAIL", default_config["REQUIRE_VERIFIED_EMAIL"]
+            )
+        )
+        check_email_verified = str_to_bool(
+            config[auth_server].get(
+                "CHECK_EMAIL_VERIFIED", default_config["CHECK_EMAIL_VERIFIED"]
+            )
+        )
+        self.check_email_verified = bool(
+            self.require_verified_email or check_email_verified
+        )
         self.use_pkce = str_to_bool(
             config[auth_server].get("USE_PKCE", default_config["USE_PKCE"])
         )
@@ -371,14 +384,7 @@ class OpenIDClient:
         if not decoded_id_token:
             return False
 
-        return not (
-            "email" in decoded_id_token
-            or (
-                "emails" in decoded_id_token
-                and decoded_id_token["emails"]
-                and decoded_id_token["emails"][0]
-            )
-        )
+        return not has_email_address(decoded_id_token)
 
     def tokens_to_user_info(
         self,

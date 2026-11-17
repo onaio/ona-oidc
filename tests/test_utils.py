@@ -1,5 +1,7 @@
 """Tests for module oidc.utils"""
 
+import time
+
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
@@ -54,6 +56,23 @@ class TestAuthenticateSSO(TestCase):
         """A token with no expiry is a forever-credential; refuse it."""
         token = jwt.encode({"email": "jdoe@example.com"}, "abc", algorithm="HS256")
         self.assertIsNone(authenticate_sso(self._request(token)))
+
+    @override_settings(OPENID_CONNECT_VIEWSET_CONFIG={"JWT_SECRET_KEY": "abc"})
+    def test_blank_cookie_value_matches_no_account(self):
+        """A blank value matches no account, not even one stored without it."""
+        for username, email in [("blank", ""), ("spaces", "  ")]:
+            get_user_model().objects.create(
+                username=username, email=email, is_active=True
+            )
+        exp = int(time.time()) + 60
+        for value in ["", "  "]:
+            with self.subTest(value=value):
+                token = jwt.encode({"email": value, "exp": exp}, "abc", algorithm="HS256")
+                self.assertIsNone(authenticate_sso(self._request(token)))
+        token = jwt.encode(
+            {"email": "jdoe@example.com", "exp": exp}, "abc", algorithm="HS256"
+        )
+        self.assertEqual(authenticate_sso(self._request(token)), (self.user, True))
 
     def test_missing_or_empty_secret_raises_improperly_configured(self):
         """A token can never be verified against a missing/empty secret."""

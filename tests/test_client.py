@@ -1102,6 +1102,25 @@ class OpenIDClientTestCase(TestCase):
         self.assertIn("Unsupported algorithm", str(context.exception))
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    def test_blank_email_claims_fetch_user_info(self):
+        """User info is fetched unless the token carries a non-blank address."""
+        client = OpenIDClient("default")
+        for claims, expected in [
+            ({"email": ""}, True),
+            ({"email": "  "}, True),
+            ({"email": None}, True),
+            ({"emails": ["", " "]}, True),
+            ({"emails": "user@example.com"}, True),
+            ({"emails": ["", "user@example.com"]}, False),
+            ({"email": "", "emails": ["user@example.com"]}, False),
+            ({"email": "user@example.com"}, False),
+        ]:
+            with self.subTest(claims=claims):
+                self.assertEqual(
+                    client.should_retrieve_user_info({"sub": "1", **claims}), expected
+                )
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     def test_tokens_to_user_info_email_in_id_token(self):
         """Returns ID token claims when email is present"""
         client = OpenIDClient("default")

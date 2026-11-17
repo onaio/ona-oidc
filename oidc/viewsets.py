@@ -55,9 +55,11 @@ from oidc.utils import (
     get_login_query_param_allowlist,
     get_logout_query_param_allowlist,
     get_viewset_config,
+    has_email_address,
     is_safe_login_redirect,
     replace_characters_in_username,
     str_to_bool,
+    without_blank_emails,
 )
 
 default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
@@ -552,10 +554,12 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         or f"Invalid `{k}` value `{data[k]}`"
                     )
 
-    def _get_user_group_defaults(self, email: str) -> dict:
-        groups = [key for key in self.user_default_fields.keys() if key != "default"]
-
+    def _get_user_group_defaults(self, email: Optional[str]) -> dict:
         user_default = self.user_default_fields.get("default", {})
+        if not email:
+            return user_default
+
+        groups = [key for key in self.user_default_fields.keys() if key != "default"]
         for group in groups:
             match = re.match(group, email)
             if match:
@@ -599,6 +603,39 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         missing_fields.remove("username")
 
         return user_data, missing_fields
+
+    def _email_is_unverified(
+        self, client: OpenIDClient, claims: dict, user_data: dict
+    ) -> bool:
+        """
+        Return ``True`` when the check is on, ``user_data`` has an address,
+        and the claims don't mark it verified.
+        """
+        if not client.check_email_verified:
+            return False
+        if not has_email_address(user_data):
+            return False
+        if "email_verified" not in claims:
+            return bool(client.require_verified_email)
+        verified = claims["email_verified"]
+        # Some providers send the claim as a string.
+        return not (
+            verified is True
+            or (isinstance(verified, str) and verified.strip().lower() == "true")
+        )
+
+    def _unverified_email_response(self) -> Response:
+        return Response(
+            {
+                "error": _(
+                    "Your email address is not verified. Verify it with your "
+                    "identity provider, then sign in again."
+                ),
+                "error_title": _("Email address not verified"),
+            },
+            status=status.HTTP_401_UNAUTHORIZED,
+            template_name="oidc/oidc_unrecoverable_error.html",
+        )
 
     def _clear_login_states(self, server_response: dict) -> None:
         """Clear cached login states
@@ -728,12 +765,18 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     user_claims = dict(fetched_claims)
                     if user_claims.get(REDIRECT_AFTER_AUTH):
                         redirect_after = user_claims.pop(REDIRECT_AFTER_AUTH)
-                    user_data = self.map_claims_to_model_field(user_claims)
+                    user_data = without_blank_emails(
+                        self.map_claims_to_model_field(user_claims)
+                    )
                     # Custom username provided by the user in case
                     # a user with the same preferred username already exists
                     provided_username = request.data.get("username")
                     if isinstance(provided_username, str) and provided_username:
                         user_data.update({"username": provided_username})
+                    if self._email_is_unverified(client, user_claims, user_data):
+                        logger.warning("Login rejected: email address not verified")
+                        self._clear_login_states(server_response)
+                        return self._unverified_email_response()
                     filter_kwargs = None
                     q_objects = Q()
 
