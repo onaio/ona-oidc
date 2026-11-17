@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.core.exceptions import ImproperlyConfigured
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 
@@ -88,6 +89,7 @@ class ImportUserAdminTestCase(TestCase):
                 "client_id": "cid",
                 "client_secret": "secret",
             },
+            timeout=(5, 30),
         )
 
     @patch("oidc.admin.requests.post")
@@ -119,6 +121,36 @@ class ImportUserAdminTestCase(TestCase):
         self.assertEqual(out[0]["email"], "a@b.com")
         self.assertEqual(mock_get.call_count, 2)
         self.assertEqual(mock_post.call_count, 1)
+
+    @override_settings(OPENID_IMPORT_USER={**OPENID_IMPORT_USER, "REQUESTS_TIMEOUT": 7})
+    @patch("oidc.admin.requests.post")
+    @patch("oidc.admin.requests.get")
+    def test_requests_timeout_setting_reaches_every_request(self, mock_get, mock_post):
+        """The token request, the search and its retry all use
+        ``REQUESTS_TIMEOUT``"""
+        admin_obj = ImportUserAdmin(model=get_user_model(), admin_site=admin.site)
+        retry = Mock(status_code=200)
+        retry.json = lambda: []
+        mock_get.side_effect = [Mock(status_code=401), retry]
+        mock_post.return_value = Mock(status_code=200)
+        mock_post.return_value.json = lambda: {"access_token": "newtok"}
+
+        admin_obj._search_user(token="oldtok", query="ab")
+
+        calls = mock_get.call_args_list + mock_post.call_args_list
+        self.assertEqual(len(calls), 3)
+        for call in calls:
+            self.assertEqual(call.kwargs["timeout"], 7)
+
+    @override_settings(OPENID_IMPORT_USER={**OPENID_IMPORT_USER, "REQUESTS_TIMEOUT": 0})
+    @patch("oidc.admin.requests.post")
+    def test_invalid_requests_timeout_is_rejected(self, mock_post):
+        """A ``REQUESTS_TIMEOUT`` that is not positive fails before any request"""
+        admin_obj = ImportUserAdmin(model=get_user_model(), admin_site=admin.site)
+
+        with self.assertRaisesMessage(ImproperlyConfigured, "REQUESTS_TIMEOUT"):
+            admin_obj._get_access_token(force_refresh=True)
+        mock_post.assert_not_called()
 
     def test_parse_search_results_mapping(self):
         """Map claim to model fields"""
@@ -184,6 +216,7 @@ class ImportUserAdminTestCase(TestCase):
             "https://idp.example.com/users",
             params={"q": "ab"},
             headers={"Authorization": "Bearer tok"},
+            timeout=(5, 30),
         )
 
     def test_search_user_view_empty_query_returns_empty(self):
