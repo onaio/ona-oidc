@@ -99,7 +99,9 @@ OPENID_CONNECT_AUTH_SERVERS = {
 `REQUEST_MODE` sets how the authorization code exchange sends the client
 credentials to `TOKEN_ENDPOINT`. The default, `form_post`, sends them in the
 request body. `query` puts them in the URL, where proxy and provider logs keep
-them. Use it only for a provider that requires it.
+them. Use it only for a provider that requires it. `manage.py check` warns
+(`oidc.W003`) for each auth server in query mode. To keep query mode, add
+`"oidc.W003"` to `SILENCED_SYSTEM_CHECKS`.
 
 ### Request timeouts
 
@@ -200,6 +202,18 @@ value, expired) are an authentication miss — `authenticate_sso` returns
 
 Future work: once `Secure=True` is enforced cohort-wide, the cookie name
 can migrate to `__Secure-SSO` for browser-enforced guarantees.
+
+### Credentials in error reports
+
+The token exchange, `authenticate_sso`, the viewsets' token-handling methods
+and the admin user search hide their local variables, and those of every
+function they call, from Django error reports. The viewsets also mask every POSTed value. A subclass that
+sets its own `renderer_classes` should render HTML with
+`oidc.renderers.SensitiveTemplateHTMLRenderer`. Django renders the username
+form after the view returns, and a plain `TemplateHTMLRenderer` lets an error
+report show the sign-in data the form carries. Sentry reads frame locals
+itself and ignores these markers, so hosts that use Sentry need their own
+scrubbing.
 
 ### Forwarding query parameters to the authorization endpoint
 

@@ -14,6 +14,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpResponseRedirect
+from django.views.decorators.debug import sensitive_variables
 
 import jwt
 import requests
@@ -509,6 +510,10 @@ class OpenIDClient:
             return None
         return cached_data
 
+    # A bare sensitive_variables() hides every local here and in the frames this
+    # calls. A list of names would miss values that callees hold under other
+    # names, and locals added later.
+    @sensitive_variables()
     def retrieve_tokens_using_auth_code(
         self, code: str, code_verifier: Optional[str] = None
     ) -> dict:

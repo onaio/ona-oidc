@@ -25,13 +25,15 @@ from django.http import (
     HttpResponseRedirect,
 )
 from django.utils import timezone
+from django.utils.decorators import method_decorator
 from django.utils.translation import gettext as _
+from django.views.decorators.debug import sensitive_post_parameters, sensitive_variables
 
 import jwt
 from jwt.exceptions import PyJWTError
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
-from rest_framework.renderers import JSONRenderer, TemplateHTMLRenderer
+from rest_framework.renderers import JSONRenderer
 from rest_framework.response import Response
 from rest_framework.reverse import reverse
 
@@ -46,6 +48,7 @@ from oidc.client import (
     UserInfoRequestFailed,
     state_cache_key,
 )
+from oidc.renderers import SensitiveTemplateHTMLRenderer
 from oidc.utils import (
     authenticate_sso,
     email_usename_to_url_safe,
@@ -93,6 +96,7 @@ DEFAULT_USERNAME_HELP_TEXT = "Username should not contain . @ - symbols"
 logger = logging.getLogger(__name__)
 
 
+@method_decorator(sensitive_post_parameters(), name="dispatch")
 class BaseOpenIDConnectViewset(viewsets.ViewSet):
     """
     BaseOpenIDConnectViewset: Base viewset that implements login and logout
@@ -100,7 +104,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     """
 
     permission_classes = [permissions.AllowAny]
-    renderer_classes = [JSONRenderer, TemplateHTMLRenderer]
+    renderer_classes = [JSONRenderer, SensitiveTemplateHTMLRenderer]
     user_model = None
 
     def perform_authentication(self, request):
@@ -108,6 +112,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             return
         return super().perform_authentication(request)
 
+    @sensitive_variables()
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         config = get_viewset_config()
@@ -182,6 +187,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             config.get("AUTO_CREATE_USER", default_config["AUTO_CREATE_USER"])
         )
 
+    @sensitive_variables()
     def _get_client(self, auth_server: str) -> Optional[OpenIDClient]:
         auth_config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
 
@@ -276,6 +282,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         return {"username": user.username}
 
     @action(methods=["GET"], detail=False)
+    @sensitive_variables()
     def logout(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
         auth_server = kwargs.get("auth_server")
         client = self._get_client(auth_server=auth_server)
@@ -603,6 +610,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             cache.delete(state_cache_key(state))
 
     @action(methods=["POST", "GET"], detail=False)
+    @sensitive_variables()
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
         auth_server = kwargs.get("auth_server")
         client = self._get_client(auth_server=auth_server)

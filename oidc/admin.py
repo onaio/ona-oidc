@@ -8,6 +8,7 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from django.core.cache import cache
 from django.http import JsonResponse
 from django.urls import path
+from django.views.decorators.debug import sensitive_variables
 
 import requests
 
@@ -22,6 +23,10 @@ from oidc.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class MissingAccessToken(requests.RequestException):
+    """The token endpoint answered without an ``access_token``."""
 
 
 User = get_user_model()
@@ -115,7 +120,7 @@ class ImportUserAdmin(BaseUserAdmin):
 
         if not token:
             # Defensive: malformed response
-            raise requests.RequestException("Token response missing 'access_token'")
+            raise MissingAccessToken("Token response missing 'access_token'")
 
         # Respect expires_in if provided
         expires_in = int(data.get("expires_in", 3600))
@@ -204,6 +209,26 @@ class ImportUserAdmin(BaseUserAdmin):
             )
         )
 
+    def _failed_search_response(
+        self, step: str, exc: requests.RequestException
+    ) -> JsonResponse:
+        """
+        Log which step of the user search failed and return no suggestions.
+
+        The log names the exception type and status, not its text, which can
+        echo the request.
+        """
+        status_code = getattr(exc.response, "status_code", None)
+        logger.error(
+            "User import %s failed: %s%s",
+            step,
+            type(exc).__name__,
+            f" HTTP {status_code}" if status_code else "",
+        )
+
+        return JsonResponse([], safe=False, status=200)
+
+    @sensitive_variables()
     def search_user(self, request):
         """Admin-protected JSON suggestions for importing a user"""
         config = get_import_conf()
@@ -213,11 +238,13 @@ class ImportUserAdmin(BaseUserAdmin):
             return JsonResponse([], safe=False, status=200)
 
         try:
-            results = self._search_user(self._get_access_token(), query)
+            access_token = self._get_access_token()
         except requests.RequestException as exc:
-            logger.exception(exc)
-
-            return JsonResponse([], safe=False, status=200)
+            return self._failed_search_response("token request", exc)
+        try:
+            results = self._search_user(access_token, query)
+        except requests.RequestException as exc:
+            return self._failed_search_response("search", exc)
 
         suggestions = self._parse_search_results(results)
 
