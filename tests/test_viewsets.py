@@ -1176,6 +1176,72 @@ class TestUserModelOpenIDConnectViewset(TestCase):
                 response.data.get("error"), "Missing required fields: first_name"
             )
 
+    def _assert_unrecoverable_auth_401(self, response):
+        """Assert the generic 401 page that asks the user to sign in again."""
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.template_name, "oidc/oidc_unrecoverable_error.html")
+        self.assertEqual(
+            response.data.get("error"),
+            "Unable to validate authentication request; "
+            "Kindly retry authentication process.",
+        )
+        self.assertEqual(
+            response.data.get("error_title"),
+            "Authentication request verification failed",
+        )
+
+    def test_unrecoverable_error_on_access_token_verification_failed(self):
+        """A failed access-token check is logged and shows the generic 401 page."""
+        reason = "Failed to validate access token: test reason"
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with (
+            patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+                return_value={"sub": "user-1"},
+            ),
+            patch(
+                "oidc.viewsets.OpenIDClient.tokens_to_user_info",
+                side_effect=TokenVerificationFailed(reason),
+            ),
+            self.assertLogs("oidc.viewsets", level="WARNING") as logs,
+        ):
+            request = self.factory.post("/", data={"id_token": "hdr.payload.sig"})
+            response = view(request, auth_server="default")
+
+        self._assert_unrecoverable_auth_401(response)
+        self.assertNotIn(reason, str(response.data))
+        self.assertIn(reason, logs.output[0])
+
+    def test_unrecoverable_error_on_non_ascii_access_token(self):
+        """A non-ASCII access token gets the 401 page. The log names the
+        reason, and neither the log nor the response holds the token."""
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with (
+            patch(
+                "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code",
+                return_value={
+                    "id_token": "hdr.payload.sig",
+                    "access_token": "t\u00f6ken",
+                },
+            ),
+            patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+                return_value={"sub": "user-1", "at_hash": "abc"},
+            ),
+            patch.object(
+                jwt, "get_unverified_header", return_value={"alg": "RS256"}
+            ) as mock_header,
+            self.assertLogs("oidc.viewsets", level="WARNING") as logs,
+        ):
+            request = self.factory.post("/", data={"code": "SplxlOBeZQQYbYS6WxSbIA"})
+            response = view(request, auth_server="default")
+
+        mock_header.assert_called_once_with("hdr.payload.sig")
+        self._assert_unrecoverable_auth_401(response)
+        self.assertIn("cannot compute at_hash", logs.output[0])
+        self.assertNotIn("t\u00f6ken", "\n".join(logs.output))
+        self.assertNotIn("t\u00f6ken", str(response.data))
+
     def test_create_non_existing_user(self):
         """
         Test that a new user is created if the username is present and

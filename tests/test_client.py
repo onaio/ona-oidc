@@ -1171,6 +1171,7 @@ class OpenIDClientTestCase(TestCase):
         decoded_id_token = {
             "sub": "1234567890",
             "name": "John Doe",
+            "at_hash": "some_hash",
             # No email
         }
         id_token = "header.payload.signature"
@@ -1181,7 +1182,7 @@ class OpenIDClientTestCase(TestCase):
         with self.assertRaises(TokenVerificationFailed) as context:
             client.tokens_to_user_info(decoded_id_token, id_token, access_token)
 
-        self.assertIn("Failed to validate access token", str(context.exception))
+        self.assertIn("at_hash does not match", str(context.exception))
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     def test_tokens_to_user_info_no_email_no_access_token(self):
@@ -1199,7 +1200,80 @@ class OpenIDClientTestCase(TestCase):
         with self.assertRaises(TokenVerificationFailed) as context:
             client.tokens_to_user_info(decoded_id_token, id_token, access_token)
 
-        self.assertIn("Failed to validate access token", str(context.exception))
+        self.assertIn("no access token", str(context.exception))
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    def test_tokens_to_user_info_id_token_without_at_hash(self):
+        """An ID token with no ``at_hash`` fails verification with its own reason."""
+        client = OpenIDClient("default")
+
+        with self.assertRaises(TokenVerificationFailed) as context:
+            client.tokens_to_user_info(
+                {"sub": "1234567890"}, "header.payload.signature", "access_token"
+            )
+
+        self.assertIn("ID token has no at_hash", str(context.exception))
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    def test_tokens_to_user_info_non_string_access_token(self):
+        """A non-string access token fails verification with a fixed reason."""
+        client = OpenIDClient("default")
+
+        with self.assertRaises(TokenVerificationFailed) as context:
+            client.tokens_to_user_info(
+                {"sub": "1234567890", "at_hash": "some_hash"},
+                "header.payload.signature",
+                12345,
+            )
+
+        self.assertIn("cannot compute at_hash", str(context.exception))
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch.object(jwt, "get_unverified_header")
+    def test_tokens_to_user_info_non_ascii_access_token(
+        self, mock_get_unverified_header
+    ):
+        """A non-ASCII access token fails verification with a fixed reason. The
+        ``UnicodeEncodeError``, which holds the token, is not chained."""
+        client = OpenIDClient("default")
+        decoded_id_token = {"sub": "1234567890", "at_hash": "some_hash"}
+        mock_get_unverified_header.return_value = {"alg": "RS256"}
+
+        with self.assertRaises(TokenVerificationFailed) as context:
+            client.tokens_to_user_info(
+                decoded_id_token, "header.payload.signature", "t\u00f6ken"
+            )
+
+        mock_get_unverified_header.assert_called_once_with("header.payload.signature")
+        self.assertIn("cannot compute at_hash", str(context.exception))
+        self.assertIsNone(context.exception.__context__)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {
+                **OPENID_CONNECT_AUTH_SERVERS["default"],
+                "VERIFY_ACCESS_TOKEN": False,
+            }
+        }
+    )
+    @patch.object(OpenIDClient, "retrieve_user_info")
+    @patch.object(OpenIDClient, "validate_access_token")
+    def test_tokens_to_user_info_skips_check_when_disabled(
+        self, mock_validate_access_token, mock_retrieve_user_info
+    ):
+        """With ``VERIFY_ACCESS_TOKEN`` off, userinfo is fetched without an ``at_hash``
+        check."""
+        mock_retrieve_user_info.return_value = {"email": "jdoe@example.com"}
+        client = OpenIDClient("default")
+        self.assertFalse(client.should_verify_access_token)
+
+        user_info = client.tokens_to_user_info(
+            {"sub": "1234567890"}, "header.payload.signature", "access_token_value"
+        )
+
+        self.assertEqual(user_info, {"email": "jdoe@example.com"})
+        mock_validate_access_token.assert_not_called()
+        mock_retrieve_user_info.assert_called_once_with("access_token_value")
 
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={

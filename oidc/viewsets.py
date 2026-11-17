@@ -862,6 +862,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 except (
                     NonceVerificationFailed,
                     NoJSONWebKeyFound,
+                    TokenVerificationFailed,
                     UserInfoRequestFailed,
                 ) as e:
                     logger.warning("Login rejected: %s", e)
