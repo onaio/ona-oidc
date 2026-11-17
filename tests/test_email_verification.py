@@ -178,6 +178,40 @@ class EmailVerifiedTestCase(TestCase):
                 self.assertIsNone(blank.last_login)
                 self.assertEqual(User.objects.count(), 2)
 
+    def test_blank_addresses_are_skipped_for_the_next_usable_one(self):
+        """A blank ``email`` or ``emails`` entry gives way to a real address."""
+        blank = User.objects.create_user(username="blank", email="")
+        no_email = {k: v for k, v in CLAIMS.items() if k != "email"}
+        for name, claims in {
+            "blank email": {**no_email, "email": "", "emails": ["jane@example.com"]},
+            "blank first entry": {**no_email, "emails": ["", "jane@example.com"]},
+        }.items():
+            with self.subTest(name):
+                self.user.last_login = None
+                self.user.save(update_fields=["last_login"])
+                self._assert_linked(self._callback({**claims, "email_verified": True}))
+                blank.refresh_from_db()
+                self.assertIsNone(blank.last_login)
+
+    def test_no_address_skips_user_defaults_groups(self):
+        """``USER_DEFAULTS`` groups are matched only against a real address."""
+        config = {
+            **settings.OPENID_CONNECT_VIEWSET_CONFIG,
+            "REQUIRED_USER_CREATION_FIELDS": ["first_name", "username"],
+            "USER_DEFAULTS": {r"^.*@ona\.io$": {"is_active": False}},
+        }
+        claims = {**CLAIMS, "email": "", "email_verified": True}
+        self.user.delete()
+        with (
+            override_settings(OPENID_CONNECT_VIEWSET_CONFIG=config),
+            patch.object(OpenIDClient, "tokens_to_user_info", return_value=claims),
+        ):
+            response = self._callback(claims)
+        self.assertEqual(response.status_code, 302)
+        created = User.objects.get()
+        self.assertEqual(created.email, "")
+        self.assertTrue(created.is_active)
+
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS=auth_servers(REQUIRE_VERIFIED_EMAIL=True)
     )

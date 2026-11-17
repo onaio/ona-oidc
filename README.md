@@ -150,8 +150,16 @@ people register can issue a token for an address they never proved they
 own. Set `CHECK_EMAIL_VERIFIED` to `True` on an auth server to refuse such
 logins. The callback then refuses a login whose claims carry an
 `email_verified` claim that is not `true` or the string `"true"`. The
-string may have any case and surrounding spaces. It
-neither links nor creates an account. The setting is off by default.
+string may have any case and surrounding spaces. A refused login neither
+links nor creates an account. The setting is off by default. Every auth
+server signs in to the same accounts, so turn the check on for each
+server whose users can register their own addresses.
+
+Blank addresses never match an account, whatever the settings. The
+callback ignores an `email` claim or `emails` entry that is empty or
+only spaces. Claims left with no address are treated like claims that
+never had one: the callback asks the userinfo endpoint, and refuses the
+login if `email` is a required field.
 
 Some providers, such as Microsoft Entra ID, omit the claim. With the
 check on, their addresses are trusted. Set `REQUIRE_VERIFIED_EMAIL` to

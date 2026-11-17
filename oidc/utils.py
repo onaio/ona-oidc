@@ -80,6 +80,27 @@ def str_to_bool(val):
     raise ImproperlyConfigured(f"Cannot interpret {val!r} as a boolean setting.")
 
 
+def is_email_address(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def without_blank_emails(claims: dict) -> dict:
+    """
+    Drop blank ``email`` and ``emails`` values, which would otherwise match
+    every account stored without an email.
+    """
+    cleaned = {k: v for k, v in claims.items() if k not in ("email", "emails")}
+    if is_email_address(claims.get("email")):
+        cleaned["email"] = claims["email"]
+    emails = claims.get("emails")
+    addresses = (
+        [e for e in emails if is_email_address(e)] if isinstance(emails, list) else []
+    )
+    if addresses:
+        cleaned["emails"] = addresses
+    return cleaned
+
+
 def email_usename_to_url_safe(email_username):
     return email_username.split("@")[0]
 

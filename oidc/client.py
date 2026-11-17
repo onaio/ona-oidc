@@ -21,7 +21,7 @@ import requests
 from jwt.algorithms import RSAAlgorithm
 
 import oidc.settings as default
-from oidc.utils import parse_requests_timeout, str_to_bool
+from oidc.utils import parse_requests_timeout, str_to_bool, without_blank_emails
 
 REDIRECT_AFTER_AUTH = "redirect_after_auth"
 REQUEST_MODES = ("form_post", "query")
@@ -384,14 +384,8 @@ class OpenIDClient:
         if not decoded_id_token:
             return False
 
-        return not (
-            "email" in decoded_id_token
-            or (
-                "emails" in decoded_id_token
-                and decoded_id_token["emails"]
-                and decoded_id_token["emails"][0]
-            )
-        )
+        claims = without_blank_emails(decoded_id_token)
+        return not (claims.get("email") or claims.get("emails"))
 
     def tokens_to_user_info(
         self,

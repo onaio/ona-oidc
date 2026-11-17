@@ -58,6 +58,7 @@ from oidc.utils import (
     is_safe_login_redirect,
     replace_characters_in_username,
     str_to_bool,
+    without_blank_emails,
 )
 
 default_config = getattr(default, "OPENID_CONNECT_VIEWSET_CONFIG", {})
@@ -552,10 +553,12 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         or f"Invalid `{k}` value `{data[k]}`"
                     )
 
-    def _get_user_group_defaults(self, email: str) -> dict:
+    def _get_user_group_defaults(self, email: Optional[str]) -> dict:
         groups = [key for key in self.user_default_fields.keys() if key != "default"]
 
         user_default = self.user_default_fields.get("default", {})
+        if not email:
+            return user_default
         for group in groups:
             match = re.match(group, email)
             if match:
@@ -599,27 +602,6 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         missing_fields.remove("username")
 
         return user_data, missing_fields
-
-    @staticmethod
-    def _without_blank_emails(user_data: dict) -> dict:
-        """
-        Drop blank addresses, which would otherwise match every account
-        stored without an email.
-        """
-
-        def is_address(value: object) -> bool:
-            return isinstance(value, str) and bool(value.strip())
-
-        cleaned = {k: v for k, v in user_data.items() if k not in ("email", "emails")}
-        if is_address(user_data.get("email")):
-            cleaned["email"] = user_data["email"]
-        emails = user_data.get("emails")
-        addresses = (
-            [e for e in emails if is_address(e)] if isinstance(emails, list) else []
-        )
-        if addresses:
-            cleaned["emails"] = addresses
-        return cleaned
 
     def _email_is_unverified(
         self, client: OpenIDClient, claims: dict, user_data: dict
@@ -782,7 +764,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     user_claims = dict(fetched_claims)
                     if user_claims.get(REDIRECT_AFTER_AUTH):
                         redirect_after = user_claims.pop(REDIRECT_AFTER_AUTH)
-                    user_data = self._without_blank_emails(
+                    user_data = without_blank_emails(
                         self.map_claims_to_model_field(user_claims)
                     )
                     # Custom username provided by the user in case
