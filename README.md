@@ -90,6 +90,8 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "ISSUER": "https://login.microsoftonline.com/<tenant-id>/v2.0",
         "USE_NONCES": True,
         "NONCE_CACHE_TIMEOUT": 1800,
+        "CHECK_EMAIL_VERIFIED": False,
+        "REQUIRE_VERIFIED_EMAIL": False,
     }
 }
 ...
@@ -139,6 +141,33 @@ cannot use a single exact-match `ISSUER` and should leave it unset.
 When `ISSUER` is not set, the `iss` claim is not checked and every
 verification logs a warning; a future release will require the
 setting.
+
+### Verified email addresses
+
+The callback signs a user in to the existing account whose email matches
+the `email` claim or any entry of the `emails` claim. A provider that lets
+people register can issue a token for an address they never proved they
+own. Set `CHECK_EMAIL_VERIFIED` to `True` on an auth server to refuse such
+logins. The callback then refuses a login whose claims carry an
+`email_verified` claim that is not `true` or the string `"true"`. The
+string may have any case and surrounding spaces. It
+neither links nor creates an account. The setting is off by default.
+
+Some providers, such as Microsoft Entra ID, omit the claim. With the
+check on, their addresses are trusted. Set `REQUIRE_VERIFIED_EMAIL` to
+`True` to also refuse logins that carry an address but no
+`email_verified` claim. `REQUIRE_VERIFIED_EMAIL` turns the check on by
+itself.
+
+Some providers send `false` for users an admin created or imported
+without verifying their address, as Keycloak does. With the check on,
+those users get a 401 page until the address is verified at the
+provider.
+
+The check trusts one `email_verified` claim for every address the
+callback matches. Don't rely on it if your provider lists unverified
+addresses in `emails`, or if `MAP_CLAIM_TO_MODEL` maps another claim
+onto `email`.
 
 ### The username form
 

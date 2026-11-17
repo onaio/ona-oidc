@@ -206,6 +206,19 @@ class OpenIDClient:
             ),
             f"OPENID_CONNECT_AUTH_SERVERS[{auth_server!r}]['REQUESTS_TIMEOUT']",
         )
+        self.require_verified_email = str_to_bool(
+            config[auth_server].get(
+                "REQUIRE_VERIFIED_EMAIL", default_config["REQUIRE_VERIFIED_EMAIL"]
+            )
+        )
+        check_email_verified = str_to_bool(
+            config[auth_server].get(
+                "CHECK_EMAIL_VERIFIED", default_config["CHECK_EMAIL_VERIFIED"]
+            )
+        )
+        self.check_email_verified = bool(
+            self.require_verified_email or check_email_verified
+        )
         self.use_pkce = str_to_bool(
             config[auth_server].get("USE_PKCE", default_config["USE_PKCE"])
         )

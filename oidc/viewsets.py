@@ -600,6 +600,39 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
         return user_data, missing_fields
 
+    def _email_is_unverified(
+        self, client: OpenIDClient, claims: dict, user_data: dict
+    ) -> bool:
+        """
+        Return ``True`` when the claims carry an address that the provider
+        has not marked verified.
+        """
+        if not client.check_email_verified:
+            return False
+        if not (user_data.get("email") or user_data.get("emails")):
+            return False
+        if "email_verified" not in claims:
+            return bool(client.require_verified_email)
+        verified = claims["email_verified"]
+        # Some providers send the claim as a string.
+        return not (
+            verified is True
+            or (isinstance(verified, str) and verified.strip().lower() == "true")
+        )
+
+    def _unverified_email_response(self) -> Response:
+        return Response(
+            {
+                "error": _(
+                    "Your email address is not verified. Verify it with your "
+                    "identity provider, then sign in again."
+                ),
+                "error_title": _("Email address not verified"),
+            },
+            status=status.HTTP_401_UNAUTHORIZED,
+            template_name="oidc/oidc_unrecoverable_error.html",
+        )
+
     def _clear_login_states(self, server_response: dict) -> None:
         """Clear cached login states
 
@@ -734,6 +767,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     provided_username = request.data.get("username")
                     if isinstance(provided_username, str) and provided_username:
                         user_data.update({"username": provided_username})
+                    if self._email_is_unverified(client, user_claims, user_data):
+                        logger.warning("Login rejected: email address not verified")
+                        self._clear_login_states(server_response)
+                        return self._unverified_email_response()
                     filter_kwargs = None
                     q_objects = Q()
 
