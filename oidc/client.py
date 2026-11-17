@@ -21,7 +21,7 @@ import requests
 from jwt.algorithms import RSAAlgorithm
 
 import oidc.settings as default
-from oidc.utils import str_to_bool
+from oidc.utils import parse_requests_timeout, str_to_bool
 
 REDIRECT_AFTER_AUTH = "redirect_after_auth"
 REQUEST_MODES = ("form_post", "query")
@@ -120,6 +120,10 @@ class TokenVerificationFailed(Exception):
     pass
 
 
+class UserInfoRequestFailed(Exception):
+    pass
+
+
 def _describe_token_failure(
     response: Optional[requests.Response], failure_type: Optional[str]
 ) -> str:
@@ -189,6 +193,19 @@ class OpenIDClient:
                 "NONCE_CACHE_TIMEOUT", default_config["NONCE_CACHE_TIMEOUT"]
             )
         )
+        # The cache treats 0 or less as already expired.
+        if self.nonce_cache_timeout <= 0:
+            raise ImproperlyConfigured(
+                f"OPENID_CONNECT_AUTH_SERVERS[{auth_server!r}]"
+                "['NONCE_CACHE_TIMEOUT'] must be positive, "
+                f"got {self.nonce_cache_timeout}"
+            )
+        self.requests_timeout = parse_requests_timeout(
+            config[auth_server].get(
+                "REQUESTS_TIMEOUT", default_config["REQUESTS_TIMEOUT"]
+            ),
+            f"OPENID_CONNECT_AUTH_SERVERS[{auth_server!r}]['REQUESTS_TIMEOUT']",
+        )
         self.use_pkce = str_to_bool(
             config[auth_server].get("USE_PKCE", default_config["USE_PKCE"])
         )
@@ -244,7 +261,12 @@ class OpenIDClient:
         Retrieves a JSON Web Key Set that can be used to verify a
         JSON web token issued by an authentication server.
         """
-        response = requests.get(self.jwks_endpoint)
+        try:
+            response = requests.get(self.jwks_endpoint, timeout=self.requests_timeout)
+        except requests.RequestException as exc:
+            raise NoJSONWebKeyFound(
+                f"JWKS request failed: {type(exc).__name__}"
+            ) from exc
         if response.status_code == 200:
             jwks = response.json()
             for jwk in jwks.get("keys"):
@@ -255,11 +277,28 @@ class OpenIDClient:
     def retrieve_user_info(self, access_token: str) -> dict:
         """
         Given an access_token, retrieve user profile claims
+
+        :raises UserInfoRequestFailed: if the request fails, gets an error
+            status, or gets a body that is not JSON
         """
-        response = requests.get(
-            self.user_info_endpoint, headers={"Authorization": f"Bearer {access_token}"}
-        )
-        return response.json()
+        try:
+            response = requests.get(
+                self.user_info_endpoint,
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=self.requests_timeout,
+            )
+        except requests.RequestException as exc:
+            raise UserInfoRequestFailed(
+                f"Userinfo request failed: {type(exc).__name__}"
+            ) from exc
+        if not 200 <= response.status_code < 300:
+            raise UserInfoRequestFailed(
+                f"Userinfo request failed: status {response.status_code}"
+            )
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise UserInfoRequestFailed("Userinfo response is not JSON") from exc
 
     def get_hash_algorithm(self, alg: str) -> Optional[Callable]:
         """
@@ -468,6 +507,7 @@ class OpenIDClient:
                 data=data if self.request_mode == "form_post" else None,
                 params=data if self.request_mode == "query" else None,
                 headers=headers,
+                timeout=self.requests_timeout,
             )
             response.raise_for_status()
             tokens = response.json()

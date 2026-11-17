@@ -19,6 +19,7 @@ from django.utils import timezone
 from django.views.debug import SafeExceptionReporterFilter
 
 import jwt
+import requests
 from mock import MagicMock, patch
 from rest_framework.test import APIRequestFactory
 
@@ -153,6 +154,91 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             response = view(request, auth_server="default")
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
+
+    def test_username_form_logs_the_missing_field(self):
+        """Rendering the username form logs which claim was missing"""
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with (
+            patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+                return_value={"given_name": "bob", "email": "bob@example.com"},
+            ),
+            self.assertLogs("oidc.viewsets", level="INFO") as logs,
+        ):
+            response = view(
+                self.factory.post("/", data={"id_token": ID_TOKEN}),
+                auth_server="default",
+            )
+
+        self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
+        self.assertIn("Rendering the username form: missing username", logs.output[-1])
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "USE_EMAIL_USERNAME": False,
+        }
+    )
+    def test_username_form_json_resubmit_uses_the_chosen_username(self):
+        """A JSON re-submit of the username form creates the user with the
+        posted username. It used to render the form again."""
+        claims = {"given_name": "ivan", "family_name": "User", "email": "i@example.com"}
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+
+        def resubmit(username):
+            data = {
+                LOGIN_CONTINUATION_FIELD: stash_login_continuation(claims),
+                "username": username,
+                USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+            }
+            request = self.factory.post("/", data=data, format="json")
+            return view(request, auth_server="default")
+
+        # A username that is not a string is ignored, so the form comes back.
+        response = resubmit(["ivan_list"])
+        self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
+
+        response = resubmit("ivan_chosen")
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(User.objects.filter(username="ivan_chosen").exists())
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG={
+            **OPENID_CONNECT_VIEWSET_CONFIG,
+            "USE_EMAIL_USERNAME": False,
+        }
+    )
+    def test_userinfo_timeout_returns_retry_error(self):
+        """A userinfo request that times out gets the 401 retry page, not a
+        500, and the log names the reason"""
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with (
+            patch(
+                "oidc.viewsets.OpenIDClient.retrieve_tokens_using_auth_code",
+                return_value={"id_token": ID_TOKEN, "access_token": "at"},
+            ),
+            patch(
+                "oidc.viewsets.OpenIDClient.verify_and_decode_id_token",
+                return_value={"given_name": "erin", "family_name": "User"},
+            ),
+            patch(
+                "oidc.viewsets.OpenIDClient.validate_access_token",
+                return_value=True,
+            ),
+            patch(
+                "oidc.client.requests.get", side_effect=requests.Timeout("timed out")
+            ) as mock_get,
+            self.assertLogs("oidc.viewsets", level="WARNING") as logs,
+        ):
+            response = view(
+                self.factory.post("/", data={"code": "SplxlOBeZQQYbYS6WxSbIA"}),
+                auth_server="default",
+            )
+
+        mock_get.assert_called_once()
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.template_name, "oidc/oidc_unrecoverable_error.html")
+        self.assertIn("Userinfo request failed: Timeout", logs.output[0])
 
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG)
     def test_username_form_resubmit_uses_the_stashed_state(self):

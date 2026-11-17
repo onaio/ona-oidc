@@ -103,6 +103,18 @@ them. Use it only for a provider that requires it. `manage.py check` warns
 (`oidc.W003`) for each auth server in query mode. To keep query mode, add
 `"oidc.W003"` to `SILENCED_SYSTEM_CHECKS`.
 
+### Request timeouts
+
+Every request to the provider gives up after `REQUESTS_TIMEOUT` seconds:
+the JWKS fetch, the code exchange and the userinfo request. The default
+is `(5, 30)`, which allows 5 seconds to connect and 30 to read. Set it per
+auth server to a positive number or a `(connect, read)` pair. Any other
+value, including `None`, raises `ImproperlyConfigured`. When a request
+times out, the user gets the page that asks them to sign in again.
+
+`OPENID_IMPORT_USER` takes the same `REQUESTS_TIMEOUT` key for the
+admin's token and search requests.
+
 ### ID token validation
 
 ID tokens must be signed with an algorithm in the per-server
@@ -144,7 +156,8 @@ rendering of that response carries the same key.
   A form that posts no continuation is refused, and the callback logs a
   warning.
 - The form lasts `NONCE_CACHE_TIMEOUT` seconds at most, and never longer
-  than the ID token would still verify. With `USE_PKCE`, the re-submit
+  than the ID token would still verify. `NONCE_CACHE_TIMEOUT` must be
+  positive. With `USE_PKCE`, the re-submit
   also needs the PKCE verifier, which expires `PKCE_CODE_CHALLENGE_TIMEOUT`
   seconds after the login started.
 
@@ -305,6 +318,7 @@ OPENID_IMPORT_USER = {
         "preferred_username": "username",
     },
     "SEARCH_RESULTS_PATH": "data.results",  # Optional: JSON path to user list in response
+    "REQUESTS_TIMEOUT": (5, 30),  # Optional: (connect, read) seconds for each request
 }
 ```
 
