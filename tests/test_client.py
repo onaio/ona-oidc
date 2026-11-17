@@ -146,6 +146,17 @@ class OpenIDClientTestCase(TestCase):
                 self.assertIn("state=123", result_url)
 
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    def test_login_redirect_is_never_cached(self):
+        """The login redirect declares no-store.
+
+        The redirect carries a per-browser state (and Set-Cookie), so a
+        shared cache replaying it would hand the same login attempt to
+        several browsers.
+        """
+        response = OpenIDClient("default").login()
+        self.assertEqual(response["Cache-Control"], "no-store")
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch.object(cache, "set")
     @patch.object(secrets, "token_urlsafe")
     def test_login_forwards_extra_params(self, mock_token_urlsafe, mock_cache_set):

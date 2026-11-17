@@ -762,7 +762,12 @@ class OpenIDClient:
             params.append(("nonce", nonce))
 
         query = urlencode(params, quote_via=quote, safe=_AUTHORIZE_URL_SAFE_CHARS)
-        return HttpResponseRedirect(f"{self.authorization_endpoint}?{query}")
+        response = HttpResponseRedirect(f"{self.authorization_endpoint}?{query}")
+        # The redirect is specific to one browser: its state (and the
+        # binding cookie the viewset adds) must never come out of a
+        # shared cache into another browser.
+        response["Cache-Control"] = "no-store"
+        return response
 
     def logout(
         self,
