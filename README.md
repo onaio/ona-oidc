@@ -218,7 +218,10 @@ attacker cannot replay a response captured in one browser into
 another to log a victim into the attacker's account (RFC 9700 §4.4).
 Each attempt has its own cookie, so logins started in other tabs or
 against other configured providers stay independently completable;
-a cookie lapses 30 minutes after its login starts.
+a cookie lapses 30 minutes after its login starts. A browser retains
+cookies for at most six pending attempts — a login start beyond that
+evicts the oldest — and a finished login's cookie is deleted with the
+callback's final response.
 
 - **`ENFORCE_BROWSER_BINDING`** (`bool`, default `True`), per auth
   server. Set it to `False` only for deployments whose logins do not
