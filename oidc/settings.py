@@ -45,6 +45,8 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "PKCE_CODE_CHALLENGE_TIMEOUT": 600,
         "PKCE_CODE_VERIFIER_LENGTH": 64,
         "REQUESTS_TIMEOUT": (5, 30),
+        "ID_TOKEN_VERIFY_AZP": True,
+        "ID_TOKEN_REQUIRE_SUB": True,
         "ID_TOKEN_ALLOWED_ALGORITHMS": [
             "RS256",
             "RS384",

@@ -254,6 +254,16 @@ class OpenIDClient:
                 f"drawn from {sorted(ID_TOKEN_SUPPORTED_ALGORITHMS)}"
             )
         self.id_token_allowed_algorithms = list(allowed_algorithms)
+        self.verify_authorized_party = str_to_bool(
+            config[auth_server].get(
+                "ID_TOKEN_VERIFY_AZP", default_config["ID_TOKEN_VERIFY_AZP"]
+            )
+        )
+        self.require_subject = str_to_bool(
+            config[auth_server].get(
+                "ID_TOKEN_REQUIRE_SUB", default_config["ID_TOKEN_REQUIRE_SUB"]
+            )
+        )
 
     def _retrieve_jwks_related_to_kid(self, kid: str) -> Optional[str]:
         """
@@ -426,12 +436,14 @@ class OpenIDClient:
             audience=[self.client_id],
             issuer=self.issuer,
             algorithms=self.id_token_allowed_algorithms,
-            options={"require": ["exp", "iat", "aud"]},
+            options={"require": self._required_id_token_claims()},
             # Tolerate small IdP/server clock skew: with iat required,
             # PyJWT otherwise rejects a token whose iat is seconds ahead
             # as "not yet valid".
             leeway=ID_TOKEN_LEEWAY_SECONDS,
         )
+        if self.verify_authorized_party:
+            self._verify_authorized_party(decoded_token)
         # ``login()`` caches ``{auth_server, redirect_after}`` under the
         # nonce whenever the caller passes ``next``, even when
         # ``USE_NONCES`` is False. Consume it in both modes so the
@@ -451,6 +463,31 @@ class OpenIDClient:
         if cached_data and cached_data.get("redirect_after"):
             decoded_token[REDIRECT_AFTER_AUTH] = cached_data.get("redirect_after")
         return decoded_token
+
+    def _required_id_token_claims(self) -> list[str]:
+        claims = ["exp", "iat", "aud"]
+        return [*claims, "sub"] if self.require_subject else claims
+
+    def _verify_authorized_party(self, decoded_token: dict) -> None:
+        """
+        Check ``azp`` on a token with several distinct audiences.
+
+        PyJWT accepts a token when this client is any one of its audiences.
+        A token with other audiences too must name this client in ``azp``,
+        or it was issued to another client. A token for this client alone
+        is not checked, because some providers set ``azp`` to a different
+        client on it.
+
+        :raises jwt.MissingRequiredClaimError: when ``azp`` is missing.
+        :raises jwt.InvalidAudienceError: when ``azp`` names another client.
+        """
+        audience = decoded_token.get("aud")
+        if not isinstance(audience, list) or len(set(audience)) < 2:
+            return
+        if "azp" not in decoded_token:
+            raise jwt.MissingRequiredClaimError("azp")
+        if decoded_token["azp"] != self.client_id:
+            raise jwt.InvalidAudienceError("Authorized party is not this client")
 
     def _consume_nonce(self, nonce: str) -> Optional[dict]:
         """
