@@ -72,6 +72,8 @@ class EmailVerifiedTestCase(TestCase):
             "number": 1,
         }.items():
             with self.subTest(name):
+                self.user.last_login = None
+                self.user.save(update_fields=["last_login"])
                 with self.assertLogs("oidc.viewsets", level="WARNING") as logs:
                     response = self._callback({**CLAIMS, "email_verified": value})
                 self._assert_refused(response)
@@ -207,7 +209,10 @@ class EmailVerifiedTestCase(TestCase):
         config = {
             **settings.OPENID_CONNECT_VIEWSET_CONFIG,
             "REQUIRED_USER_CREATION_FIELDS": ["first_name", "username"],
-            "USER_DEFAULTS": {".*": {"is_active": False}},
+            "USER_DEFAULTS": {
+                "default": {"is_staff": True},
+                ".*": {"is_active": False},
+            },
         }
         claims = {**CLAIMS, "email": "", "email_verified": True}
         self.user.delete()
@@ -219,6 +224,7 @@ class EmailVerifiedTestCase(TestCase):
         self.assertEqual(response.status_code, 302)
         created = User.objects.get()
         self.assertEqual(created.email, "")
+        self.assertTrue(created.is_staff)
         self.assertTrue(created.is_active)
 
     def test_blank_email_in_the_implicit_flow_is_refused(self):
@@ -232,6 +238,9 @@ class EmailVerifiedTestCase(TestCase):
         self.assertEqual(server["RESPONSE_TYPE"], "id_token")
         response = self._callback({**CLAIMS, "email": "", "email_verified": True})
         self.assertEqual(response.status_code, 401)
+        self.assertEqual(
+            response.data["error_title"], "Authentication request verification failed"
+        )
         self.assertNotIn("SSO", response.cookies)
         blank.refresh_from_db()
         self.assertIsNone(blank.last_login)

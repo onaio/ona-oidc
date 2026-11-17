@@ -608,8 +608,8 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         self, client: OpenIDClient, claims: dict, user_data: dict
     ) -> bool:
         """
-        Return ``True`` when the claims carry an address that the provider
-        has not marked verified.
+        Return ``True`` when the check is on, ``user_data`` has an address,
+        and the claims don't mark it verified.
         """
         if not client.check_email_verified:
             return False

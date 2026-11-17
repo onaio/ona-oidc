@@ -145,15 +145,16 @@ setting.
 ### Verified email addresses
 
 The callback signs a user in to the existing account whose email matches
-the `email` claim or any entry of the `emails` claim. A provider that lets
-people register can issue a token for an address they never proved they
-own. Set `CHECK_EMAIL_VERIFIED` to `True` on an auth server to refuse such
-logins. The callback then refuses a login whose claims carry an
-`email_verified` claim that is not `true` or the string `"true"`. The
-string may have any case and surrounding spaces. A refused login neither
-links nor creates an account. The setting is off by default. Every auth
-server signs in to the same accounts, so turn the check on for each
-server whose users can register their own addresses.
+the `email` claim or, without one, any entry of the `emails` claim. A
+provider that lets people register can issue a token for an address they
+never proved they own. Set `CHECK_EMAIL_VERIFIED` to `True` on an auth
+server to refuse such logins. The callback then refuses a login whose
+claims carry an address and an `email_verified` claim that is not `true`
+or the string `"true"`. The string may have any case and surrounding
+spaces. A refused login neither links nor creates an account. The
+setting is off by default. Every auth server signs in to the same
+accounts, so turn the check on for each server whose users can register
+their own addresses.
 
 Blank addresses never match an account, whatever the settings. The
 callback ignores an `email` claim or `emails` entry that is empty, only
@@ -162,8 +163,7 @@ to no account. Claims left with no address are handled like claims that
 never had one. The callback falls back to the userinfo endpoint, which
 needs an access token, so with the default `id_token` response type the
 login is refused. An account created without an address gets only the
-`default` entry of `USER_DEFAULTS`. Accounts stored with a blank email
-can no longer be reached through a blank `email` claim.
+`default` entry of `USER_DEFAULTS`.
 
 Some providers, such as Microsoft Entra ID, omit the claim. With the
 check on, their addresses are trusted. Set `REQUIRE_VERIFIED_EMAIL` to

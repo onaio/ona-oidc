@@ -60,7 +60,10 @@ class TestAuthenticateSSO(TestCase):
     @override_settings(OPENID_CONNECT_VIEWSET_CONFIG={"JWT_SECRET_KEY": "abc"})
     def test_blank_cookie_value_matches_no_account(self):
         """A blank value matches no account, not even one stored without it."""
-        get_user_model().objects.create(username="blank", email="", is_active=True)
+        for username, email in [("blank", ""), ("spaces", "  ")]:
+            get_user_model().objects.create(
+                username=username, email=email, is_active=True
+            )
         exp = int(time.time()) + 60
         for value in ["", "  "]:
             with self.subTest(value=value):
