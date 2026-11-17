@@ -228,7 +228,10 @@ a cookie lapses 30 minutes after its login starts.
 - With `RESPONSE_MODE=form_post` the IdP delivers the response as a
   cross-site POST, so the cookie carries `SameSite=None; Secure` and
   the deployment must run over HTTPS. `query` mode uses
-  `SameSite=Lax`.
+  `SameSite=Lax`, with `Secure` set when Django sees the request as
+  HTTPS — a deployment that terminates TLS at a proxy needs Django's
+  `SECURE_PROXY_SSL_HEADER` configured (and the proxy sending the
+  matching header) for that.
 - Logins in flight when this feature is first deployed predate the
   cookie, so the callback rejects them; retrying the login recovers.
 
