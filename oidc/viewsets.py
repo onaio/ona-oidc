@@ -51,6 +51,7 @@ from oidc.client import (
     login_binding_cookie_name,
     login_binding_matches,
     seal_login_binding,
+    stale_login_binding_cookies,
     state_cache_key,
 )
 from oidc.renderers import SensitiveTemplateHTMLRenderer
@@ -254,6 +255,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     samesite=samesite,
                     path="/",
                 )
+                # Drop broken binding cookies and, past the cap, the
+                # oldest pending attempts', so repeated starts cannot
+                # grow the Cookie header past browser or proxy limits.
+                for stale_name in stale_login_binding_cookies(request.COOKIES):
+                    response.delete_cookie(stale_name, path="/", samesite=samesite)
             # Delete only csrftoken for the current domain
             response.delete_cookie(
                 "csrftoken",

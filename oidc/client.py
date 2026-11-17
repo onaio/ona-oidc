@@ -8,7 +8,8 @@ import hmac
 import json
 import logging
 import secrets
-from typing import Any, Callable, Mapping, Optional
+import time
+from typing import Any, Callable, List, Mapping, Optional
 from urllib.parse import quote, urlencode
 
 from django.conf import settings
@@ -79,10 +80,29 @@ _LOGIN_BINDING_SALT = "oidc.login.binding"
 # Must outlive the longest time a user plausibly leaves the IdP page
 # open; the state/nonce cache TTLs end a flow earlier anyway.
 LOGIN_BINDING_MAX_AGE = 1800
+# Upper bound on the binding cookies a browser retains; a login start
+# beyond it evicts the oldest pending attempt's. Bounds the Cookie
+# header a hostile page can grow by driving repeated login starts,
+# while leaving room for every login a user plausibly keeps open.
+LOGIN_BINDING_MAX_COOKIES = 6
 
 
 def _state_digest(state: str) -> str:
     return hashlib.sha256(state.encode("utf-8")).hexdigest()
+
+
+def _load_login_binding(cookie_value: str) -> Optional[dict]:
+    # The payload dict of a sealed value, or None for a tampered,
+    # expired or malformed one — never an error.
+    try:
+        payload = signing.loads(
+            cookie_value,
+            salt=_LOGIN_BINDING_SALT,
+            max_age=LOGIN_BINDING_MAX_AGE,
+        )
+    except signing.BadSignature:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def login_binding_cookie_name(state: str) -> str:
@@ -100,8 +120,15 @@ def seal_login_binding(state: str) -> str:
     """
     Return the signed cookie value binding ``state`` to the browser
     the login redirect is sent to.
+
+    The value carries the state's digest and the attempt's issue time;
+    the issue time orders eviction when a browser holds more than
+    ``LOGIN_BINDING_MAX_COOKIES`` pending attempts.
     """
-    return signing.dumps(_state_digest(state), salt=_LOGIN_BINDING_SALT)
+    return signing.dumps(
+        {"digest": _state_digest(state), "iat": int(time.time())},
+        salt=_LOGIN_BINDING_SALT,
+    )
 
 
 def login_binding_matches(cookies: Mapping[str, str], state: Optional[str]) -> bool:
@@ -117,15 +144,34 @@ def login_binding_matches(cookies: Mapping[str, str], state: Optional[str]) -> b
     cookie_value = cookies.get(login_binding_cookie_name(state))
     if not cookie_value:
         return False
-    try:
-        digest = signing.loads(
-            cookie_value,
-            salt=_LOGIN_BINDING_SALT,
-            max_age=LOGIN_BINDING_MAX_AGE,
-        )
-    except signing.BadSignature:
+    payload = _load_login_binding(cookie_value)
+    if payload is None:
         return False
+    digest = payload.get("digest")
     return isinstance(digest, str) and hmac.compare_digest(digest, _state_digest(state))
+
+
+def stale_login_binding_cookies(cookies: Mapping[str, str]) -> List[str]:
+    """
+    Return the binding cookie names a new login start should delete:
+    every tampered, expired or malformed one, plus the oldest valid
+    ones past ``LOGIN_BINDING_MAX_COOKIES - 1`` (the start's own new
+    cookie takes the remaining slot). The newest pending attempts are
+    kept, so concurrent logins up to the cap stay completable.
+    """
+    invalid = []
+    pending = []
+    for name, value in cookies.items():
+        if not name.startswith(LOGIN_BINDING_COOKIE_PREFIX):
+            continue
+        payload = _load_login_binding(value)
+        if payload is None or not isinstance(payload.get("iat"), int):
+            invalid.append(name)
+        else:
+            pending.append((payload["iat"], name))
+    pending.sort()
+    evicted = pending[: -(LOGIN_BINDING_MAX_COOKIES - 1)]
+    return invalid + [name for _, name in evicted]
 
 
 RESERVED_AUTHORIZE_PARAMS = frozenset(

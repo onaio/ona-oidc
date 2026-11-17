@@ -35,6 +35,7 @@ from oidc.client import (
     login_binding_cookie_name,
     login_binding_matches,
     seal_login_binding,
+    stale_login_binding_cookies,
     state_cache_key,
 )
 from tests.error_reports import escaped_frames, reported_locals
@@ -1855,6 +1856,54 @@ class SealLoginBindingTestCase(TestCase):
             login_binding_cookie_name("state-1"): seal_login_binding("state-2")
         }
         self.assertFalse(login_binding_matches(cookies, "state-1"))
+
+
+class StaleLoginBindingCookiesTestCase(TestCase):
+    """Contract of the login-start eviction helper."""
+
+    @staticmethod
+    def _sealed_at(state, issued_at):
+        with patch("time.time", return_value=issued_at):
+            return seal_login_binding(state)
+
+    def _jar(self, count):
+        # Recent issue times (still inside the max age), one second
+        # apart so age ordering is unambiguous.
+        start = time.time() - 100
+        return {
+            login_binding_cookie_name(f"state-{i}"): self._sealed_at(
+                f"state-{i}", start + i
+            )
+            for i in range(count)
+        }
+
+    def test_under_the_cap_no_valid_cookie_is_evicted(self):
+        """Up to five pending attempts survive a new login start."""
+        self.assertEqual(stale_login_binding_cookies(self._jar(5)), [])
+
+    def test_oldest_cookies_beyond_the_cap_are_evicted(self):
+        """Only the oldest attempts past the cap are named for deletion."""
+        jar = self._jar(7)
+        self.assertEqual(
+            stale_login_binding_cookies(jar),
+            [
+                login_binding_cookie_name("state-0"),
+                login_binding_cookie_name("state-1"),
+            ],
+        )
+
+    def test_broken_binding_cookies_are_always_evicted(self):
+        """A tampered binding cookie is named for deletion even under the cap."""
+        name = login_binding_cookie_name("state-1")
+        jar = {name: seal_login_binding("state-1")[:-1]}
+        self.assertEqual(stale_login_binding_cookies(jar), [name])
+
+    def test_cookies_without_the_binding_prefix_are_ignored(self):
+        """Unrelated cookies are never named for deletion."""
+        self.assertEqual(
+            stale_login_binding_cookies({"sessionid": "abc", "csrftoken": "def"}),
+            [],
+        )
 
 
 class LoginBindingMatchesTestCase(TestCase):

@@ -3416,6 +3416,43 @@ class LoginBrowserBindingTestCase(TestCase):
             )
             self.assertEqual(response.status_code, 302)
 
+    def test_repeated_login_starts_keep_a_bounded_cookie_jar(self):
+        """Abandoned login starts cannot grow the cookie jar without bound.
+
+        Unchecked growth lets a hostile page drive the Cookie header
+        past browser and proxy limits, breaking the whole site for the
+        victim until the cookies expire.
+        """
+        jar = {}
+        now = time.time()
+        for offset in range(48):
+            # Distinct clock ticks so eviction age-ordering is exercised
+            # even when the loop runs within one real second.
+            with patch("time.time", return_value=now + offset):
+                _, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+        binding = [name for name in jar if name.startswith(BINDING_COOKIE_PREFIX)]
+        self.assertEqual(len(binding), 6)
+
+    def test_cap_evicts_the_oldest_attempt_and_keeps_the_newest(self):
+        """Past the cap the oldest attempt is evicted, newest stay completable."""
+        jar = {}
+        states = []
+        now = time.time()
+        for offset in range(7):
+            with patch("time.time", return_value=now + offset):
+                state, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+            states.append(state)
+        response = self._callback_with_cookies(
+            states[0], self._cross_site_post_cookies(jar)
+        )
+        self.assertEqual(response.status_code, 401)
+        response = self._callback_with_cookies(
+            states[-1], self._cross_site_post_cookies(jar)
+        )
+        self.assertEqual(response.status_code, 302)
+
     def test_completed_login_expires_only_its_own_binding_cookie(self):
         """The success response deletes the finished attempt's cookie, no other.
 
