@@ -606,10 +606,13 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         """
         Return ``True`` when the claims carry an address that the provider
         has not marked verified.
+
+        An ``email`` key counts even when blank, matching the account
+        lookup in ``callback``.
         """
         if not client.check_email_verified:
             return False
-        if not (user_data.get("email") or user_data.get("emails")):
+        if "email" not in user_data and not user_data.get("emails"):
             return False
         if "email_verified" not in claims:
             return bool(client.require_verified_email)

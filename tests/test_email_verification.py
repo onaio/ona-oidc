@@ -134,6 +134,21 @@ class EmailVerifiedTestCase(TestCase):
         self._assert_linked(self._callback({**CLAIMS, "email_verified": True}))
 
     @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS=auth_servers(
+            CHECK_EMAIL_VERIFIED=True, REQUIRE_VERIFIED_EMAIL=True
+        )
+    )
+    def test_blank_unverified_email_does_not_link_to_a_blank_email_account(self):
+        """A blank ``email`` claim is checked, since the lookup still matches it."""
+        blank = User.objects.create_user(username="blank", email="")
+        response = self._callback({**CLAIMS, "email": "", "email_verified": False})
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.data["error_title"], "Email address not verified")
+        self.assertNotIn("SSO", response.cookies)
+        blank.refresh_from_db()
+        self.assertIsNone(blank.last_login)
+
+    @override_settings(
         OPENID_CONNECT_AUTH_SERVERS=auth_servers(REQUIRE_VERIFIED_EMAIL=True)
     )
     def test_claims_without_an_email_are_not_checked(self):
