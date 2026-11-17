@@ -1539,8 +1539,8 @@ class IDTokenValidationTestCase(TestCase):
         self.assertIn("ISSUER", "\n".join(logs.output))
 
     def test_token_missing_required_claims_is_rejected(self):
-        """A token lacking exp or iat is rejected despite a valid signature."""
-        for missing in ("exp", "iat"):
+        """A token lacking exp, iat or sub is rejected despite a valid signature."""
+        for missing in ("exp", "iat", "sub"):
             with self.subTest(missing=missing):
                 with self.assertRaises(jwt.InvalidTokenError):
                     self._verify(self._sign(self._claims(**{missing: None})))
@@ -1595,3 +1595,73 @@ class IDTokenValidationTestCase(TestCase):
         """A token minted for a different client id is rejected."""
         with self.assertRaises(jwt.InvalidTokenError):
             self._verify(self._sign(self._claims(aud="other-client")))
+
+    def test_multi_audience_token_needs_azp_naming_this_client(self):
+        """A token with several audiences needs ``azp`` equal to the client id."""
+        for name, azp, error in [
+            ("missing azp", None, jwt.MissingRequiredClaimError),
+            ("azp naming another client", "other-client", jwt.InvalidAudienceError),
+        ]:
+            with self.subTest(name):
+                with self.assertRaises(error):
+                    self._verify(
+                        self._sign(self._claims(aud=["client", "other"], azp=azp))
+                    )
+        decoded = self._verify(
+            self._sign(self._claims(aud=["client", "other"], azp="client"))
+        )
+        self.assertEqual(decoded["sub"], "user-1")
+
+    def test_single_audience_token_does_not_need_azp(self):
+        """A token for this client alone verifies with or without ``azp``.
+
+        This test passes without the ``azp`` check too. It fails if the
+        check reaches these tokens.
+        """
+        for name, claims in {
+            "audience list of one, no azp": {"aud": ["client"]},
+            "this client listed twice, no azp": {"aud": ["client", "client"]},
+            "audience string, azp of another client": {
+                "aud": "client",
+                "azp": "mobile-client",
+            },
+        }.items():
+            with self.subTest(name):
+                decoded = self._verify(self._sign(self._claims(**claims)))
+                self.assertEqual(decoded["sub"], "user-1")
+
+    def _verify_with_settings(self, token, **overrides):
+        servers = {
+            "default": {**ID_TOKEN_VALIDATION_AUTH_SERVERS["default"], **overrides}
+        }
+        with override_settings(OPENID_CONNECT_AUTH_SERVERS=servers):
+            return self._verify(token)
+
+    def test_azp_check_can_be_turned_off(self):
+        """With ``ID_TOKEN_VERIFY_AZP`` off, a multi-audience token needs no ``azp``."""
+        tokens = {
+            "missing azp": self._sign(self._claims(aud=["client", "other"])),
+            "azp naming another client": self._sign(
+                self._claims(aud=["client", "other"], azp="other-client")
+            ),
+        }
+        for name, token in tokens.items():
+            with self.subTest(name):
+                with self.assertRaises(jwt.InvalidTokenError):
+                    self._verify(token)
+                for value in (False, "False"):
+                    decoded = self._verify_with_settings(
+                        token, ID_TOKEN_VERIFY_AZP=value
+                    )
+                    self.assertEqual(decoded["sub"], "user-1")
+
+    def test_sub_requirement_can_be_turned_off(self):
+        """With ``ID_TOKEN_REQUIRE_SUB`` off, a token without ``sub`` decodes."""
+        token = self._sign(self._claims(sub=None))
+        with self.assertRaises(jwt.MissingRequiredClaimError):
+            self._verify(token)
+        for value in (False, "False"):
+            with self.subTest(value=value):
+                decoded = self._verify_with_settings(token, ID_TOKEN_REQUIRE_SUB=value)
+                self.assertNotIn("sub", decoded)
+                self.assertEqual(decoded["aud"], "client")
