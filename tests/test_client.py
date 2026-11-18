@@ -1824,7 +1824,7 @@ class IDTokenValidationTestCase(TestCase):
 
 
 class StateCacheKeyTestCase(TestCase):
-    """Contract of the PKCE state cache key helper."""
+    """Tests for method state_cache_key"""
 
     def test_keys_carry_the_oidc_state_namespace_prefix(self):
         """A state's cache key is the state under the oidc:state: namespace.
@@ -1841,7 +1841,7 @@ class StateCacheKeyTestCase(TestCase):
 
 
 class LoginBindingCookieNamesTestCase(TestCase):
-    """Contract of the fixed binding slot names."""
+    """Tests for method login_binding_cookie_names"""
 
     def test_the_slot_names_are_a_fixed_set(self):
         """Exactly LOGIN_BINDING_SLOTS distinct slot names exist."""
@@ -1860,7 +1860,7 @@ class LoginBindingCookieNamesTestCase(TestCase):
 
 
 class SealLoginBindingTestCase(TestCase):
-    """Contract of the sealed binding value."""
+    """Tests for method seal_login_binding"""
 
     def test_sealed_value_matches_only_its_own_state(self):
         """A sealed binding matches the state it was minted for, no other."""
@@ -1877,7 +1877,7 @@ class SealLoginBindingTestCase(TestCase):
 
 
 class AllocateLoginBindingSlotTestCase(TestCase):
-    """Contract of the login-start slot allocation."""
+    """Tests for method allocate_login_binding_slot"""
 
     @staticmethod
     def _sealed_at(state, issued_at):
@@ -1935,7 +1935,7 @@ class AllocateLoginBindingSlotTestCase(TestCase):
 
 
 class StaleLoginBindingCookiesTestCase(TestCase):
-    """Contract of the login-start cleanup helper."""
+    """Tests for method stale_login_binding_cookies"""
 
     def test_valid_slot_cookies_are_kept(self):
         """A pending attempt's binding is never named for deletion."""
@@ -1969,7 +1969,7 @@ class StaleLoginBindingCookiesTestCase(TestCase):
 
 
 class MatchingLoginBindingCookieTestCase(TestCase):
-    """Contract of the slot lookup behind the binding check."""
+    """Tests for method matching_login_binding_cookie"""
 
     def setUp(self):
         self.cookie_name = login_binding_cookie_names()[2]
@@ -2000,7 +2000,7 @@ class MatchingLoginBindingCookieTestCase(TestCase):
 
 
 class LoginBindingMatchesTestCase(TestCase):
-    """Contract of the callback-side login binding check."""
+    """Tests for method login_binding_matches"""
 
     def setUp(self):
         self.cookie_name = login_binding_cookie_names()[2]
