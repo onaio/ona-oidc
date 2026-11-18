@@ -3231,8 +3231,8 @@ class TestSSOCookieJWTExpiry(TestCase):
             time.tzset()
 
 
-# The browser-visible name prefix of the per-attempt binding cookie.
-# Deliberately a literal, not an import: renaming the cookie the
+# The browser-visible name prefix of the binding slot cookies.
+# Deliberately a literal, not an import: renaming the cookies the
 # deployed browsers already hold must fail a test.
 BINDING_COOKIE_PREFIX = "oidc_login_bind"
 
@@ -3434,6 +3434,36 @@ class LoginBrowserBindingTestCase(TestCase):
         binding = [name for name in jar if name.startswith(BINDING_COOKIE_PREFIX)]
         self.assertEqual(len(binding), 6)
 
+    def test_burst_of_racing_login_starts_keeps_the_jar_bounded(self):
+        """Starts racing on one cookie jar cannot grow it past the cap.
+
+        Every request goes out before any response lands, so no start
+        sees another's Set-Cookie — the fastest way a hostile page can
+        grow the jar. The browser must still end up with a bounded set
+        of binding cookies and a Cookie header far below proxy header
+        limits, with the newest attempt completable and the earliest
+        evicted.
+        """
+        initial_jar = {}
+        started = [self._start_login_response(initial_jar) for _ in range(48)]
+        jar = {}
+        for _, response in started:
+            self._store_cookies(jar, response)
+        binding = [name for name in jar if name.startswith(BINDING_COOKIE_PREFIX)]
+        self.assertEqual(len(binding), 6)
+        cookie_header = "; ".join(
+            f"{name}={morsel.value}" for name, morsel in jar.items()
+        )
+        self.assertLess(len(cookie_header), 4096)
+        response = self._callback_with_cookies(
+            started[-1][0], self._cross_site_post_cookies(jar)
+        )
+        self.assertEqual(response.status_code, 302)
+        response = self._callback_with_cookies(
+            started[0][0], self._cross_site_post_cookies(jar)
+        )
+        self.assertEqual(response.status_code, 401)
+
     def test_cap_evicts_the_oldest_attempt_and_keeps_the_newest(self):
         """Past the cap the oldest attempt is evicted, newest stay completable."""
         jar = {}
@@ -3480,6 +3510,64 @@ class LoginBrowserBindingTestCase(TestCase):
             second_state, self._cross_site_post_cookies(jar)
         )
         self.assertEqual(response.status_code, 302)
+
+    def test_username_form_continuation_stays_bound_and_cleans_up(self):
+        """The username-form re-submit passes binding and ends the attempt.
+
+        A callback whose username is already taken renders the form
+        without ending the attempt; the same-origin re-POST carries the
+        state and the binding cookie, must pass the binding check, and
+        the success response deletes the attempt's binding cookie.
+        """
+        User.objects.create(username="anna", email="anna@example.com")
+        claims = {
+            "given_name": "anna",
+            "family_name": "doe",
+            "email": "second.anna@example.com",
+            "preferred_username": "anna",
+        }
+        jar = {}
+        state, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
+
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_verify:
+            mock_verify.return_value = claims
+            request = self.factory.post(
+                "/", data={"id_token": "a.b.c", "state": state}
+            )
+            request.COOKIES.update(self._cross_site_post_cookies(jar))
+            response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
+
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_verify:
+            mock_verify.return_value = claims
+            request = self.factory.post(
+                "/",
+                data={
+                    "id_token": "a.b.c",
+                    "state": state,
+                    "username": "annabelle",
+                    USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+                },
+            )
+            # The re-POST is same-origin, so the browser sends every
+            # cookie in the jar regardless of SameSite.
+            request.COOKIES.update(
+                {name: morsel.value for name, morsel in jar.items()}
+            )
+            response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(User.objects.filter(username="annabelle").exists())
+        self._store_cookies(jar, response)
+        self.assertEqual(
+            [name for name in jar if name.startswith(BINDING_COOKIE_PREFIX)], []
+        )
 
     def test_rejected_unknown_user_login_expires_its_binding_cookie(self):
         """The not-authorized response also deletes the attempt's cookie.

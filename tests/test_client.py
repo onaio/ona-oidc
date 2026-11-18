@@ -25,6 +25,7 @@ from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 from oidc.client import (
     LOGIN_BINDING_COOKIE_PREFIX,
     LOGIN_BINDING_MAX_AGE,
+    LOGIN_BINDING_SLOTS,
     REDIRECT_AFTER_AUTH,
     REQUEST_MODES,
     NoJSONWebKeyFound,
@@ -32,8 +33,10 @@ from oidc.client import (
     OpenIDClient,
     TokenVerificationFailed,
     UserInfoRequestFailed,
-    login_binding_cookie_name,
+    allocate_login_binding_slot,
+    login_binding_cookie_names,
     login_binding_matches,
+    matching_login_binding_cookie,
     seal_login_binding,
     stale_login_binding_cookies,
     state_cache_key,
@@ -1821,82 +1824,116 @@ class IDTokenValidationTestCase(TestCase):
 
 
 class SealLoginBindingTestCase(TestCase):
-    """Contract of the per-attempt binding cookie name and value."""
+    """Contract of the binding slot names and the sealed value."""
 
     def test_sealed_value_matches_only_its_own_state(self):
-        """A sealed cookie binds the state it was minted for, no other."""
-        cookies = {
-            login_binding_cookie_name("state-1"): seal_login_binding("state-1")
-        }
+        """A sealed binding matches the state it was minted for, no other."""
+        cookies = {login_binding_cookie_names()[0]: seal_login_binding("state-1")}
         self.assertTrue(login_binding_matches(cookies, "state-1"))
         self.assertFalse(login_binding_matches(cookies, "state-2"))
 
-    def test_each_state_gets_its_own_cookie_name(self):
-        """Two login attempts never share a cookie name."""
-        self.assertNotEqual(
-            login_binding_cookie_name("state-1"),
-            login_binding_cookie_name("state-2"),
-        )
+    def test_the_slot_names_are_a_fixed_set(self):
+        """Exactly LOGIN_BINDING_SLOTS distinct slot names exist."""
+        names = login_binding_cookie_names()
+        self.assertEqual(len(names), LOGIN_BINDING_SLOTS)
+        self.assertEqual(len(set(names)), LOGIN_BINDING_SLOTS)
 
-    def test_cookie_names_carry_the_public_prefix(self):
-        """Every attempt's cookie name starts with the shared prefix."""
-        self.assertTrue(
-            login_binding_cookie_name("state-1").startswith(
-                LOGIN_BINDING_COOKIE_PREFIX
-            )
-        )
+    def test_slot_names_carry_the_public_prefix(self):
+        """Every slot cookie name starts with the shared prefix."""
+        for name in login_binding_cookie_names():
+            self.assertTrue(name.startswith(LOGIN_BINDING_COOKIE_PREFIX))
 
-    def test_value_sealed_for_another_state_never_matches(self):
-        """A sealed value filed under another state's cookie name fails.
-
-        The signed value holds the full state digest, so colliding or
-        swapping cookie names alone can never satisfy the check.
-        """
-        cookies = {
-            login_binding_cookie_name("state-1"): seal_login_binding("state-2")
-        }
-        self.assertFalse(login_binding_matches(cookies, "state-1"))
+    def test_a_binding_matches_from_any_slot(self):
+        """The slot holding a binding carries no meaning for the match."""
+        for name in login_binding_cookie_names():
+            with self.subTest(slot=name):
+                cookies = {name: seal_login_binding("state-1")}
+                self.assertTrue(login_binding_matches(cookies, "state-1"))
 
 
-class StaleLoginBindingCookiesTestCase(TestCase):
-    """Contract of the login-start eviction helper."""
+class AllocateLoginBindingSlotTestCase(TestCase):
+    """Contract of the login-start slot allocation."""
 
     @staticmethod
     def _sealed_at(state, issued_at):
         with patch("time.time", return_value=issued_at):
             return seal_login_binding(state)
 
-    def _jar(self, count):
-        # Recent issue times (still inside the max age), one second
-        # apart so age ordering is unambiguous.
-        start = time.time() - 100
-        return {
-            login_binding_cookie_name(f"state-{i}"): self._sealed_at(
-                f"state-{i}", start + i
-            )
-            for i in range(count)
-        }
+    def test_allocation_only_returns_slot_names(self):
+        """Every allocation lands on one of the fixed slot names."""
+        names = set(login_binding_cookie_names())
+        for _ in range(LOGIN_BINDING_SLOTS * 3):
+            self.assertIn(allocate_login_binding_slot({}), names)
 
-    def test_under_the_cap_no_valid_cookie_is_evicted(self):
-        """Up to five pending attempts survive a new login start."""
-        self.assertEqual(stale_login_binding_cookies(self._jar(5)), [])
+    def test_starts_racing_on_one_jar_take_different_slots(self):
+        """Two starts that share a cookie jar do not overwrite each other.
 
-    def test_oldest_cookies_beyond_the_cap_are_evicted(self):
-        """Only the oldest attempts past the cap are named for deletion."""
-        jar = self._jar(7)
-        self.assertEqual(
-            stale_login_binding_cookies(jar),
-            [
-                login_binding_cookie_name("state-0"),
-                login_binding_cookie_name("state-1"),
-            ],
+        Requests racing before any response lands all present the same
+        jar; the allocations they trigger must still spread out, or one
+        login's binding would clobber the other's.
+        """
+        self.assertNotEqual(
+            allocate_login_binding_slot({}), allocate_login_binding_slot({})
         )
 
-    def test_broken_binding_cookies_are_always_evicted(self):
-        """A tampered binding cookie is named for deletion even under the cap."""
-        name = login_binding_cookie_name("state-1")
+    def test_a_pending_attempt_keeps_its_slot_while_one_is_free(self):
+        """No pending binding is overwritten while any slot is free."""
+        jar = {}
+        for i in range(LOGIN_BINDING_SLOTS - 1):
+            jar[allocate_login_binding_slot(jar)] = seal_login_binding(f"state-{i}")
+        self.assertNotIn(allocate_login_binding_slot(jar), jar)
+
+    def test_a_full_jar_reuses_the_oldest_attempts_slot(self):
+        """With every slot pending, the oldest attempt's slot is evicted."""
+        start = time.time() - 100
+        jar = {}
+        oldest_name = None
+        for i, name in enumerate(login_binding_cookie_names()):
+            # Issue times one second apart so age ordering is
+            # unambiguous; slot 2 is made the oldest on purpose, so
+            # name order cannot accidentally satisfy the assertion.
+            age_rank = (i - 2) % LOGIN_BINDING_SLOTS
+            jar[name] = self._sealed_at(f"state-{i}", start + age_rank)
+            if age_rank == 0:
+                oldest_name = name
+        self.assertEqual(allocate_login_binding_slot(jar), oldest_name)
+
+    def test_a_broken_slot_is_taken_before_any_attempt_is_evicted(self):
+        """A slot holding a tampered value is free, sparing pending ones."""
+        jar = {
+            name: seal_login_binding(f"state-{i}")
+            for i, name in enumerate(login_binding_cookie_names())
+        }
+        broken = login_binding_cookie_names()[3]
+        jar[broken] = jar[broken][:-1]
+        self.assertEqual(allocate_login_binding_slot(jar), broken)
+
+
+class StaleLoginBindingCookiesTestCase(TestCase):
+    """Contract of the login-start cleanup helper."""
+
+    def test_valid_slot_cookies_are_kept(self):
+        """A pending attempt's binding is never named for deletion."""
+        jar = {
+            name: seal_login_binding(f"state-{i}")
+            for i, name in enumerate(login_binding_cookie_names())
+        }
+        self.assertEqual(stale_login_binding_cookies(jar), [])
+
+    def test_broken_slot_cookies_are_named_for_deletion(self):
+        """A tampered slot value is named for deletion."""
+        name = login_binding_cookie_names()[0]
         jar = {name: seal_login_binding("state-1")[:-1]}
         self.assertEqual(stale_login_binding_cookies(jar), [name])
+
+    def test_prefixed_cookies_outside_the_slot_set_are_named_for_deletion(self):
+        """A binding-prefixed cookie that is no slot is named for deletion.
+
+        Nothing can read such a cookie, so leaving it would let it
+        bloat the Cookie header until its own expiry.
+        """
+        name = f"{LOGIN_BINDING_COOKIE_PREFIX}deadbeef"
+        self.assertEqual(stale_login_binding_cookies({name: "junk"}), [name])
 
     def test_cookies_without_the_binding_prefix_are_ignored(self):
         """Unrelated cookies are never named for deletion."""
@@ -1910,11 +1947,11 @@ class LoginBindingMatchesTestCase(TestCase):
     """Contract of the callback-side login binding check."""
 
     def setUp(self):
-        self.cookie_name = login_binding_cookie_name("state-1")
+        self.cookie_name = login_binding_cookie_names()[2]
         self.cookies = {self.cookie_name: seal_login_binding("state-1")}
 
     def test_missing_cookie_binds_nothing(self):
-        """Without this attempt's cookie no state is bound."""
+        """Without this attempt's binding no state is bound."""
         self.assertFalse(login_binding_matches({}, "state-1"))
         self.assertFalse(login_binding_matches({"other": "value"}, "state-1"))
 
@@ -1922,6 +1959,32 @@ class LoginBindingMatchesTestCase(TestCase):
         """A response without a state cannot be bound, cookies or not."""
         self.assertFalse(login_binding_matches(self.cookies, None))
         self.assertFalse(login_binding_matches(self.cookies, ""))
+
+    def test_non_string_state_never_matches(self):
+        """A non-string state is unbindable instead of raising.
+
+        A JSON callback body can carry any value under ``state``; a
+        truthy non-string one must be rejected like a wrong state.
+        """
+        self.assertFalse(login_binding_matches(self.cookies, 1))
+        self.assertFalse(login_binding_matches(self.cookies, ["state-1"]))
+
+    def test_sealed_value_for_another_state_never_matches(self):
+        """A slot holding another attempt's binding cannot match.
+
+        The signed value holds the full state digest, so no slot
+        shuffling can satisfy the check for a different state.
+        """
+        cookies = {self.cookie_name: seal_login_binding("state-2")}
+        self.assertFalse(login_binding_matches(cookies, "state-1"))
+
+    def test_the_match_names_the_slot_holding_the_binding(self):
+        """The matching helper returns the slot the binding lives in."""
+        self.assertEqual(
+            matching_login_binding_cookie(self.cookies, "state-1"),
+            self.cookie_name,
+        )
+        self.assertIsNone(matching_login_binding_cookie(self.cookies, "state-2"))
 
     def test_tampered_cookie_matches_nothing(self):
         """A value failing signature verification binds no state."""

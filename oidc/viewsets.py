@@ -10,7 +10,7 @@ import secrets
 import time
 import traceback
 from datetime import UTC, datetime, timedelta
-from typing import List, Optional, Tuple
+from typing import List, Mapping, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 from django.conf import settings
@@ -48,8 +48,9 @@ from oidc.client import (
     OpenIDClient,
     TokenVerificationFailed,
     UserInfoRequestFailed,
-    login_binding_cookie_name,
+    allocate_login_binding_slot,
     login_binding_matches,
+    matching_login_binding_cookie,
     seal_login_binding,
     stale_login_binding_cookies,
     state_cache_key,
@@ -241,13 +242,17 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 # IdP, which browsers strip Lax cookies from; browsers
                 # only accept SameSite=None cookies over HTTPS.
                 samesite = "None" if client.response_mode == "form_post" else "Lax"
-                # Each login attempt gets its own cookie, named after
-                # its state. A start never reads or rewrites another
-                # attempt's cookie, so overlapping logins (other tabs,
+                # Bindings live in a fixed set of slot cookies, so no
+                # number of login starts — sequential or racing on the
+                # same jar before any response lands — can grow the
+                # Cookie header past the slot count. The slot taken
+                # holds no other attempt's pending binding while a
+                # free one exists, so overlapping logins (other tabs,
                 # other providers, either response mode) stay
-                # independently completable.
+                # independently completable up to the slot count.
+                slot_name = allocate_login_binding_slot(request.COOKIES)
                 response.set_cookie(
-                    login_binding_cookie_name(state),
+                    slot_name,
                     seal_login_binding(state),
                     max_age=LOGIN_BINDING_MAX_AGE,
                     httponly=True,
@@ -255,11 +260,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     samesite=samesite,
                     path="/",
                 )
-                # Drop broken binding cookies and, past the cap, the
-                # oldest pending attempts', so repeated starts cannot
-                # grow the Cookie header past browser or proxy limits.
+                # Drop binding cookies nothing can use: broken slot
+                # values and prefixed names outside the slot set.
                 for stale_name in stale_login_binding_cookies(request.COOKIES):
-                    response.delete_cookie(stale_name, path="/", samesite=samesite)
+                    if stale_name != slot_name:
+                        response.delete_cookie(stale_name, path="/", samesite=samesite)
             # Delete only csrftoken for the current domain
             response.delete_cookie(
                 "csrftoken",
@@ -679,19 +684,27 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
     @staticmethod
     def _expire_login_binding(
-        response: HttpResponse, client: OpenIDClient, state: Optional[str]
+        response: HttpResponse,
+        client: OpenIDClient,
+        request_cookies: Mapping[str, str],
+        state: Optional[str],
     ) -> None:
         """Expire a finished login attempt's binding cookie.
 
         Called on the callback's terminal responses, alongside
-        ``_clear_login_states``: the attempt is over, so its cookie is
-        deleted instead of lingering until max age. Other attempts'
-        cookies are untouched. The attributes mirror the ones login()
-        set so the deletion addresses the same cookie.
+        ``_clear_login_states``: the attempt is over, so the slot
+        cookie holding its binding — found by its signed state digest
+        in ``request_cookies`` — is deleted instead of lingering until
+        max age. Other attempts' slots are untouched. The attributes
+        mirror the ones login() set so the deletion addresses the same
+        cookie.
         """
-        if client.enforce_browser_binding and state:
+        if not client.enforce_browser_binding:
+            return
+        slot_name = matching_login_binding_cookie(request_cookies, state)
+        if slot_name:
             response.delete_cookie(
-                login_binding_cookie_name(state),
+                slot_name,
                 path="/",
                 samesite="None" if client.response_mode == "form_post" else "Lax",
             )
@@ -885,7 +898,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             template_name="oidc/oidc_unrecoverable_error.html",
                         )
                         self._expire_login_binding(
-                            response, client, server_response.get("state")
+                            response,
+                            client,
+                            request.COOKIES,
+                            server_response.get("state"),
                         )
                         return response
 
@@ -999,7 +1015,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             auth_server=auth_server,
                         )
                         self._expire_login_binding(
-                            response, client, server_response.get("state")
+                            response,
+                            client,
+                            request.COOKIES,
+                            server_response.get("state"),
                         )
                         return response
         auth_servers = list(settings.OPENID_CONNECT_AUTH_SERVERS.keys())
