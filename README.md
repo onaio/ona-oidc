@@ -220,10 +220,10 @@ Bindings are stored in a fixed set of six cookies, so logins started
 in other tabs or against other configured providers stay
 independently completable, up to six pending attempts in one browser.
 A login start beyond that evicts the oldest attempt, and the
-six-cookie bound holds even when many logins start at once, before
-any response reaches the browser. A binding lapses 30 minutes after
-its login starts, and a finished login's cookie is deleted with the
-callback's final response.
+six-cookie limit holds even when many logins start at once, before
+any response reaches the browser. A binding expires 30 minutes after
+its login starts, and the callback's final response deletes a
+finished login's cookie.
 
 - **`ENFORCE_BROWSER_BINDING`** (`bool`, default `True`), per auth
   server. Set it to `False` only for deployments whose logins do not
@@ -234,9 +234,9 @@ callback's final response.
   cross-site POST, so the cookie carries `SameSite=None; Secure` and
   the deployment must run over HTTPS. `query` mode uses
   `SameSite=Lax`, with `Secure` set when Django sees the request as
-  HTTPS — a deployment that terminates TLS at a proxy needs Django's
-  `SECURE_PROXY_SSL_HEADER` configured (and the proxy sending the
-  matching header) for that.
+  HTTPS. A deployment that terminates TLS at a proxy needs Django's
+  `SECURE_PROXY_SSL_HEADER` configured, and the proxy sending the
+  matching header, for Django to see HTTPS.
 - Logins in flight when this feature is first deployed predate the
   cookie, so the callback rejects them; retrying the login recovers.
 

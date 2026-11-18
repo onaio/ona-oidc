@@ -67,16 +67,16 @@ def state_cache_key(state: str) -> str:
 
 
 # Signed, HttpOnly cookies binding each login to the browser that
-# started it (RFC 9700 §4.4, login CSRF). Bindings live in a fixed set
-# of slot cookies: a login start writes its binding to one free slot,
-# so overlapping starts (other tabs, other providers) do not rewrite
-# one another's binding and a query-mode start never downgrades the
+# started it (RFC 9700 §4.4, login CSRF). A login start writes its
+# binding to one free cookie out of a fixed set of slots, so
+# overlapping starts (other tabs, other providers) do not rewrite one
+# another's binding, and a query-mode start never downgrades the
 # SameSite=None cookie a form_post login still needs. The fixed name
-# set is what bounds the Cookie header: starts racing on the same jar
-# cannot see one another's Set-Cookie, so only names bounded by
-# construction — not eviction of names seen on the request — hold the
-# bound. The callback requires the echoed state to match a slot's
-# signed binding before it consults any cache entry.
+# set is what bounds the Cookie header. Requests racing on the same
+# jar cannot see one another's Set-Cookie, so deleting cookies named
+# on the request cannot bound the jar; a fixed name set can. The
+# callback requires the echoed state to match a slot's signed binding
+# before it consults any cache entry.
 LOGIN_BINDING_COOKIE_PREFIX = "oidc_login_bind_"
 # The salt scopes the signature so a value signed by this project for
 # any other purpose can never pass as a login binding.
@@ -85,12 +85,12 @@ _LOGIN_BINDING_SALT = "oidc.login.binding"
 # open; the state/nonce cache TTLs end a flow earlier anyway.
 LOGIN_BINDING_MAX_AGE = 1800
 # Number of slot cookies, and so the most pending attempts a browser
-# retains: a start beyond it evicts the oldest attempt. Leaves room
-# for every login a user plausibly keeps open at once.
+# retains; a start beyond it evicts the oldest attempt. Six leaves
+# room for every login a user plausibly keeps open at once.
 LOGIN_BINDING_SLOTS = 6
 # Cache key of the counter that staggers login starts across slots.
-# Shared through the cache so starts racing on the same cookie jar
-# still draw different values and land on different slots.
+# The cache is shared, so even requests racing on the same cookie jar
+# draw different values and land on different slots.
 _LOGIN_BINDING_SEED_KEY = "oidc:login-binding:seed"
 
 
@@ -100,7 +100,7 @@ def _state_digest(state: str) -> str:
 
 def _load_login_binding(cookie_value: str) -> Optional[dict]:
     # The payload dict of a sealed value, or None for a tampered,
-    # expired or malformed one — never an error.
+    # expired or malformed one, never an error.
     try:
         payload = signing.loads(
             cookie_value,
@@ -116,9 +116,9 @@ def login_binding_cookie_names() -> List[str]:
     """
     Return the fixed slot cookie names login bindings are stored under.
 
-    Which slot holds which attempt carries no meaning: the match is
-    decided by the signed state digest in the value, so a slot name
-    alone can never satisfy the callback's check.
+    Which slot holds which attempt carries no meaning. The signed
+    state digest in the value decides the match, so a slot name alone
+    can never satisfy the callback's check.
     """
     return [
         f"{LOGIN_BINDING_COOKIE_PREFIX}{slot}" for slot in range(LOGIN_BINDING_SLOTS)
@@ -141,8 +141,9 @@ def seal_login_binding(state: str) -> str:
 
 
 def _next_login_binding_seed() -> int:
-    # A shared counter, so login starts racing on the same cookie jar
-    # draw distinct values and scan the slots from different offsets.
+    # The counter lives in the shared cache, so login starts racing
+    # on the same cookie jar draw distinct values and scan the slots
+    # from different offsets.
     try:
         return cache.incr(_LOGIN_BINDING_SEED_KEY)
     except ValueError:
@@ -164,14 +165,15 @@ def allocate_login_binding_slot(cookies: Mapping[str, str]) -> str:
     Return the slot cookie name a new login start should write its
     binding to.
 
-    ``cookies`` is the request's cookie mapping. The first slot
-    holding no valid pending binding is used; when every slot is
-    pending, the oldest attempt's slot is reused, evicting it. The
-    scan starts from a shared counter's offset, so starts racing on
-    the same jar — none sees another's Set-Cookie — take different
-    free slots instead of overwriting one another. Pending attempts
-    up to the slot count therefore stay completable, while the jar
-    can never hold more than ``LOGIN_BINDING_SLOTS`` binding cookies.
+    ``cookies`` is the request's cookie mapping. A start takes the
+    first slot holding no valid pending binding; when every slot is
+    pending, it takes the oldest attempt's slot, evicting it. Starts
+    racing on the same jar never see one another's Set-Cookie, so the
+    scan begins at a shared counter's offset and racing starts take
+    different free slots instead of overwriting one another. Pending
+    attempts up to the slot count therefore stay completable, and the
+    jar can never hold more than ``LOGIN_BINDING_SLOTS`` binding
+    cookies.
     """
     names = login_binding_cookie_names()
     seed = _next_login_binding_seed() % LOGIN_BINDING_SLOTS
@@ -180,7 +182,7 @@ def allocate_login_binding_slot(cookies: Mapping[str, str]) -> str:
         value = cookies.get(name)
         payload = _load_login_binding(value) if value else None
         if payload is None or not isinstance(payload.get("iat"), int):
-            # Empty, expired, tampered or malformed: free to take.
+            # An empty, expired, tampered or malformed slot is free.
             return name
         pending.append((payload["iat"], name))
     return min(pending)[1]
@@ -193,9 +195,9 @@ def matching_login_binding_cookie(
     Return the name of the slot cookie binding ``state`` to the
     browser presenting ``cookies``, or None.
 
-    A missing, tampered or expired binding matches nothing, never
-    raises; nor does a non-string ``state``, which a malformed JSON
-    callback body can carry.
+    A missing, tampered or expired binding matches nothing and never
+    raises. The same holds for a non-string ``state``, which a
+    malformed JSON callback body can carry.
     """
     if not state or not isinstance(state, str):
         return None
@@ -229,8 +231,8 @@ def stale_login_binding_cookies(cookies: Mapping[str, str]) -> List[str]:
     Return the binding cookie names a new login start should delete:
     every slot whose value is tampered, expired or malformed, plus
     every binding-prefixed cookie outside the slot set, which nothing
-    can read. Valid pending attempts are never named — the fixed slot
-    count, not eviction, is what bounds the jar.
+    can read. Valid pending attempts are never named; the fixed slot
+    count, not eviction, bounds the jar.
     """
     slot_names = set(login_binding_cookie_names())
     stale = []
@@ -877,8 +879,8 @@ class OpenIDClient:
 
         query = urlencode(params, quote_via=quote, safe=_AUTHORIZE_URL_SAFE_CHARS)
         response = HttpResponseRedirect(f"{self.authorization_endpoint}?{query}")
-        # The redirect is specific to one browser: its state (and the
-        # binding cookie the viewset adds) must never come out of a
+        # The redirect is specific to one browser. Its state, and the
+        # binding cookie the viewset adds, must never come out of a
         # shared cache into another browser.
         response["Cache-Control"] = "no-store"
         return response

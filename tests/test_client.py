@@ -1870,7 +1870,7 @@ class AllocateLoginBindingSlotTestCase(TestCase):
 
         Requests racing before any response lands all present the same
         jar; the allocations they trigger must still spread out, or one
-        login's binding would clobber the other's.
+        login's binding would overwrite the other's.
         """
         self.assertNotEqual(
             allocate_login_binding_slot({}), allocate_login_binding_slot({})
@@ -1889,9 +1889,9 @@ class AllocateLoginBindingSlotTestCase(TestCase):
         jar = {}
         oldest_name = None
         for i, name in enumerate(login_binding_cookie_names()):
-            # Issue times one second apart so age ordering is
-            # unambiguous; slot 2 is made the oldest on purpose, so
-            # name order cannot accidentally satisfy the assertion.
+            # Issue times are one second apart so age ordering is
+            # unambiguous; slot 2 is deliberately the oldest, so name
+            # order cannot accidentally satisfy the assertion.
             age_rank = (i - 2) % LOGIN_BINDING_SLOTS
             jar[name] = self._sealed_at(f"state-{i}", start + age_rank)
             if age_rank == 0:
@@ -1927,10 +1927,10 @@ class StaleLoginBindingCookiesTestCase(TestCase):
         self.assertEqual(stale_login_binding_cookies(jar), [name])
 
     def test_prefixed_cookies_outside_the_slot_set_are_named_for_deletion(self):
-        """A binding-prefixed cookie that is no slot is named for deletion.
+        """A binding-prefixed cookie outside the slot set is named for deletion.
 
-        Nothing can read such a cookie, so leaving it would let it
-        bloat the Cookie header until its own expiry.
+        Nothing can read such a cookie, so leaving it would grow the
+        Cookie header until the cookie expires.
         """
         name = f"{LOGIN_BINDING_COOKIE_PREFIX}deadbeef"
         self.assertEqual(stale_login_binding_cookies({name: "junk"}), [name])
@@ -1992,7 +1992,7 @@ class LoginBindingMatchesTestCase(TestCase):
         self.assertFalse(login_binding_matches(tampered, "state-1"))
 
     def test_cookie_expires_after_the_max_age(self):
-        """The binding holds just before the max age and lapses after it."""
+        """The binding holds just before the max age and expires after it."""
         now = time.time()
         with patch("time.time", return_value=now + LOGIN_BINDING_MAX_AGE - 60):
             self.assertTrue(login_binding_matches(self.cookies, "state-1"))

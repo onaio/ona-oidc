@@ -242,13 +242,13 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 # IdP, which browsers strip Lax cookies from; browsers
                 # only accept SameSite=None cookies over HTTPS.
                 samesite = "None" if client.response_mode == "form_post" else "Lax"
-                # Bindings live in a fixed set of slot cookies, so no
-                # number of login starts — sequential or racing on the
-                # same jar before any response lands — can grow the
-                # Cookie header past the slot count. The slot taken
-                # holds no other attempt's pending binding while a
-                # free one exists, so overlapping logins (other tabs,
-                # other providers, either response mode) stay
+                # Bindings are stored in a fixed set of slot cookies,
+                # so no number of login starts, sequential or racing
+                # on the same jar before any response lands, can grow
+                # the Cookie header past the slot count. The slot
+                # taken holds no other attempt's pending binding while
+                # a free one exists, so overlapping logins (other
+                # tabs, other providers, either response mode) stay
                 # independently completable up to the slot count.
                 slot_name = allocate_login_binding_slot(request.COOKIES)
                 response.set_cookie(
@@ -692,10 +692,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         """Expire a finished login attempt's binding cookie.
 
         Called on the callback's terminal responses, alongside
-        ``_clear_login_states``: the attempt is over, so the slot
-        cookie holding its binding — found by its signed state digest
-        in ``request_cookies`` — is deleted instead of lingering until
-        max age. Other attempts' slots are untouched. The attributes
+        ``_clear_login_states``. The attempt is over, so this deletes
+        the slot cookie holding its binding, found by its signed state
+        digest in ``request_cookies``, instead of leaving it until max
+        age. Other attempts' slots are untouched. The attributes
         mirror the ones login() set so the deletion addresses the same
         cookie.
         """

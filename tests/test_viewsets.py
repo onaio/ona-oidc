@@ -3232,8 +3232,8 @@ class TestSSOCookieJWTExpiry(TestCase):
 
 
 # The browser-visible name prefix of the binding slot cookies.
-# Deliberately a literal, not an import: renaming the cookies the
-# deployed browsers already hold must fail a test.
+# Deliberately a literal, not an import, so renaming the cookies the
+# deployed browsers already hold fails a test.
 BINDING_COOKIE_PREFIX = "oidc_login_bind"
 
 # Built without ENFORCE_BROWSER_BINDING so these tests exercise the
@@ -3373,9 +3373,10 @@ class LoginBrowserBindingTestCase(TestCase):
     def test_overlapping_login_starts_can_both_complete(self):
         """Two logins started before either response lands can both finish.
 
-        Both requests go out with the same initial cookie jar — neither
-        start sees the other's Set-Cookie — and the browser then stores
-        both responses' cookies. Neither callback may be rejected.
+        Both requests go out with the same initial cookie jar, so
+        neither start sees the other's Set-Cookie, and the browser
+        then stores both responses' cookies. Neither callback may be
+        rejected.
         """
         jar = {}
         first_state, first_response = self._start_login_response(jar)
@@ -3426,7 +3427,7 @@ class LoginBrowserBindingTestCase(TestCase):
         jar = {}
         now = time.time()
         for offset in range(48):
-            # Distinct clock ticks so eviction age-ordering is exercised
+            # Distinct clock ticks exercise eviction age-ordering
             # even when the loop runs within one real second.
             with patch("time.time", return_value=now + offset):
                 _, response = self._start_login_response(jar)
@@ -3438,11 +3439,11 @@ class LoginBrowserBindingTestCase(TestCase):
         """Starts racing on one cookie jar cannot grow it past the cap.
 
         Every request goes out before any response lands, so no start
-        sees another's Set-Cookie — the fastest way a hostile page can
-        grow the jar. The browser must still end up with a bounded set
-        of binding cookies and a Cookie header far below proxy header
-        limits, with the newest attempt completable and the earliest
-        evicted.
+        sees another's Set-Cookie. That is how a hostile page grows
+        the jar fastest. The browser must still end up with a bounded
+        set of binding cookies and a Cookie header far below proxy
+        header limits, with the newest attempt completable and the
+        earliest evicted.
         """
         initial_jar = {}
         started = [self._start_login_response(initial_jar) for _ in range(48)]
@@ -3465,7 +3466,7 @@ class LoginBrowserBindingTestCase(TestCase):
         self.assertEqual(response.status_code, 401)
 
     def test_cap_evicts_the_oldest_attempt_and_keeps_the_newest(self):
-        """Past the cap the oldest attempt is evicted, newest stay completable."""
+        """Past the cap the oldest attempt is evicted and the newest stay completable."""
         jar = {}
         states = []
         now = time.time()
@@ -3515,9 +3516,10 @@ class LoginBrowserBindingTestCase(TestCase):
         """The username-form re-submit passes binding and ends the attempt.
 
         A callback whose username is already taken renders the form
-        without ending the attempt; the same-origin re-POST carries the
-        state and the binding cookie, must pass the binding check, and
-        the success response deletes the attempt's binding cookie.
+        without ending the attempt. The same-origin re-POST carries
+        the state and the binding cookie and must pass the binding
+        check, and the success response deletes the attempt's binding
+        cookie.
         """
         User.objects.create(username="anna", email="anna@example.com")
         claims = {
@@ -3648,7 +3650,7 @@ class LoginBrowserBindingTestCase(TestCase):
         self.assertEqual(response.status_code, 401)
 
     def test_opted_out_server_keeps_the_old_behaviour(self):
-        """ENFORCE_BROWSER_BINDING=False: no cookie set, none required."""
+        """With ENFORCE_BROWSER_BINDING=False no cookie is set and none is required."""
         with override_settings(
             OPENID_CONNECT_AUTH_SERVERS={
                 "default": {
