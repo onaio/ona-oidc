@@ -1823,14 +1823,25 @@ class IDTokenValidationTestCase(TestCase):
                 self.assertEqual(decoded["aud"], "client")
 
 
-class SealLoginBindingTestCase(TestCase):
-    """Contract of the binding slot names and the sealed value."""
+class StateCacheKeyTestCase(TestCase):
+    """Contract of the PKCE state cache key helper."""
 
-    def test_sealed_value_matches_only_its_own_state(self):
-        """A sealed binding matches the state it was minted for, no other."""
-        cookies = {login_binding_cookie_names()[0]: seal_login_binding("state-1")}
-        self.assertTrue(login_binding_matches(cookies, "state-1"))
-        self.assertFalse(login_binding_matches(cookies, "state-2"))
+    def test_keys_carry_the_oidc_state_namespace_prefix(self):
+        """A state's cache key is the state under the oidc:state: namespace.
+
+        The literal prefix is the security boundary that keeps
+        attacker-chosen state values from addressing unrelated cache
+        entries, so renaming it must fail a test.
+        """
+        self.assertEqual(state_cache_key("state-1"), "oidc:state:state-1")
+
+    def test_distinct_states_get_distinct_keys(self):
+        """Two different states never share a cache key."""
+        self.assertNotEqual(state_cache_key("state-1"), state_cache_key("state-2"))
+
+
+class LoginBindingCookieNamesTestCase(TestCase):
+    """Contract of the fixed binding slot names."""
 
     def test_the_slot_names_are_a_fixed_set(self):
         """Exactly LOGIN_BINDING_SLOTS distinct slot names exist."""
@@ -1842,6 +1853,20 @@ class SealLoginBindingTestCase(TestCase):
         """Every slot cookie name starts with the shared prefix."""
         for name in login_binding_cookie_names():
             self.assertTrue(name.startswith(LOGIN_BINDING_COOKIE_PREFIX))
+
+    def test_the_names_are_stable_across_calls(self):
+        """Repeated calls return the same names in the same order."""
+        self.assertEqual(login_binding_cookie_names(), login_binding_cookie_names())
+
+
+class SealLoginBindingTestCase(TestCase):
+    """Contract of the sealed binding value."""
+
+    def test_sealed_value_matches_only_its_own_state(self):
+        """A sealed binding matches the state it was minted for, no other."""
+        cookies = {login_binding_cookie_names()[0]: seal_login_binding("state-1")}
+        self.assertTrue(login_binding_matches(cookies, "state-1"))
+        self.assertFalse(login_binding_matches(cookies, "state-2"))
 
     def test_a_binding_matches_from_any_slot(self):
         """The slot holding a binding carries no meaning for the match."""
@@ -1943,6 +1968,37 @@ class StaleLoginBindingCookiesTestCase(TestCase):
         )
 
 
+class MatchingLoginBindingCookieTestCase(TestCase):
+    """Contract of the slot lookup behind the binding check."""
+
+    def setUp(self):
+        self.cookie_name = login_binding_cookie_names()[2]
+        self.cookies = {self.cookie_name: seal_login_binding("state-1")}
+
+    def test_the_match_names_the_slot_holding_the_binding(self):
+        """The lookup returns the slot cookie name holding the state."""
+        self.assertEqual(
+            matching_login_binding_cookie(self.cookies, "state-1"),
+            self.cookie_name,
+        )
+
+    def test_a_state_bound_in_no_slot_returns_none(self):
+        """A state no slot holds a binding for returns None."""
+        self.assertIsNone(matching_login_binding_cookie(self.cookies, "state-2"))
+        self.assertIsNone(matching_login_binding_cookie({}, "state-1"))
+
+    def test_missing_or_non_string_state_returns_none(self):
+        """An absent or non-string state returns None instead of raising."""
+        self.assertIsNone(matching_login_binding_cookie(self.cookies, None))
+        self.assertIsNone(matching_login_binding_cookie(self.cookies, ""))
+        self.assertIsNone(matching_login_binding_cookie(self.cookies, 1))
+
+    def test_tampered_value_returns_none(self):
+        """A slot value failing signature verification returns None."""
+        tampered = {self.cookie_name: self.cookies[self.cookie_name][:-1]}
+        self.assertIsNone(matching_login_binding_cookie(tampered, "state-1"))
+
+
 class LoginBindingMatchesTestCase(TestCase):
     """Contract of the callback-side login binding check."""
 
@@ -1977,14 +2033,6 @@ class LoginBindingMatchesTestCase(TestCase):
         """
         cookies = {self.cookie_name: seal_login_binding("state-2")}
         self.assertFalse(login_binding_matches(cookies, "state-1"))
-
-    def test_the_match_names_the_slot_holding_the_binding(self):
-        """The matching helper returns the slot the binding lives in."""
-        self.assertEqual(
-            matching_login_binding_cookie(self.cookies, "state-1"),
-            self.cookie_name,
-        )
-        self.assertIsNone(matching_login_binding_cookie(self.cookies, "state-2"))
 
     def test_tampered_cookie_matches_nothing(self):
         """A value failing signature verification binds no state."""
