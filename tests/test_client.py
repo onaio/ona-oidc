@@ -1868,13 +1868,6 @@ class SealLoginBindingTestCase(TestCase):
         self.assertTrue(login_binding_matches(cookies, "state-1"))
         self.assertFalse(login_binding_matches(cookies, "state-2"))
 
-    def test_a_binding_matches_from_any_slot(self):
-        """The slot holding a binding carries no meaning for the match."""
-        for name in login_binding_cookie_names():
-            with self.subTest(slot=name):
-                cookies = {name: seal_login_binding("state-1")}
-                self.assertTrue(login_binding_matches(cookies, "state-1"))
-
 
 class AllocateLoginBindingSlotTestCase(TestCase):
     """Tests for method allocate_login_binding_slot"""
@@ -1981,6 +1974,15 @@ class MatchingLoginBindingCookieTestCase(TestCase):
             matching_login_binding_cookie(self.cookies, "state-1"),
             self.cookie_name,
         )
+
+    def test_a_binding_matches_from_any_slot(self):
+        """The slot holding a binding carries no meaning for the match."""
+        for name in login_binding_cookie_names():
+            with self.subTest(slot=name):
+                cookies = {name: seal_login_binding("state-1")}
+                self.assertEqual(
+                    matching_login_binding_cookie(cookies, "state-1"), name
+                )
 
     def test_a_state_bound_in_no_slot_returns_none(self):
         """A state no slot holds a binding for returns None."""
