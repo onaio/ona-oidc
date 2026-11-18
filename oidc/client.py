@@ -143,7 +143,9 @@ def seal_login_binding(state: str) -> str:
 def _next_login_binding_seed() -> int:
     # The counter lives in the shared cache, so login starts racing
     # on the same cookie jar draw distinct values and index different
-    # entries of the jar's free-slot list.
+    # entries of the jar's free-slot list. Workers must share that
+    # cache: with a per-process cache, racing starts served by
+    # different workers can draw equal values and take the same slot.
     try:
         return cache.incr(_LOGIN_BINDING_SEED_KEY)
     except ValueError:

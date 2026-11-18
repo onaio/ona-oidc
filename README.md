@@ -237,6 +237,14 @@ finished login's cookie.
   HTTPS. A deployment that terminates TLS at a proxy needs Django's
   `SECURE_PROXY_SSL_HEADER` configured, and the proxy sending the
   matching header, for Django to see HTTPS.
+- Keeping simultaneous sign-ins apart uses Django's cache, as the
+  PKCE and `next=` handling already do. Deployments running more
+  than one worker process need a cache backend the workers share,
+  such as Redis or Memcached; with a per-process cache, two sign-ins
+  started at the same instant can overwrite each other's binding.
+  The login endpoint is unauthenticated and writes a short-lived
+  cache entry per start, so rate-limit it as you would any
+  unauthenticated endpoint.
 - Logins in flight when this feature is first deployed predate the
   cookie, so the callback rejects them; retrying the login recovers.
 
