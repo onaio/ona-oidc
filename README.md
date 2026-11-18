@@ -216,11 +216,13 @@ attempt. The callback only honours an authorization response whose
 echoed `state` matches the cookie set when its login started, so an
 attacker cannot replay a response captured in one browser into
 another to log a victim into the attacker's account (RFC 9700 §4.4).
-Each attempt has its own cookie, so logins started in other tabs or
-against other configured providers stay independently completable;
-a cookie lapses 30 minutes after its login starts. A browser retains
-cookies for at most six pending attempts — a login start beyond that
-evicts the oldest — and a finished login's cookie is deleted with the
+Bindings are stored in a fixed set of six cookies, so logins started
+in other tabs or against other configured providers stay
+independently completable, up to six pending attempts in one browser.
+A login start beyond that evicts the oldest attempt, and the
+six-cookie bound holds even when many logins start at once, before
+any response reaches the browser. A binding lapses 30 minutes after
+its login starts, and a finished login's cookie is deleted with the
 callback's final response.
 
 - **`ENFORCE_BROWSER_BINDING`** (`bool`, default `True`), per auth
