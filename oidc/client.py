@@ -92,6 +92,15 @@ LOGIN_BINDING_SLOTS = 6
 # The cache is shared, so even requests racing on the same cookie jar
 # draw different values and land on different slots.
 _LOGIN_BINDING_SEED_KEY = "oidc:login-binding:seed"
+# How long an allocated slot stays marked held in the shared cache. A
+# browser's own pick is invisible to its other requests until the
+# response lands in the cookie jar; the hold covers that gap, so a
+# request with a stale jar does not take a slot an outstanding start
+# already took. Completion releases the hold early. Long enough for a
+# slow login response to reach the browser, short enough that holds
+# from abandoned starts stop narrowing the choice within a minute.
+LOGIN_BINDING_SLOT_HOLD = 60
+_LOGIN_BINDING_HOLD_PREFIX = "oidc:login-binding:held:"
 
 
 def _state_digest(state: str) -> str:
@@ -169,17 +178,21 @@ def allocate_login_binding_slot(cookies: Mapping[str, str]) -> str:
 
     ``cookies`` is the request's cookie mapping. A start takes a free
     slot, one holding no valid pending binding; when every slot is
-    pending, it takes the oldest attempt's slot and evicts it. Starts
-    racing on the same jar never see one another's Set-Cookie, but
-    they derive the same free list from the shared jar, and their
-    consecutive counter draws index different entries of it. They
-    therefore take different free slots instead of overwriting one
-    another. Pending attempts up to the slot count stay completable,
-    and the jar never holds more than ``LOGIN_BINDING_SLOTS`` binding
-    cookies. Two racing draws land on the same slot only when other
-    traffic advances the counter between them by an exact multiple of
-    the free-slot count. The overwritten attempt then fails its
-    callback and a retry recovers, the same cost as cap eviction.
+    pending, it takes the oldest attempt's slot and evicts it. Every
+    pick is marked held in the shared cache for a short time, and the
+    probe starts at the counter-indexed free slot and walks past held
+    ones. Overlapping starts therefore stay apart however their
+    responses are ordered. A start racing on the same jar skips the
+    slot its twin just held, and a start whose jar already carries
+    one response skips the slot a still-outstanding start took, which
+    no jar could show it. Pending attempts up to the slot count stay
+    completable, and the jar never holds more than
+    ``LOGIN_BINDING_SLOTS`` binding cookies. Two starts can still
+    collide when their allocations interleave in the microseconds
+    between one reading the holds and the other writing its own, or
+    when every free slot is held and the probe falls back to the
+    counter-indexed pick alone. The overwritten attempt then fails
+    its callback and a retry recovers, the same cost as cap eviction.
     """
     free = []
     pending = []
@@ -192,8 +205,32 @@ def allocate_login_binding_slot(cookies: Mapping[str, str]) -> str:
         else:
             pending.append((payload["iat"], name))
     if free:
-        return free[_next_login_binding_seed() % len(free)]
-    return min(pending)[1]
+        start = _next_login_binding_seed() % len(free)
+        probe = free[start:] + free[:start]
+        choice = next(
+            (
+                name
+                for name in probe
+                if cache.get(_LOGIN_BINDING_HOLD_PREFIX + name) is None
+            ),
+            # Every free slot held: the counter-indexed pick alone
+            # still keeps same-jar racing starts apart.
+            probe[0],
+        )
+    else:
+        choice = min(pending)[1]
+    cache.set(_LOGIN_BINDING_HOLD_PREFIX + choice, True, LOGIN_BINDING_SLOT_HOLD)
+    return choice
+
+
+def release_login_binding_slot(name: str) -> None:
+    """
+    Release the hold on slot ``name`` after its login attempt ends.
+
+    The slot's cookie is deleted with the same response, so the slot
+    is free for the next start without waiting out the hold.
+    """
+    cache.delete(_LOGIN_BINDING_HOLD_PREFIX + name)
 
 
 def matching_login_binding_cookie(

@@ -51,6 +51,7 @@ from oidc.client import (
     allocate_login_binding_slot,
     login_binding_matches,
     matching_login_binding_cookie,
+    release_login_binding_slot,
     seal_login_binding,
     stale_login_binding_cookies,
     state_cache_key,
@@ -708,6 +709,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 path="/",
                 samesite="None" if client.response_mode == "form_post" else "Lax",
             )
+            release_login_binding_slot(slot_name)
 
     @action(methods=["POST", "GET"], detail=False)
     @sensitive_variables()

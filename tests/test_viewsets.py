@@ -3495,6 +3495,35 @@ class LoginBrowserBindingTestCase(TestCase):
                 )
                 self.assertEqual(response.status_code, 302)
 
+    def test_response_order_races_keep_every_login_completable(self):
+        """Responses landing out of order cannot cost a pending login.
+
+        Two logins are pending. A and B start against the same jar; B's
+        response reaches the browser while A's is still outstanding,
+        and C starts against that updated jar. A's and C's responses
+        then land. All five logins must stay completable, since the
+        browser never exceeds the pending-attempt limit.
+        """
+        jar = {}
+        states = []
+        for _ in range(2):
+            state, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+            states.append(state)
+        state_a, response_a = self._start_login_response(jar)
+        state_b, response_b = self._start_login_response(jar)
+        self._store_cookies(jar, response_b)
+        state_c, response_c = self._start_login_response(jar)
+        self._store_cookies(jar, response_a)
+        self._store_cookies(jar, response_c)
+        states += [state_a, state_b, state_c]
+        for state in states:
+            with self.subTest(state=state):
+                response = self._callback_with_cookies(
+                    state, self._cross_site_post_cookies(jar)
+                )
+                self.assertEqual(response.status_code, 302)
+
     def test_cap_evicts_the_oldest_attempt_and_keeps_the_newest(self):
         """Past the cap the oldest attempt is evicted and the newest stay completable."""
         jar = {}

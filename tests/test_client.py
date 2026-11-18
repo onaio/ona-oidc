@@ -37,6 +37,7 @@ from oidc.client import (
     login_binding_cookie_names,
     login_binding_matches,
     matching_login_binding_cookie,
+    release_login_binding_slot,
     seal_login_binding,
     stale_login_binding_cookies,
     state_cache_key,
@@ -1872,10 +1873,34 @@ class SealLoginBindingTestCase(TestCase):
 class AllocateLoginBindingSlotTestCase(TestCase):
     """Tests for method allocate_login_binding_slot"""
 
+    def setUp(self):
+        # Slot holds and the counter live in the cache; a known-empty
+        # cache keeps every allocation in these tests deterministic.
+        cache.clear()
+
     @staticmethod
     def _sealed_at(state, issued_at):
         with patch("time.time", return_value=issued_at):
             return seal_login_binding(state)
+
+    def test_a_start_avoids_a_slot_an_outstanding_start_took(self):
+        """A stale jar cannot steer a start onto an outstanding start's slot.
+
+        A and B allocate against one jar; B's response reaches the
+        browser while A's is still outstanding, and C allocates
+        against the updated jar. No jar shows A's slot as taken, so C
+        must learn of it another way and take a different slot.
+        """
+        jar = {}
+        for i in range(2):
+            jar[allocate_login_binding_slot(jar)] = seal_login_binding(f"state-{i}")
+        slot_a = allocate_login_binding_slot(jar)
+        slot_b = allocate_login_binding_slot(jar)
+        jar_with_b = {**jar, slot_b: seal_login_binding("state-b")}
+        slot_c = allocate_login_binding_slot(jar_with_b)
+        self.assertNotEqual(slot_c, slot_a)
+        self.assertNotEqual(slot_c, slot_b)
+        self.assertNotIn(slot_c, jar_with_b)
 
     def test_allocation_only_returns_slot_names(self):
         """Every allocation lands on one of the fixed slot names."""
@@ -1950,6 +1975,31 @@ class AllocateLoginBindingSlotTestCase(TestCase):
         broken = login_binding_cookie_names()[3]
         jar[broken] = jar[broken][:-1]
         self.assertEqual(allocate_login_binding_slot(jar), broken)
+
+
+class ReleaseLoginBindingSlotTestCase(TestCase):
+    """Tests for method release_login_binding_slot"""
+
+    def setUp(self):
+        cache.clear()
+
+    def test_a_released_slot_is_taken_before_held_ones(self):
+        """After release the next start lands on the freed slot.
+
+        Three starts hold the three free slots; releasing the second
+        start's slot makes it the one slot a fourth start may take
+        without overwriting an outstanding start's binding.
+        """
+        jar = {
+            name: seal_login_binding(name)
+            for name in login_binding_cookie_names()[3:]
+        }
+        first = allocate_login_binding_slot(jar)
+        second = allocate_login_binding_slot(jar)
+        third = allocate_login_binding_slot(jar)
+        self.assertEqual(len({first, second, third}), 3)
+        release_login_binding_slot(second)
+        self.assertEqual(allocate_login_binding_slot(jar), second)
 
 
 class StaleLoginBindingCookiesTestCase(TestCase):
