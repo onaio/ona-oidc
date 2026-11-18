@@ -141,10 +141,10 @@ def seal_login_binding(state: str) -> str:
 
 
 def _next_login_binding_seed() -> int:
-    # The counter lives in the shared cache, so login starts racing
+    # The counter is kept in the shared cache, so login starts racing
     # on the same cookie jar draw distinct values and index different
     # entries of the jar's free-slot list. Workers must share that
-    # cache: with a per-process cache, racing starts served by
+    # cache. With a per-process cache, racing starts served by
     # different workers can draw equal values and take the same slot.
     try:
         return cache.incr(_LOGIN_BINDING_SEED_KEY)
@@ -169,18 +169,17 @@ def allocate_login_binding_slot(cookies: Mapping[str, str]) -> str:
 
     ``cookies`` is the request's cookie mapping. A start takes a free
     slot, one holding no valid pending binding; when every slot is
-    pending, it takes the oldest attempt's slot, evicting it. Starts
+    pending, it takes the oldest attempt's slot and evicts it. Starts
     racing on the same jar never see one another's Set-Cookie, but
-    they derive the same free list from that shared jar, and their
-    consecutive counter draws index different entries of it, so they
-    take different free slots instead of overwriting one another.
-    Pending attempts up to the slot count therefore stay completable,
-    and the jar can never hold more than ``LOGIN_BINDING_SLOTS``
-    binding cookies. Aliasing remains possible only when other
-    traffic advances the counter between two racing draws by an exact
-    multiple of the free-slot count; the overwritten attempt then
-    fails its callback and a retry recovers, the same cost as cap
-    eviction.
+    they derive the same free list from the shared jar, and their
+    consecutive counter draws index different entries of it. They
+    therefore take different free slots instead of overwriting one
+    another. Pending attempts up to the slot count stay completable,
+    and the jar never holds more than ``LOGIN_BINDING_SLOTS`` binding
+    cookies. Two racing draws land on the same slot only when other
+    traffic advances the counter between them by an exact multiple of
+    the free-slot count. The overwritten attempt then fails its
+    callback and a retry recovers, the same cost as cap eviction.
     """
     free = []
     pending = []

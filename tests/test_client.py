@@ -1902,14 +1902,14 @@ class AllocateLoginBindingSlotTestCase(TestCase):
         self.assertNotIn(allocate_login_binding_slot(jar), jar)
 
     def test_racing_starts_on_a_partly_filled_jar_take_different_slots(self):
-        """Interleaved foreign starts cannot alias racing starts' slots.
+        """Interleaved foreign starts cannot make racing starts share a slot.
 
         Two bindings occupy slots; other browsers then advance the
         shared counter by every amount up to the slot count before the
         same unchanged jar makes two racing allocations. The racing
         pair must take two distinct free slots every time. Each sweep
-        step builds its jar afresh so every counter-to-jar alignment,
-        including the colliding ones, is actually exercised.
+        step builds a new jar so the test reaches every alignment of
+        the counter against the occupied slots.
         """
         for interleaved in range(LOGIN_BINDING_SLOTS + 1):
             with self.subTest(interleaved=interleaved):
@@ -2010,7 +2010,7 @@ class MatchingLoginBindingCookieTestCase(TestCase):
                 )
 
     def test_a_state_bound_in_no_slot_returns_none(self):
-        """A state no slot holds a binding for returns None."""
+        """The lookup returns None for a state without a binding in any slot."""
         self.assertIsNone(matching_login_binding_cookie(self.cookies, "state-2"))
         self.assertIsNone(matching_login_binding_cookie({}, "state-1"))
 

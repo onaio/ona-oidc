@@ -3481,8 +3481,8 @@ class LoginBrowserBindingTestCase(TestCase):
             self._store_cookies(jar, response)
             states.append(state)
         for _ in range(4):
-            # Other browsers' starts: they advance the shared counter
-            # but their responses never reach browser A's jar.
+            # Other browsers' starts advance the shared counter, but
+            # their responses never reach browser A's jar.
             self._start_login_response({})
         racing = [self._start_login_response(jar) for _ in range(2)]
         for state, response in racing:
@@ -3654,7 +3654,7 @@ class LoginBrowserBindingTestCase(TestCase):
     def test_attacker_state_with_victim_cookie_is_rejected(self):
         """A response for a login this browser never started is rejected.
 
-        This is the login CSRF attack: the victim's browser holds a
+        This is the login CSRF attack. The victim's browser holds a
         binding cookie from their own login start, but the delivered
         response carries the attacker's state.
         """
