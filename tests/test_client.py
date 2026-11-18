@@ -1910,8 +1910,8 @@ class AllocateLoginBindingSlotTestCase(TestCase):
         Each start allocates against the jar as the browser then sees
         it, and each response reaches the jar at some later point. The
         test enumerates every valid order of those eight events. Six
-        attempts never exceed the slot count, so in every order the
-        four picks must be pairwise distinct and must leave the two
+        attempts fit within the six slots, so in every order the four
+        picks must be pairwise distinct and must leave the two
         pending bindings untouched.
         """
         starts = 4

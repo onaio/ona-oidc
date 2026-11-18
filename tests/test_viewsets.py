@@ -3528,14 +3528,15 @@ class LoginBrowserBindingTestCase(TestCase):
     def test_every_start_and_response_order_keeps_logins_completable(self):
         """All five logins complete under every start and response order.
 
-        Two logins are pending; three more overlap, each start sending
-        the jar as it then stands and each response reaching the jar at
-        some later point. The test enumerates every valid order of
-        those six events, then completes all five logins. This pins
-        the invariant itself rather than one reported sequence: a
-        browser that never exceeds the pending-attempt limit loses no
-        login, whatever the event order. Callback order is not swept;
-        completions only free slots and cannot collide.
+        Two logins are pending and three more overlap. Each start
+        sends the jar as it then stands, and each response reaches
+        the jar at some later point. The test enumerates every valid
+        order of those six events, then completes all five logins.
+        This pins the invariant itself rather than one reported
+        sequence. A browser that never exceeds the pending-attempt
+        limit loses no login, whatever the event order. The test does
+        not sweep callback order; completions only free slots and
+        cannot collide.
         """
         overlap = 3
         events = [("start", i) for i in range(overlap)] + [
