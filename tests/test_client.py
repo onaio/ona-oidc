@@ -1901,6 +1901,31 @@ class AllocateLoginBindingSlotTestCase(TestCase):
             jar[allocate_login_binding_slot(jar)] = seal_login_binding(f"state-{i}")
         self.assertNotIn(allocate_login_binding_slot(jar), jar)
 
+    def test_racing_starts_on_a_partly_filled_jar_take_different_slots(self):
+        """Interleaved foreign starts cannot alias racing starts' slots.
+
+        Two bindings occupy slots; other browsers then advance the
+        shared counter by every amount up to the slot count before the
+        same unchanged jar makes two racing allocations. The racing
+        pair must take two distinct free slots every time. Each sweep
+        step builds its jar afresh so every counter-to-jar alignment,
+        including the colliding ones, is actually exercised.
+        """
+        for interleaved in range(LOGIN_BINDING_SLOTS + 1):
+            with self.subTest(interleaved=interleaved):
+                jar = {}
+                for i in range(2):
+                    jar[allocate_login_binding_slot(jar)] = seal_login_binding(
+                        f"state-{i}"
+                    )
+                for _ in range(interleaved):
+                    allocate_login_binding_slot({})
+                first = allocate_login_binding_slot(jar)
+                second = allocate_login_binding_slot(jar)
+                self.assertNotEqual(first, second)
+                self.assertNotIn(first, jar)
+                self.assertNotIn(second, jar)
+
     def test_a_full_jar_reuses_the_oldest_attempts_slot(self):
         """With every slot pending, the oldest attempt's slot is evicted."""
         start = time.time() - 100

@@ -3465,6 +3465,36 @@ class LoginBrowserBindingTestCase(TestCase):
         )
         self.assertEqual(response.status_code, 401)
 
+    def test_racing_starts_on_a_partly_filled_jar_stay_completable(self):
+        """Foreign traffic cannot make racing starts overwrite a binding.
+
+        Browser A holds two pending logins; other browsers' starts
+        then advance the shared slot counter; A fires two more starts
+        that race on its unchanged jar. All four of A's logins stay
+        independently completable, since the browser remains below the
+        pending-attempt limit.
+        """
+        jar = {}
+        states = []
+        for _ in range(2):
+            state, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+            states.append(state)
+        for _ in range(4):
+            # Other browsers' starts: they advance the shared counter
+            # but their responses never reach browser A's jar.
+            self._start_login_response({})
+        racing = [self._start_login_response(jar) for _ in range(2)]
+        for state, response in racing:
+            states.append(state)
+            self._store_cookies(jar, response)
+        for state in states:
+            with self.subTest(state=state):
+                response = self._callback_with_cookies(
+                    state, self._cross_site_post_cookies(jar)
+                )
+                self.assertEqual(response.status_code, 302)
+
     def test_cap_evicts_the_oldest_attempt_and_keeps_the_newest(self):
         """Past the cap the oldest attempt is evicted and the newest stay completable."""
         jar = {}

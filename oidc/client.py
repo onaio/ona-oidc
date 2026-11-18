@@ -142,8 +142,8 @@ def seal_login_binding(state: str) -> str:
 
 def _next_login_binding_seed() -> int:
     # The counter lives in the shared cache, so login starts racing
-    # on the same cookie jar draw distinct values and scan the slots
-    # from different offsets.
+    # on the same cookie jar draw distinct values and index different
+    # entries of the jar's free-slot list.
     try:
         return cache.incr(_LOGIN_BINDING_SEED_KEY)
     except ValueError:
@@ -165,26 +165,33 @@ def allocate_login_binding_slot(cookies: Mapping[str, str]) -> str:
     Return the slot cookie name a new login start should write its
     binding to.
 
-    ``cookies`` is the request's cookie mapping. A start takes the
-    first slot holding no valid pending binding; when every slot is
+    ``cookies`` is the request's cookie mapping. A start takes a free
+    slot, one holding no valid pending binding; when every slot is
     pending, it takes the oldest attempt's slot, evicting it. Starts
-    racing on the same jar never see one another's Set-Cookie, so the
-    scan begins at a shared counter's offset and racing starts take
-    different free slots instead of overwriting one another. Pending
-    attempts up to the slot count therefore stay completable, and the
-    jar can never hold more than ``LOGIN_BINDING_SLOTS`` binding
-    cookies.
+    racing on the same jar never see one another's Set-Cookie, but
+    they derive the same free list from that shared jar, and their
+    consecutive counter draws index different entries of it, so they
+    take different free slots instead of overwriting one another.
+    Pending attempts up to the slot count therefore stay completable,
+    and the jar can never hold more than ``LOGIN_BINDING_SLOTS``
+    binding cookies. Aliasing remains possible only when other
+    traffic advances the counter between two racing draws by an exact
+    multiple of the free-slot count; the overwritten attempt then
+    fails its callback and a retry recovers, the same cost as cap
+    eviction.
     """
-    names = login_binding_cookie_names()
-    seed = _next_login_binding_seed() % LOGIN_BINDING_SLOTS
+    free = []
     pending = []
-    for name in names[seed:] + names[:seed]:
+    for name in login_binding_cookie_names():
         value = cookies.get(name)
         payload = _load_login_binding(value) if value else None
         if payload is None or not isinstance(payload.get("iat"), int):
             # An empty, expired, tampered or malformed slot is free.
-            return name
-        pending.append((payload["iat"], name))
+            free.append(name)
+        else:
+            pending.append((payload["iat"], name))
+    if free:
+        return free[_next_login_binding_seed() % len(free)]
     return min(pending)[1]
 
 
