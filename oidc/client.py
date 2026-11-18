@@ -96,9 +96,10 @@ _LOGIN_BINDING_SEED_KEY = "oidc:login-binding:seed"
 # browser's own pick is invisible to its other requests until the
 # response lands in the cookie jar; the hold covers that gap, so a
 # request with a stale jar does not take a slot an outstanding start
-# already took. Completion releases the hold early. Long enough for a
-# slow login response to reach the browser, short enough that holds
-# from abandoned starts stop narrowing the choice within a minute.
+# already took. Completion releases the hold early. Sixty seconds is
+# long enough for a slow login response to reach the browser, and
+# short enough that holds from abandoned starts stop narrowing the
+# choice within a minute.
 LOGIN_BINDING_SLOT_HOLD = 60
 _LOGIN_BINDING_HOLD_PREFIX = "oidc:login-binding:held:"
 
@@ -178,16 +179,17 @@ def allocate_login_binding_slot(cookies: Mapping[str, str]) -> str:
 
     ``cookies`` is the request's cookie mapping. A start takes a free
     slot, one holding no valid pending binding; when every slot is
-    pending, it takes the oldest attempt's slot and evicts it. Every
-    pick is marked held in the shared cache for a short time, and the
-    probe starts at the counter-indexed free slot and walks past held
+    pending, it takes the oldest attempt's slot and evicts it. The
+    function marks each pick held in the shared cache for a short
+    time, and probes from the counter-indexed free slot past held
     ones. Overlapping starts therefore stay apart however their
     responses are ordered. A start racing on the same jar skips the
-    slot its twin just held, and a start whose jar already carries
-    one response skips the slot a still-outstanding start took, which
-    no jar could show it. Pending attempts up to the slot count stay
-    completable, and the jar never holds more than
-    ``LOGIN_BINDING_SLOTS`` binding cookies. Two starts can still
+    slot the other racing start just held, and a start whose jar
+    already carries one response skips the slot a still-outstanding
+    start took, though no jar yet shows that slot as taken. Pending
+    attempts up to the slot count stay completable, and the jar never
+    holds more than ``LOGIN_BINDING_SLOTS`` binding cookies. Two
+    starts can still
     collide when their allocations interleave in the microseconds
     between one reading the holds and the other writing its own, or
     when every free slot is held and the probe falls back to the
@@ -213,8 +215,8 @@ def allocate_login_binding_slot(cookies: Mapping[str, str]) -> str:
                 for name in probe
                 if cache.get(_LOGIN_BINDING_HOLD_PREFIX + name) is None
             ),
-            # Every free slot held: the counter-indexed pick alone
-            # still keeps same-jar racing starts apart.
+            # When every free slot is held, the counter-indexed pick
+            # alone still keeps same-jar racing starts apart.
             probe[0],
         )
     else:
@@ -227,8 +229,8 @@ def release_login_binding_slot(name: str) -> None:
     """
     Release the hold on slot ``name`` after its login attempt ends.
 
-    The slot's cookie is deleted with the same response, so the slot
-    is free for the next start without waiting out the hold.
+    The same response deletes the slot's cookie, so the slot is free
+    for the next start without waiting out the hold.
     """
     cache.delete(_LOGIN_BINDING_HOLD_PREFIX + name)
 

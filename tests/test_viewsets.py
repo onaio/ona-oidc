@@ -3496,12 +3496,12 @@ class LoginBrowserBindingTestCase(TestCase):
                 self.assertEqual(response.status_code, 302)
 
     def test_response_order_races_keep_every_login_completable(self):
-        """Responses landing out of order cannot cost a pending login.
+        """Out-of-order responses cannot break a pending login.
 
         Two logins are pending. A and B start against the same jar; B's
         response reaches the browser while A's is still outstanding,
         and C starts against that updated jar. A's and C's responses
-        then land. All five logins must stay completable, since the
+        then arrive. All five logins must stay completable, since the
         browser never exceeds the pending-attempt limit.
         """
         jar = {}

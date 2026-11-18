@@ -1874,8 +1874,9 @@ class AllocateLoginBindingSlotTestCase(TestCase):
     """Tests for method allocate_login_binding_slot"""
 
     def setUp(self):
-        # Slot holds and the counter live in the cache; a known-empty
-        # cache keeps every allocation in these tests deterministic.
+        # Slot holds and the counter are kept in the cache; a
+        # known-empty cache keeps every allocation in these tests
+        # deterministic.
         cache.clear()
 
     @staticmethod
@@ -1884,12 +1885,12 @@ class AllocateLoginBindingSlotTestCase(TestCase):
             return seal_login_binding(state)
 
     def test_a_start_avoids_a_slot_an_outstanding_start_took(self):
-        """A stale jar cannot steer a start onto an outstanding start's slot.
+        """A start with a stale jar must not take an outstanding start's slot.
 
         A and B allocate against one jar; B's response reaches the
         browser while A's is still outstanding, and C allocates
-        against the updated jar. No jar shows A's slot as taken, so C
-        must learn of it another way and take a different slot.
+        against the updated jar. No jar shows A's slot as taken; C
+        must still take a different slot.
         """
         jar = {}
         for i in range(2):
@@ -1984,7 +1985,7 @@ class ReleaseLoginBindingSlotTestCase(TestCase):
         cache.clear()
 
     def test_a_released_slot_is_taken_before_held_ones(self):
-        """After release the next start lands on the freed slot.
+        """After release the next start takes the freed slot.
 
         Three starts hold the three free slots; releasing the second
         start's slot makes it the one slot a fourth start may take
