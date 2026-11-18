@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import time
+from itertools import permutations
 from datetime import timedelta
 from urllib.parse import parse_qs, urlparse
 
@@ -3523,6 +3524,51 @@ class LoginBrowserBindingTestCase(TestCase):
                     state, self._cross_site_post_cookies(jar)
                 )
                 self.assertEqual(response.status_code, 302)
+
+    def test_every_start_and_response_order_keeps_logins_completable(self):
+        """All five logins complete under every start and response order.
+
+        Two logins are pending; three more overlap, each start sending
+        the jar as it then stands and each response reaching the jar at
+        some later point. The test enumerates every valid order of
+        those six events, then completes all five logins. This pins
+        the invariant itself rather than one reported sequence: a
+        browser that never exceeds the pending-attempt limit loses no
+        login, whatever the event order. Callback order is not swept;
+        completions only free slots and cannot collide.
+        """
+        overlap = 3
+        events = [("start", i) for i in range(overlap)] + [
+            ("apply", i) for i in range(overlap)
+        ]
+        for order in permutations(range(len(events))):
+            sequence = [events[i] for i in order]
+            if any(
+                sequence.index(("start", i)) > sequence.index(("apply", i))
+                for i in range(overlap)
+            ):
+                continue
+            with self.subTest(sequence=sequence):
+                cache.clear()
+                jar = {}
+                states = []
+                for _ in range(2):
+                    state, response = self._start_login_response(jar)
+                    self._store_cookies(jar, response)
+                    states.append(state)
+                started = {}
+                for kind, i in sequence:
+                    if kind == "start":
+                        started[i] = self._start_login_response(jar)
+                    else:
+                        state, response = started[i]
+                        states.append(state)
+                        self._store_cookies(jar, response)
+                for state in states:
+                    response = self._callback_with_cookies(
+                        state, self._cross_site_post_cookies(jar)
+                    )
+                    self.assertEqual(response.status_code, 302)
 
     def test_cap_evicts_the_oldest_attempt_and_keeps_the_newest(self):
         """Past the cap the oldest attempt is evicted and the newest stay completable."""

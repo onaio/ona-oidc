@@ -6,7 +6,7 @@ import json
 import secrets
 import time
 import traceback
-from itertools import product
+from itertools import permutations, product
 from unittest.mock import MagicMock, patch
 from urllib.parse import quote, urlencode
 
@@ -1902,6 +1902,45 @@ class AllocateLoginBindingSlotTestCase(TestCase):
         self.assertNotEqual(slot_c, slot_a)
         self.assertNotEqual(slot_c, slot_b)
         self.assertNotIn(slot_c, jar_with_b)
+
+    def test_every_interleaving_of_starts_and_responses_stays_distinct(self):
+        """Overlapping starts take distinct slots under every event order.
+
+        Four starts overlap while two bindings are already pending.
+        Each start allocates against the jar as the browser then sees
+        it, and each response reaches the jar at some later point. The
+        test enumerates every valid order of those eight events. Six
+        attempts never exceed the slot count, so in every order the
+        four picks must be pairwise distinct and must leave the two
+        pending bindings untouched.
+        """
+        starts = 4
+        events = [("start", i) for i in range(starts)] + [
+            ("apply", i) for i in range(starts)
+        ]
+        for order in permutations(range(len(events))):
+            sequence = [events[i] for i in order]
+            if any(
+                sequence.index(("start", i)) > sequence.index(("apply", i))
+                for i in range(starts)
+            ):
+                continue
+            with self.subTest(sequence=sequence):
+                cache.clear()
+                jar = {}
+                for i in range(2):
+                    jar[allocate_login_binding_slot(jar)] = seal_login_binding(
+                        f"pending-{i}"
+                    )
+                pending_slots = set(jar)
+                picks = {}
+                for kind, i in sequence:
+                    if kind == "start":
+                        picks[i] = allocate_login_binding_slot(dict(jar))
+                    else:
+                        jar[picks[i]] = seal_login_binding(f"overlap-{i}")
+                self.assertEqual(len(set(picks.values())), starts)
+                self.assertTrue(set(picks.values()).isdisjoint(pending_slots))
 
     def test_allocation_only_returns_slot_names(self):
         """Every allocation lands on one of the fixed slot names."""
