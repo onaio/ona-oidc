@@ -3780,8 +3780,10 @@ class LoginBrowserBindingTestCase(TestCase):
 
         A callback whose username is already taken renders the form
         without ending the attempt. The same-origin re-POST carries
-        the state and the binding cookie and must pass the binding
-        check, and the success response ends the attempt's binding.
+        the form's continuation key and the binding cookie. It must
+        pass the binding check for the state stashed with the
+        continuation, and the success response ends the attempt's
+        binding.
         """
         User.objects.create(username="anna", email="anna@example.com")
         claims = {
@@ -3806,6 +3808,7 @@ class LoginBrowserBindingTestCase(TestCase):
             response = view(request, auth_server="default")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
+        continuation = response.data[LOGIN_CONTINUATION_FIELD]
 
         with patch(
             "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
@@ -3814,8 +3817,7 @@ class LoginBrowserBindingTestCase(TestCase):
             request = self.factory.post(
                 "/",
                 data={
-                    "id_token": "a.b.c",
-                    "state": state,
+                    LOGIN_CONTINUATION_FIELD: continuation,
                     "username": "annabelle",
                     USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
                 },
