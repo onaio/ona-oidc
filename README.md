@@ -210,21 +210,28 @@ rendering of that response carries the same key.
   seconds after the login started.
 ### Browser binding (login CSRF)
 
-Every login carries a `state` value, and the login redirect sets a
-short-lived, signed, `HttpOnly` cookie bound to that one login
-attempt. The callback only honours an authorization response whose
-echoed `state` matches the cookie set when its login started, so an
-attacker cannot replay a response captured in one browser into
-another to log a victim into the attacker's account (RFC 9700 §4.4).
-Bindings are stored in a fixed set of six cookies, so logins started
-in other tabs or against other configured providers stay
-independently completable, up to six pending attempts in one browser.
-A login start beyond that evicts the oldest attempt, and the
-six-cookie limit holds even when many logins start at once, before
-any response reaches the browser. A binding expires 30 minutes after
-its login starts, and the callback's final response deletes a
-finished login's cookie.
+Every login carries a `state` value, and the login start records it
+against the browser that started it. The callback only honours an
+authorization response whose echoed `state` was recorded for the
+browser it arrives in, so an attacker cannot replay a response
+captured in one browser into another to log a victim into the
+attacker's account (RFC 9700 §4.4).
 
+The browser is identified by a random, `HttpOnly` session cookie
+(`oidc_login_browser_form_post` or `oidc_login_browser_query`, one per
+response mode). The first login start sets it and later starts reuse
+it unchanged. The recorded logins are kept in Django's cache.
+
+- A browser can have up to six pending logins per response mode, in
+  any mix of tabs and configured providers, and each one completes
+  independently. A start beyond six is refused with a "too many
+  sign-ins in progress" page, and the six pending logins are kept.
+  A pending login expires 30 minutes after it starts, and a finished
+  login frees its place straight away.
+- Two logins started at the same moment from a browser that has no
+  identifier cookie yet cannot be told apart from two browsers. The
+  one whose response the browser stores last completes; the other
+  fails once, and retrying it succeeds.
 - **`ENFORCE_BROWSER_BINDING`** (`bool`, default `True`), per auth
   server. Set it to `False` only for deployments whose logins do not
   start at this application's login endpoint, such as IdP-initiated
@@ -237,15 +244,17 @@ finished login's cookie.
   HTTPS. A deployment that terminates TLS at a proxy needs Django's
   `SECURE_PROXY_SSL_HEADER` configured, and the proxy sending the
   matching header, for Django to see HTTPS.
-- Browser binding uses Django's cache to keep simultaneous sign-ins
-  apart, as the PKCE and `next=` handling already do. Deployments
-  running more than one worker process need a cache backend the
-  workers share, such as Redis or Memcached; with a per-process
-  cache, two sign-ins started at the same instant can overwrite each
-  other's binding.
-  The login endpoint is unauthenticated and writes a short-lived
-  cache entry per start, so rate-limit it as you would any
-  unauthenticated endpoint.
+- The default cache must be shared by every worker process and
+  support an atomic `add`: Redis, Memcached or the database cache.
+  Local-memory caching works for a single process only. With binding
+  enforced, the dummy and file-based caches fail at startup with
+  `ImproperlyConfigured`. Size the cache so it does not evict entries
+  younger than 30 minutes, as the PKCE and `next=` handling already
+  require; an evicted entry fails that login once. On the database
+  cache, starts racing for a slot whose entry just expired can
+  briefly let a seventh login in.
+- The login endpoint is unauthenticated and writes cache entries per
+  start, so rate-limit it as you would any unauthenticated endpoint.
 - Logins in flight when this feature is first deployed predate the
   cookie, so the callback rejects them; retrying the login recovers.
 
