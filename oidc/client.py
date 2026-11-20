@@ -4,19 +4,20 @@ Client module for the oidc app
 
 import base64
 import hashlib
-import hmac
 import json
 import logging
+import re
 import secrets
-import time
-from typing import Any, Callable, List, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 from urllib.parse import quote, urlencode
 
 from django.conf import settings
-from django.core import signing
-from django.core.cache import cache
+from django.core.cache import DEFAULT_CACHE_ALIAS, cache
+from django.core.cache.backends.dummy import DummyCache
+from django.core.cache.backends.filebased import FileBasedCache
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpResponseRedirect
+from django.utils.module_loading import import_string
 from django.views.decorators.debug import sensitive_variables
 
 import jwt
@@ -66,229 +67,167 @@ def state_cache_key(state: str) -> str:
     return f"{_STATE_CACHE_PREFIX}{state}"
 
 
-# Signed, HttpOnly cookies binding each login to the browser that
-# started it (RFC 9700 §4.4, login CSRF). A login start writes its
-# binding to one free cookie out of a fixed set of slots, so
-# overlapping starts (other tabs, other providers) do not rewrite one
-# another's binding, and a query-mode start never downgrades the
-# SameSite=None cookie a form_post login still needs. The fixed name
-# set is what bounds the Cookie header. Requests racing on the same
-# jar cannot see one another's Set-Cookie, so deleting cookies named
-# on the request cannot bound the jar; a fixed name set can. The
-# callback requires the echoed state to match a slot's signed binding
-# before it consults any cache entry.
-LOGIN_BINDING_COOKIE_PREFIX = "oidc_login_bind_"
-# The salt scopes the signature so a value signed by this project for
-# any other purpose can never pass as a login binding.
-_LOGIN_BINDING_SALT = "oidc.login.binding"
+# Login bindings (RFC 9700 §4.4, login CSRF). Each browser carries a
+# random identifier in an HttpOnly cookie, one per response mode. A
+# login start records its state's digest in the shared cache under
+# that identifier, and the callback requires the echoed state to be
+# recorded for the identifier the browser sends, before it consults
+# any other cache entry. Starts racing on the same jar carry the same
+# identifier, so the order their responses land in does not matter.
+_LOGIN_BROWSER_COOKIE_PREFIX = "oidc_login_browser_"
 # Must outlive the longest time a user plausibly leaves the IdP page
 # open; the state/nonce cache TTLs end a flow earlier anyway.
 LOGIN_BINDING_MAX_AGE = 1800
-# Number of slot cookies, and so the most pending attempts a browser
-# retains; a start beyond it evicts the oldest attempt. Six leaves
-# room for every login a user plausibly keeps open at once.
+# The most pending logins one browser can have per response mode. A
+# start beyond it is refused, so a page cannot grow a browser's
+# bindings without bound. Six leaves room for every login a user
+# plausibly keeps open at once.
 LOGIN_BINDING_SLOTS = 6
-# Cache key of the counter that staggers login starts across slots.
-# The cache is shared, so even requests racing on the same cookie jar
-# draw different values and land on different slots.
-_LOGIN_BINDING_SEED_KEY = "oidc:login-binding:seed"
-# How long an allocated slot stays marked held in the shared cache. A
-# browser's own pick is invisible to its other requests until the
-# response lands in the cookie jar; the hold covers that gap, so a
-# request with a stale jar does not take a slot an outstanding start
-# already took. Completion releases the hold early. Sixty seconds is
-# long enough for a slow login response to reach the browser, and
-# short enough that holds from abandoned starts stop narrowing the
-# choice within a minute.
-LOGIN_BINDING_SLOT_HOLD = 60
-_LOGIN_BINDING_HOLD_PREFIX = "oidc:login-binding:held:"
+# How long a slot hand-off key lives. A start writes the slot right
+# after taking the hand-off, so the key only has to outlast that.
+_LOGIN_BINDING_HANDOFF_TTL = 60
 
 
 def _state_digest(state: str) -> str:
     return hashlib.sha256(state.encode("utf-8")).hexdigest()
 
 
-def _load_login_binding(cookie_value: str) -> Optional[dict]:
-    # The payload dict of a sealed value, or None for a tampered,
-    # expired or malformed one, never an error.
-    try:
-        payload = signing.loads(
-            cookie_value,
-            salt=_LOGIN_BINDING_SALT,
-            max_age=LOGIN_BINDING_MAX_AGE,
-        )
-    except signing.BadSignature:
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
-def login_binding_cookie_names() -> List[str]:
+def login_browser_cookie_name(response_mode: str) -> str:
     """
-    Return the fixed slot cookie names login bindings are stored under.
+    Return the name of the cookie carrying the browser identifier for
+    logins in ``response_mode``.
 
-    Which slot holds which attempt carries no meaning. The signed
-    state digest in the value decides the match, so a slot name alone
-    can never satisfy the callback's check.
+    Each mode gets its own cookie, so a query-mode start never
+    rewrites the SameSite=None cookie that form_post logins need.
     """
-    return [
-        f"{LOGIN_BINDING_COOKIE_PREFIX}{slot}" for slot in range(LOGIN_BINDING_SLOTS)
-    ]
+    return f"{_LOGIN_BROWSER_COOKIE_PREFIX}{response_mode}"
 
 
-def seal_login_binding(state: str) -> str:
+# secrets.token_urlsafe(32): 43 characters of the URL-safe alphabet.
+_LOGIN_BROWSER_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}")
+
+
+def login_browser_id(cookies: Mapping[str, str], response_mode: str) -> Optional[str]:
     """
-    Return the signed cookie value binding ``state`` to the browser
-    the login redirect is sent to.
-
-    The value carries the state's digest and the attempt's issue time;
-    the issue time orders eviction when every slot already holds a
-    pending attempt.
+    Return the browser identifier carried for ``response_mode``, or
+    None when the browser has none or the value is malformed.
     """
-    return signing.dumps(
-        {"digest": _state_digest(state), "iat": int(time.time())},
-        salt=_LOGIN_BINDING_SALT,
-    )
-
-
-def _next_login_binding_seed() -> int:
-    # The counter is kept in the shared cache, so login starts racing
-    # on the same cookie jar draw distinct values and index different
-    # entries of the jar's free-slot list. Workers must share that
-    # cache. With a per-process cache, racing starts served by
-    # different workers can draw equal values and take the same slot.
-    try:
-        return cache.incr(_LOGIN_BINDING_SEED_KEY)
-    except ValueError:
-        # First start since the cache lost the counter. add() is
-        # atomic, so racing starts initialize it once and every incr
-        # after it stays distinct.
-        cache.add(_LOGIN_BINDING_SEED_KEY, 0, None)
-        try:
-            return cache.incr(_LOGIN_BINDING_SEED_KEY)
-        except ValueError:
-            # The cache dropped the key again between add and incr; a
-            # random offset still spreads racing starts, just without
-            # the distinctness guarantee.
-            return secrets.randbelow(LOGIN_BINDING_SLOTS)
-
-
-def allocate_login_binding_slot(cookies: Mapping[str, str]) -> str:
-    """
-    Return the slot cookie name a new login start should write its
-    binding to.
-
-    ``cookies`` is the request's cookie mapping. A start takes a free
-    slot, one holding no valid pending binding; when every slot is
-    pending, it takes the oldest attempt's slot and evicts it. The
-    function marks each pick held in the shared cache for a short
-    time, and probes from the counter-indexed free slot past held
-    ones. Overlapping starts therefore stay apart however their
-    responses are ordered. A start racing on the same jar skips the
-    slot the other racing start just held, and a start whose jar
-    already carries one response skips the slot a still-outstanding
-    start took, though no jar yet shows that slot as taken. Pending
-    attempts up to the slot count stay completable, and the jar never
-    holds more than ``LOGIN_BINDING_SLOTS`` binding cookies. Two
-    starts can still
-    collide when their allocations interleave in the microseconds
-    between one reading the holds and the other writing its own, or
-    when every free slot is held and the probe falls back to the
-    counter-indexed pick alone. The overwritten attempt then fails
-    its callback and a retry recovers, the same cost as cap eviction.
-    """
-    free = []
-    pending = []
-    for name in login_binding_cookie_names():
-        value = cookies.get(name)
-        payload = _load_login_binding(value) if value else None
-        if payload is None or not isinstance(payload.get("iat"), int):
-            # An empty, expired, tampered or malformed slot is free.
-            free.append(name)
-        else:
-            pending.append((payload["iat"], name))
-    if free:
-        start = _next_login_binding_seed() % len(free)
-        probe = free[start:] + free[:start]
-        choice = next(
-            (
-                name
-                for name in probe
-                if cache.get(_LOGIN_BINDING_HOLD_PREFIX + name) is None
-            ),
-            # When every free slot is held, the counter-indexed pick
-            # alone still keeps same-jar racing starts apart.
-            probe[0],
-        )
-    else:
-        choice = min(pending)[1]
-    cache.set(_LOGIN_BINDING_HOLD_PREFIX + choice, True, LOGIN_BINDING_SLOT_HOLD)
-    return choice
-
-
-def release_login_binding_slot(name: str) -> None:
-    """
-    Release the hold on slot ``name`` after its login attempt ends.
-
-    The same response deletes the slot's cookie, so the slot is free
-    for the next start without waiting out the hold.
-    """
-    cache.delete(_LOGIN_BINDING_HOLD_PREFIX + name)
-
-
-def matching_login_binding_cookie(
-    cookies: Mapping[str, str], state: Optional[str]
-) -> Optional[str]:
-    """
-    Return the name of the slot cookie binding ``state`` to the
-    browser presenting ``cookies``, or None.
-
-    A missing, tampered or expired binding matches nothing and never
-    raises. The same holds for a non-string ``state``, which a
-    malformed JSON callback body can carry.
-    """
-    if not state or not isinstance(state, str):
-        return None
-    expected_digest = _state_digest(state)
-    for name in login_binding_cookie_names():
-        value = cookies.get(name)
-        if not value:
-            continue
-        payload = _load_login_binding(value)
-        if payload is None:
-            continue
-        digest = payload.get("digest")
-        if isinstance(digest, str) and hmac.compare_digest(digest, expected_digest):
-            return name
+    value = cookies.get(login_browser_cookie_name(response_mode))
+    if isinstance(value, str) and _LOGIN_BROWSER_ID_PATTERN.fullmatch(value):
+        return value
     return None
 
 
-def login_binding_matches(cookies: Mapping[str, str], state: Optional[str]) -> bool:
-    """
-    Whether the browser presenting this authorization response also
-    started the login that minted ``state``.
-
-    ``cookies`` is the request's cookie mapping; a missing, tampered
-    or expired binding cookie matches nothing, never raises.
-    """
-    return matching_login_binding_cookie(cookies, state) is not None
+def mint_login_browser_id() -> str:
+    """Return a new random browser identifier."""
+    return secrets.token_urlsafe(32)
 
 
-def stale_login_binding_cookies(cookies: Mapping[str, str]) -> List[str]:
+def _login_binding_namespace(browser_id: str) -> str:
+    return f"oidc:login-binding:{_state_digest(browser_id)[:32]}"
+
+
+def _login_binding_key(browser_id: str, digest: str) -> str:
+    # One record per login: the state digest makes the key unique to
+    # its binding, so deleting it can never remove another login's.
+    return f"{_login_binding_namespace(browser_id)}:{digest}"
+
+
+def claim_login_binding(browser_id: str, state: str) -> bool:
     """
-    Return the binding cookie names a new login start should delete:
-    every slot whose value is tampered, expired or malformed, plus
-    every binding-prefixed cookie outside the slot set, which nothing
-    can read. Valid pending attempts are never named; the fixed slot
-    count, not eviction, bounds the jar.
+    Bind ``state`` to the browser identified by ``browser_id``.
+
+    Returns False, binding nothing, when the browser already has
+    ``LOGIN_BINDING_SLOTS`` pending logins.
     """
-    slot_names = set(login_binding_cookie_names())
-    stale = []
-    for name, value in cookies.items():
-        if not name.startswith(LOGIN_BINDING_COOKIE_PREFIX):
+    digest = _state_digest(state)
+    key = _login_binding_key(browser_id, digest)
+    # add() rather than set(): the key is unique to this login, so
+    # False can only mean the write failed, which some backends (the
+    # database cache) report no other way.
+    if not cache.add(key, True, LOGIN_BINDING_MAX_AGE):
+        return False
+    namespace = _login_binding_namespace(browser_id)
+    for slot in range(LOGIN_BINDING_SLOTS):
+        slot_key = f"{namespace}:slot:{slot}"
+        if cache.add(slot_key, digest, LOGIN_BINDING_MAX_AGE):
+            return True
+        holder = cache.get(slot_key)
+        if not isinstance(holder, str):
             continue
-        if name not in slot_names or _load_login_binding(value) is None:
-            stale.append(name)
-    return stale
+        if cache.get(_login_binding_key(browser_id, holder)) is not None:
+            continue
+        # The holder's login finished or expired, and its record never
+        # comes back, so the slot is free. The hand-off key names the
+        # holder, so exactly one start can take this slot over.
+        if cache.add(f"{slot_key}:after:{holder}", True, _LOGIN_BINDING_HANDOFF_TTL):
+            cache.set(slot_key, digest, LOGIN_BINDING_MAX_AGE)
+            return True
+    cache.delete(key)
+    return False
+
+
+def has_login_binding(browser_id: Optional[str], state: Optional[str]) -> bool:
+    """
+    Whether the browser identified by ``browser_id`` started the login
+    that minted ``state``.
+
+    A missing identifier, or a non-string ``state`` from a malformed
+    callback body, matches nothing and never raises.
+    """
+    if not browser_id or not state or not isinstance(state, str):
+        return False
+    key = _login_binding_key(browser_id, _state_digest(state))
+    return cache.get(key) is not None
+
+
+def release_login_binding(browser_id: Optional[str], state: Optional[str]) -> None:
+    """
+    End the binding of ``state`` to the browser identified by
+    ``browser_id`` once its login has finished.
+
+    Only this login's own record is deleted; its key is unique to the
+    state, so a delayed call never removes another login's binding.
+    """
+    if not browser_id or not state or not isinstance(state, str):
+        return
+    cache.delete(_login_binding_key(browser_id, _state_digest(state)))
+
+
+# Backends that cannot hold login bindings: the dummy cache stores
+# nothing, and the file cache is local to one host and its add() is a
+# separate check and write.
+_UNSUPPORTED_LOGIN_BINDING_CACHES = (DummyCache, FileBasedCache)
+
+
+def check_login_binding_cache() -> None:
+    """
+    Raise ImproperlyConfigured when any configured auth server enforces
+    browser binding and the default cache cannot hold the bindings.
+
+    Bindings need a cache that every worker shares and whose ``add``
+    is atomic, such as Redis, Memcached or the database cache.
+    """
+    default_config = getattr(default, "OPENID_CONNECT_AUTH_SERVERS", {})["default"]
+    servers = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
+    enforced = any(
+        str_to_bool(
+            config.get(
+                "ENFORCE_BROWSER_BINDING",
+                default_config["ENFORCE_BROWSER_BINDING"],
+            )
+        )
+        for config in servers.values()
+    )
+    backend_path = settings.CACHES[DEFAULT_CACHE_ALIAS]["BACKEND"]
+    if enforced and issubclass(
+        import_string(backend_path), _UNSUPPORTED_LOGIN_BINDING_CACHES
+    ):
+        raise ImproperlyConfigured(
+            "ENFORCE_BROWSER_BINDING needs a cache shared by every worker "
+            "with an atomic add(), such as Redis, Memcached or the "
+            f"database cache; the default cache is {backend_path}."
+        )
 
 
 RESERVED_AUTHORIZE_PARAMS = frozenset(

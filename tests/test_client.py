@@ -3,18 +3,23 @@
 import base64
 import hashlib
 import json
+import os
 import secrets
+import sys
+import threading
 import time
 import traceback
-from itertools import permutations, product
+import unittest
+from itertools import product
 from unittest.mock import MagicMock, patch
 from urllib.parse import quote, urlencode
 
-from django.core import signing
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
+from django.core.management import call_command
+from django.db import connections
 from django.http import HttpResponseRedirect
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 from django.test.utils import override_settings
 
 import jwt
@@ -23,9 +28,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 
 from oidc.client import (
-    LOGIN_BINDING_COOKIE_PREFIX,
     LOGIN_BINDING_MAX_AGE,
-    LOGIN_BINDING_SLOTS,
     REDIRECT_AFTER_AUTH,
     REQUEST_MODES,
     NoJSONWebKeyFound,
@@ -33,13 +36,13 @@ from oidc.client import (
     OpenIDClient,
     TokenVerificationFailed,
     UserInfoRequestFailed,
-    allocate_login_binding_slot,
-    login_binding_cookie_names,
-    login_binding_matches,
-    matching_login_binding_cookie,
-    release_login_binding_slot,
-    seal_login_binding,
-    stale_login_binding_cookies,
+    check_login_binding_cache,
+    claim_login_binding,
+    has_login_binding,
+    login_browser_cookie_name,
+    login_browser_id,
+    mint_login_browser_id,
+    release_login_binding,
     state_cache_key,
 )
 from tests.error_reports import escaped_frames, reported_locals
@@ -1841,336 +1844,413 @@ class StateCacheKeyTestCase(TestCase):
         self.assertNotEqual(state_cache_key("state-1"), state_cache_key("state-2"))
 
 
-class LoginBindingCookieNamesTestCase(TestCase):
-    """Tests for method login_binding_cookie_names"""
+class LoginBrowserCookieNameTestCase(TestCase):
+    """Tests for method login_browser_cookie_name"""
 
-    def test_the_slot_names_are_a_fixed_set(self):
-        """Exactly LOGIN_BINDING_SLOTS distinct slot names exist."""
-        names = login_binding_cookie_names()
-        self.assertEqual(len(names), LOGIN_BINDING_SLOTS)
-        self.assertEqual(len(set(names)), LOGIN_BINDING_SLOTS)
-
-    def test_slot_names_carry_the_public_prefix(self):
-        """Every slot cookie name starts with the shared prefix."""
-        for name in login_binding_cookie_names():
-            self.assertTrue(name.startswith(LOGIN_BINDING_COOKIE_PREFIX))
-
-    def test_the_names_are_stable_across_calls(self):
-        """Repeated calls return the same names in the same order."""
-        self.assertEqual(login_binding_cookie_names(), login_binding_cookie_names())
-
-
-class SealLoginBindingTestCase(TestCase):
-    """Tests for method seal_login_binding"""
-
-    def test_sealed_value_matches_only_its_own_state(self):
-        """A sealed binding matches the state it was minted for, no other."""
-        cookies = {login_binding_cookie_names()[0]: seal_login_binding("state-1")}
-        self.assertTrue(login_binding_matches(cookies, "state-1"))
-        self.assertFalse(login_binding_matches(cookies, "state-2"))
-
-
-class AllocateLoginBindingSlotTestCase(TestCase):
-    """Tests for method allocate_login_binding_slot"""
-
-    def setUp(self):
-        # Slot holds and the counter are kept in the cache; a
-        # known-empty cache keeps every allocation in these tests
-        # deterministic.
-        cache.clear()
-
-    @staticmethod
-    def _sealed_at(state, issued_at):
-        with patch("time.time", return_value=issued_at):
-            return seal_login_binding(state)
-
-    def test_a_start_avoids_a_slot_an_outstanding_start_took(self):
-        """A start with a stale jar must not take an outstanding start's slot.
-
-        A and B allocate against one jar; B's response reaches the
-        browser while A's is still outstanding, and C allocates
-        against the updated jar. No jar shows A's slot as taken; C
-        must still take a different slot.
-        """
-        jar = {}
-        for i in range(2):
-            jar[allocate_login_binding_slot(jar)] = seal_login_binding(f"state-{i}")
-        slot_a = allocate_login_binding_slot(jar)
-        slot_b = allocate_login_binding_slot(jar)
-        jar_with_b = {**jar, slot_b: seal_login_binding("state-b")}
-        slot_c = allocate_login_binding_slot(jar_with_b)
-        self.assertNotEqual(slot_c, slot_a)
-        self.assertNotEqual(slot_c, slot_b)
-        self.assertNotIn(slot_c, jar_with_b)
-
-    def test_every_interleaving_of_starts_and_responses_stays_distinct(self):
-        """Overlapping starts take distinct slots under every event order.
-
-        Four starts overlap while two bindings are already pending.
-        Each start allocates against the jar as the browser then sees
-        it, and each response reaches the jar at some later point. The
-        test enumerates every valid order of those eight events. Six
-        attempts fit within the six slots, so in every order the four
-        picks must be pairwise distinct and must leave the two
-        pending bindings untouched.
-        """
-        starts = 4
-        events = [("start", i) for i in range(starts)] + [
-            ("apply", i) for i in range(starts)
-        ]
-        for order in permutations(range(len(events))):
-            sequence = [events[i] for i in order]
-            if any(
-                sequence.index(("start", i)) > sequence.index(("apply", i))
-                for i in range(starts)
-            ):
-                continue
-            with self.subTest(sequence=sequence):
-                cache.clear()
-                jar = {}
-                for i in range(2):
-                    jar[allocate_login_binding_slot(jar)] = seal_login_binding(
-                        f"pending-{i}"
-                    )
-                pending_slots = set(jar)
-                picks = {}
-                for kind, i in sequence:
-                    if kind == "start":
-                        picks[i] = allocate_login_binding_slot(dict(jar))
-                    else:
-                        jar[picks[i]] = seal_login_binding(f"overlap-{i}")
-                self.assertEqual(len(set(picks.values())), starts)
-                self.assertTrue(set(picks.values()).isdisjoint(pending_slots))
-
-    def test_allocation_only_returns_slot_names(self):
-        """Every allocation lands on one of the fixed slot names."""
-        names = set(login_binding_cookie_names())
-        for _ in range(LOGIN_BINDING_SLOTS * 3):
-            self.assertIn(allocate_login_binding_slot({}), names)
-
-    def test_starts_racing_on_one_jar_take_different_slots(self):
-        """Two starts that share a cookie jar do not overwrite each other.
-
-        Requests racing before any response lands all present the same
-        jar; the allocations they trigger must still spread out, or one
-        login's binding would overwrite the other's.
-        """
-        self.assertNotEqual(
-            allocate_login_binding_slot({}), allocate_login_binding_slot({})
+    def test_each_response_mode_gets_its_own_cookie(self):
+        """form_post and query identifiers live under different names."""
+        self.assertEqual(
+            login_browser_cookie_name("form_post"), "oidc_login_browser_form_post"
         )
-
-    def test_a_pending_attempt_keeps_its_slot_while_one_is_free(self):
-        """No pending binding is overwritten while any slot is free."""
-        jar = {}
-        for i in range(LOGIN_BINDING_SLOTS - 1):
-            jar[allocate_login_binding_slot(jar)] = seal_login_binding(f"state-{i}")
-        self.assertNotIn(allocate_login_binding_slot(jar), jar)
-
-    def test_racing_starts_on_a_partly_filled_jar_take_different_slots(self):
-        """Interleaved foreign starts cannot make racing starts share a slot.
-
-        Two bindings occupy slots; other browsers then advance the
-        shared counter by every amount up to the slot count before the
-        same unchanged jar makes two racing allocations. The racing
-        pair must take two distinct free slots every time. Each sweep
-        step builds a new jar so the test reaches every alignment of
-        the counter against the occupied slots.
-        """
-        for interleaved in range(LOGIN_BINDING_SLOTS + 1):
-            with self.subTest(interleaved=interleaved):
-                jar = {}
-                for i in range(2):
-                    jar[allocate_login_binding_slot(jar)] = seal_login_binding(
-                        f"state-{i}"
-                    )
-                for _ in range(interleaved):
-                    allocate_login_binding_slot({})
-                first = allocate_login_binding_slot(jar)
-                second = allocate_login_binding_slot(jar)
-                self.assertNotEqual(first, second)
-                self.assertNotIn(first, jar)
-                self.assertNotIn(second, jar)
-
-    def test_a_full_jar_reuses_the_oldest_attempts_slot(self):
-        """With every slot pending, the oldest attempt's slot is evicted."""
-        start = time.time() - 100
-        jar = {}
-        oldest_name = None
-        for i, name in enumerate(login_binding_cookie_names()):
-            # Issue times are one second apart so age ordering is
-            # unambiguous; slot 2 is deliberately the oldest, so name
-            # order cannot accidentally satisfy the assertion.
-            age_rank = (i - 2) % LOGIN_BINDING_SLOTS
-            jar[name] = self._sealed_at(f"state-{i}", start + age_rank)
-            if age_rank == 0:
-                oldest_name = name
-        self.assertEqual(allocate_login_binding_slot(jar), oldest_name)
-
-    def test_a_broken_slot_is_taken_before_any_attempt_is_evicted(self):
-        """A slot holding a tampered value is free, sparing pending ones."""
-        jar = {
-            name: seal_login_binding(f"state-{i}")
-            for i, name in enumerate(login_binding_cookie_names())
-        }
-        broken = login_binding_cookie_names()[3]
-        jar[broken] = jar[broken][:-1]
-        self.assertEqual(allocate_login_binding_slot(jar), broken)
+        self.assertEqual(login_browser_cookie_name("query"), "oidc_login_browser_query")
 
 
-class ReleaseLoginBindingSlotTestCase(TestCase):
-    """Tests for method release_login_binding_slot"""
+class LoginBrowserIdTestCase(TestCase):
+    """Tests for method login_browser_id"""
+
+    VALID_ID = "A" * 21 + "b-_" + "9" * 19
+
+    def test_returns_the_identifier_the_mode_cookie_carries(self):
+        """A well-formed identifier is returned for reuse."""
+        cookies = {"oidc_login_browser_form_post": self.VALID_ID}
+
+        self.assertEqual(login_browser_id(cookies, "form_post"), self.VALID_ID)
+
+    def test_missing_cookie_returns_none(self):
+        """A browser without the cookie has no identifier yet."""
+        self.assertIsNone(login_browser_id({}, "form_post"))
+
+    def test_other_modes_cookie_is_not_used(self):
+        """The query identifier never stands in for the form_post one."""
+        cookies = {"oidc_login_browser_query": self.VALID_ID}
+
+        self.assertIsNone(login_browser_id(cookies, "form_post"))
+
+    def test_malformed_identifier_returns_none(self):
+        """Values of the wrong length or alphabet are not reused."""
+        for value in ("", "short", self.VALID_ID + "x", "!" * 43, "a b" * 14 + "c"):
+            with self.subTest(value=value):
+                cookies = {"oidc_login_browser_query": value}
+
+                self.assertIsNone(login_browser_id(cookies, "query"))
+
+
+class MintLoginBrowserIdTestCase(TestCase):
+    """Tests for method mint_login_browser_id"""
+
+    def test_minted_identifier_is_accepted_on_return(self):
+        """A minted identifier reads back from its cookie unchanged."""
+        browser_id = mint_login_browser_id()
+        cookies = {login_browser_cookie_name("query"): browser_id}
+
+        self.assertEqual(login_browser_id(cookies, "query"), browser_id)
+
+    def test_every_call_mints_a_new_identifier(self):
+        """Two browsers never share an identifier."""
+        self.assertEqual(len({mint_login_browser_id() for _ in range(100)}), 100)
+
+
+class ClaimLoginBindingTestCase(TestCase):
+    """Tests for method claim_login_binding"""
 
     def setUp(self):
         cache.clear()
+        self.browser = mint_login_browser_id()
 
-    def test_a_released_slot_is_taken_before_held_ones(self):
-        """After release the next start takes the freed slot.
+    def test_claimed_state_is_bound_to_the_browser(self):
+        """After a claim, the browser holds a binding for that state."""
+        self.assertTrue(claim_login_binding(self.browser, "state-a"))
 
-        Three starts hold the three free slots; releasing the second
-        start's slot makes it the one slot a fourth start may take
-        without overwriting an outstanding start's binding.
-        """
-        jar = {
-            name: seal_login_binding(name)
-            for name in login_binding_cookie_names()[3:]
-        }
-        first = allocate_login_binding_slot(jar)
-        second = allocate_login_binding_slot(jar)
-        third = allocate_login_binding_slot(jar)
-        self.assertEqual(len({first, second, third}), 3)
-        release_login_binding_slot(second)
-        self.assertEqual(allocate_login_binding_slot(jar), second)
+        self.assertTrue(has_login_binding(self.browser, "state-a"))
 
+    def test_claim_beyond_six_pending_is_rejected(self):
+        """A seventh pending login is refused and not bound."""
+        for i in range(6):
+            self.assertTrue(claim_login_binding(self.browser, f"state-{i}"))
 
-class StaleLoginBindingCookiesTestCase(TestCase):
-    """Tests for method stale_login_binding_cookies"""
+        self.assertFalse(claim_login_binding(self.browser, "state-6"))
+        self.assertFalse(has_login_binding(self.browser, "state-6"))
 
-    def test_valid_slot_cookies_are_kept(self):
-        """A pending attempt's binding is never named for deletion."""
-        jar = {
-            name: seal_login_binding(f"state-{i}")
-            for i, name in enumerate(login_binding_cookie_names())
-        }
-        self.assertEqual(stale_login_binding_cookies(jar), [])
+    def test_rejected_claim_preserves_existing_bindings(self):
+        """Refusing a start keeps all six pending logins completable."""
+        for i in range(6):
+            claim_login_binding(self.browser, f"state-{i}")
 
-    def test_broken_slot_cookies_are_named_for_deletion(self):
-        """A tampered slot value is named for deletion."""
-        name = login_binding_cookie_names()[0]
-        jar = {name: seal_login_binding("state-1")[:-1]}
-        self.assertEqual(stale_login_binding_cookies(jar), [name])
+        claim_login_binding(self.browser, "state-6")
 
-    def test_prefixed_cookies_outside_the_slot_set_are_named_for_deletion(self):
-        """A binding-prefixed cookie outside the slot set is named for deletion.
+        for i in range(6):
+            with self.subTest(i=i):
+                self.assertTrue(has_login_binding(self.browser, f"state-{i}"))
 
-        Nothing can read such a cookie, so leaving it would grow the
-        Cookie header until the cookie expires.
-        """
-        name = f"{LOGIN_BINDING_COOKIE_PREFIX}deadbeef"
-        self.assertEqual(stale_login_binding_cookies({name: "junk"}), [name])
+    def test_finished_login_frees_its_slot(self):
+        """After a release, a full browser can start one more login."""
+        for i in range(6):
+            claim_login_binding(self.browser, f"state-{i}")
+        release_login_binding(self.browser, "state-2")
 
-    def test_cookies_without_the_binding_prefix_are_ignored(self):
-        """Unrelated cookies are never named for deletion."""
-        self.assertEqual(
-            stale_login_binding_cookies({"sessionid": "abc", "csrftoken": "def"}),
-            [],
-        )
+        self.assertTrue(claim_login_binding(self.browser, "state-6"))
+        self.assertFalse(claim_login_binding(self.browser, "state-7"))
+        for i in (0, 1, 3, 4, 5, 6):
+            with self.subTest(i=i):
+                self.assertTrue(has_login_binding(self.browser, f"state-{i}"))
 
-
-class MatchingLoginBindingCookieTestCase(TestCase):
-    """Tests for method matching_login_binding_cookie"""
-
-    def setUp(self):
-        self.cookie_name = login_binding_cookie_names()[2]
-        self.cookies = {self.cookie_name: seal_login_binding("state-1")}
-
-    def test_the_match_names_the_slot_holding_the_binding(self):
-        """The lookup returns the slot cookie name holding the state."""
-        self.assertEqual(
-            matching_login_binding_cookie(self.cookies, "state-1"),
-            self.cookie_name,
-        )
-
-    def test_a_binding_matches_from_any_slot(self):
-        """The slot holding a binding carries no meaning for the match."""
-        for name in login_binding_cookie_names():
-            with self.subTest(slot=name):
-                cookies = {name: seal_login_binding("state-1")}
-                self.assertEqual(
-                    matching_login_binding_cookie(cookies, "state-1"), name
-                )
-
-    def test_a_state_bound_in_no_slot_returns_none(self):
-        """The lookup returns None for a state without a binding in any slot."""
-        self.assertIsNone(matching_login_binding_cookie(self.cookies, "state-2"))
-        self.assertIsNone(matching_login_binding_cookie({}, "state-1"))
-
-    def test_missing_or_non_string_state_returns_none(self):
-        """An absent or non-string state returns None instead of raising."""
-        self.assertIsNone(matching_login_binding_cookie(self.cookies, None))
-        self.assertIsNone(matching_login_binding_cookie(self.cookies, ""))
-        self.assertIsNone(matching_login_binding_cookie(self.cookies, 1))
-
-    def test_tampered_value_returns_none(self):
-        """A slot value failing signature verification returns None."""
-        tampered = {self.cookie_name: self.cookies[self.cookie_name][:-1]}
-        self.assertIsNone(matching_login_binding_cookie(tampered, "state-1"))
-
-
-class LoginBindingMatchesTestCase(TestCase):
-    """Tests for method login_binding_matches"""
-
-    def setUp(self):
-        self.cookie_name = login_binding_cookie_names()[2]
-        self.cookies = {self.cookie_name: seal_login_binding("state-1")}
-
-    def test_missing_cookie_binds_nothing(self):
-        """Without this attempt's binding no state is bound."""
-        self.assertFalse(login_binding_matches({}, "state-1"))
-        self.assertFalse(login_binding_matches({"other": "value"}, "state-1"))
-
-    def test_missing_state_never_matches(self):
-        """A response without a state cannot be bound, cookies or not."""
-        self.assertFalse(login_binding_matches(self.cookies, None))
-        self.assertFalse(login_binding_matches(self.cookies, ""))
-
-    def test_non_string_state_never_matches(self):
-        """A non-string state is unbindable instead of raising.
-
-        A JSON callback body can carry any value under ``state``; a
-        truthy non-string one must be rejected like a wrong state.
-        """
-        self.assertFalse(login_binding_matches(self.cookies, 1))
-        self.assertFalse(login_binding_matches(self.cookies, ["state-1"]))
-
-    def test_sealed_value_for_another_state_never_matches(self):
-        """A slot holding another attempt's binding cannot match.
-
-        The signed value holds the full state digest, so no slot
-        shuffling can satisfy the check for a different state.
-        """
-        cookies = {self.cookie_name: seal_login_binding("state-2")}
-        self.assertFalse(login_binding_matches(cookies, "state-1"))
-
-    def test_tampered_cookie_matches_nothing(self):
-        """A value failing signature verification binds no state."""
-        tampered = {self.cookie_name: self.cookies[self.cookie_name][:-1]}
-        self.assertFalse(login_binding_matches(tampered, "state-1"))
-
-    def test_cookie_expires_after_the_max_age(self):
-        """The binding holds just before the max age and expires after it."""
+    def test_expired_login_frees_its_slot(self):
+        """Abandoned logins stop counting once their binding expires."""
         now = time.time()
-        with patch("time.time", return_value=now + LOGIN_BINDING_MAX_AGE - 60):
-            self.assertTrue(login_binding_matches(self.cookies, "state-1"))
+        with patch("time.time", return_value=now):
+            for i in range(6):
+                claim_login_binding(self.browser, f"state-{i}")
+
         with patch("time.time", return_value=now + LOGIN_BINDING_MAX_AGE + 1):
-            self.assertFalse(login_binding_matches(self.cookies, "state-1"))
+            self.assertTrue(claim_login_binding(self.browser, "state-6"))
+            self.assertTrue(has_login_binding(self.browser, "state-6"))
 
-    def test_value_signed_without_the_binding_salt_matches_nothing(self):
-        """A signature minted for any other purpose cannot bind a login.
+    def test_delayed_release_cannot_remove_the_binding_that_reused_its_slot(self):
+        """A late callback for an expired login leaves its slot's new owner."""
+        now = time.time()
+        with patch("time.time", return_value=now):
+            claim_login_binding(self.browser, "expired")
+        with patch("time.time", return_value=now + 100):
+            for i in range(5):
+                claim_login_binding(self.browser, f"state-{i}")
 
-        Even a payload carrying the right digest fails when signed
-        without the binding salt.
-        """
-        digest = hashlib.sha256(b"state-1").hexdigest()
-        self.assertFalse(
-            login_binding_matches({self.cookie_name: signing.dumps(digest)}, "state-1")
+        with patch("time.time", return_value=now + LOGIN_BINDING_MAX_AGE + 1):
+            # The only free slot is the expired login's.
+            self.assertTrue(claim_login_binding(self.browser, "newer"))
+            release_login_binding(self.browser, "expired")
+
+            self.assertTrue(has_login_binding(self.browser, "newer"))
+            # The slot stays taken by the newer login.
+            self.assertFalse(claim_login_binding(self.browser, "one-too-many"))
+
+    @override_settings(
+        CACHES={"default": {"BACKEND": "tests.caches.SilentSetFailureCache"}}
+    )
+    def test_claim_never_reports_success_without_a_stored_binding(self):
+        """A cache that drops writes refuses the start, never half-binds."""
+        claimed = claim_login_binding(self.browser, "state-a")
+
+        self.assertEqual(claimed, has_login_binding(self.browser, "state-a"))
+
+    def test_cap_is_per_browser(self):
+        """Another browser's six pending logins leave this one's room."""
+        other = mint_login_browser_id()
+        for i in range(6):
+            claim_login_binding(other, f"other-{i}")
+
+        self.assertTrue(claim_login_binding(self.browser, "state-a"))
+
+
+class HasLoginBindingTestCase(TestCase):
+    """Tests for method has_login_binding"""
+
+    def setUp(self):
+        cache.clear()
+        self.browser = mint_login_browser_id()
+        claim_login_binding(self.browser, "state-a")
+
+    def test_missing_or_malformed_input_matches_nothing(self):
+        """No identifier, or a non-string state, is never bound."""
+        for browser, state in (
+            (None, "state-a"),
+            ("", "state-a"),
+            (self.browser, None),
+            (self.browser, ""),
+            (self.browser, ["state-a"]),
+            (self.browser, {"state": "state-a"}),
+        ):
+            with self.subTest(browser=browser, state=state):
+                self.assertFalse(has_login_binding(browser, state))
+
+    def test_other_browsers_do_not_hold_the_binding(self):
+        """A state bound to one browser does not pass in another."""
+        self.assertFalse(has_login_binding(mint_login_browser_id(), "state-a"))
+
+    def test_unknown_state_is_not_bound(self):
+        """A state this browser never claimed does not pass."""
+        self.assertFalse(has_login_binding(self.browser, "state-b"))
+
+
+class ReleaseLoginBindingTestCase(TestCase):
+    """Tests for method release_login_binding"""
+
+    def setUp(self):
+        cache.clear()
+        self.browser = mint_login_browser_id()
+        claim_login_binding(self.browser, "state-a")
+        claim_login_binding(self.browser, "state-b")
+
+    def test_released_binding_no_longer_matches(self):
+        """A finished login's state cannot be replayed."""
+        release_login_binding(self.browser, "state-a")
+
+        self.assertFalse(has_login_binding(self.browser, "state-a"))
+
+    def test_other_pending_logins_survive(self):
+        """Releasing one binding leaves the browser's others intact."""
+        release_login_binding(self.browser, "state-a")
+
+        self.assertTrue(has_login_binding(self.browser, "state-b"))
+
+    def test_missing_or_malformed_input_is_ignored(self):
+        """Nothing is released, and nothing raises, for bad input."""
+        for browser, state in ((None, "state-a"), (self.browser, None), (self.browser, 7)):
+            with self.subTest(browser=browser, state=state):
+                release_login_binding(browser, state)
+
+        self.assertTrue(has_login_binding(self.browser, "state-a"))
+
+
+class _ConcurrentClaimsMixin:
+    """Races real threads through claim_login_binding on one browser."""
+
+    ROUNDS = 20
+
+    def _race(self, browser, states):
+        barrier = threading.Barrier(len(states))
+        results = {}
+
+        def run(state):
+            try:
+                barrier.wait()
+                results[state] = claim_login_binding(browser, state)
+            finally:
+                # Each thread opens its own database connection.
+                connections.close_all()
+
+        threads = [threading.Thread(target=run, args=(s,)) for s in states]
+        interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)
+        try:
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        finally:
+            sys.setswitchinterval(interval)
+        return results
+
+    def _assert_race_safe(self, browser, results, room):
+        self.assertLessEqual(sum(results.values()), room)
+        for state, won in results.items():
+            self.assertEqual(has_login_binding(browser, state), won)
+
+    def _fill_then_free(self, browser, freed):
+        for i in range(6):
+            claim_login_binding(browser, f"p{i}")
+        for i in freed:
+            release_login_binding(browser, f"p{i}")
+
+    def test_racing_starts_never_exceed_six_or_half_bind(self):
+        """Simultaneous starts win at most six slots; winners are bound."""
+        for round_ in range(self.ROUNDS):
+            with self.subTest(round=round_):
+                # Rounds start empty so no backend culls entries
+                # mid-round once it reaches its entry limit.
+                cache.clear()
+                browser = mint_login_browser_id()
+                results = self._race(browser, [f"s{i}" for i in range(12)])
+
+                self._assert_race_safe(browser, results, 6)
+
+    def test_racing_starts_on_freed_slots_keep_survivors(self):
+        """Starts racing for freed slots leave pending logins bound."""
+        for round_ in range(self.ROUNDS):
+            with self.subTest(round=round_):
+                # Rounds start empty so no backend culls entries
+                # mid-round once it reaches its entry limit.
+                cache.clear()
+                browser = mint_login_browser_id()
+                self._fill_then_free(browser, (0, 2, 4))
+
+                results = self._race(browser, [f"s{i}" for i in range(6)])
+
+                self._assert_race_safe(browser, results, 3)
+                for i in (1, 3, 5):
+                    self.assertTrue(has_login_binding(browser, f"p{i}"))
+
+
+class _ExactConcurrentClaimsMixin(_ConcurrentClaimsMixin):
+    """For backends whose add() fails only when the key exists."""
+
+    def test_racing_starts_fill_exactly_six_slots(self):
+        """Of twelve simultaneous starts, exactly six win."""
+        for round_ in range(self.ROUNDS):
+            with self.subTest(round=round_):
+                # Rounds start empty so no backend culls entries
+                # mid-round once it reaches its entry limit.
+                cache.clear()
+                browser = mint_login_browser_id()
+                results = self._race(browser, [f"s{i}" for i in range(12)])
+
+                self.assertEqual(sum(results.values()), 6)
+
+    def test_racing_starts_take_every_freed_slot_once(self):
+        """Three freed slots go to exactly three of six racing starts."""
+        for round_ in range(self.ROUNDS):
+            with self.subTest(round=round_):
+                # Rounds start empty so no backend culls entries
+                # mid-round once it reaches its entry limit.
+                cache.clear()
+                browser = mint_login_browser_id()
+                self._fill_then_free(browser, (0, 2, 4))
+
+                results = self._race(browser, [f"s{i}" for i in range(6)])
+
+                self.assertEqual(sum(results.values()), 3)
+                self.assertFalse(claim_login_binding(browser, "late"))
+
+
+class LocMemConcurrentClaimLoginBindingTestCase(_ExactConcurrentClaimsMixin, TestCase):
+    """Tests for method claim_login_binding"""
+
+    def setUp(self):
+        cache.clear()
+
+
+@override_settings(
+    CACHES={
+        "default": {
+            "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+            "LOCATION": "oidc_test_cache",
+        }
+    }
+)
+class DatabaseConcurrentClaimLoginBindingTestCase(
+    _ConcurrentClaimsMixin, TransactionTestCase
+):
+    """Tests for method claim_login_binding"""
+
+    def setUp(self):
+        call_command("createcachetable", verbosity=0)
+        cache.clear()
+
+
+@unittest.skipUnless(
+    os.environ.get("OIDC_TEST_REDIS_URL"), "OIDC_TEST_REDIS_URL is not set"
+)
+class RedisConcurrentClaimLoginBindingTestCase(_ExactConcurrentClaimsMixin, TestCase):
+    """Tests for method claim_login_binding"""
+
+    def setUp(self):
+        settings_override = override_settings(
+            CACHES={
+                "default": {
+                    "BACKEND": "django.core.cache.backends.redis.RedisCache",
+                    "LOCATION": os.environ["OIDC_TEST_REDIS_URL"],
+                }
+            }
         )
+        settings_override.enable()
+        self.addCleanup(settings_override.disable)
+        cache.clear()
+
+
+ENFORCING_SERVERS = {"default": {"CLIENT_ID": "client"}}
+NON_ENFORCING_SERVERS = {
+    "default": {"CLIENT_ID": "client", "ENFORCE_BROWSER_BINDING": False}
+}
+
+
+class CheckLoginBindingCacheTestCase(TestCase):
+    """Tests for method check_login_binding_cache"""
+
+    UNSUPPORTED = {
+        "dummy": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"},
+        "file": {
+            "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
+            "LOCATION": "/tmp/oidc-binding-check",
+        },
+    }
+    SUPPORTED = {
+        "locmem": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"},
+        "database": {
+            "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+            "LOCATION": "oidc_test_cache",
+        },
+        "redis": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": "redis://127.0.0.1:6379",
+        },
+        "memcached": {
+            "BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache",
+            "LOCATION": "127.0.0.1:11211",
+        },
+    }
+
+    def test_unsupported_backend_is_a_configuration_error(self):
+        """No shared, atomic state: enforcing binding fails loudly."""
+        for name, config in self.UNSUPPORTED.items():
+            with self.subTest(backend=name), override_settings(
+                CACHES={"default": config},
+                OPENID_CONNECT_AUTH_SERVERS=ENFORCING_SERVERS,
+            ):
+                with self.assertRaisesMessage(ImproperlyConfigured, config["BACKEND"]):
+                    check_login_binding_cache()
+
+    def test_supported_backends_pass(self):
+        """Backends with an atomic add() are accepted."""
+        for name, config in self.SUPPORTED.items():
+            with self.subTest(backend=name), override_settings(
+                CACHES={"default": config},
+                OPENID_CONNECT_AUTH_SERVERS=ENFORCING_SERVERS,
+            ):
+                check_login_binding_cache()
+
+    def test_unsupported_backend_is_allowed_without_enforcement(self):
+        """Deployments that turned binding off keep any cache."""
+        with override_settings(
+            CACHES={"default": self.UNSUPPORTED["dummy"]},
+            OPENID_CONNECT_AUTH_SERVERS=NON_ENFORCING_SERVERS,
+        ):
+            check_login_binding_cache()

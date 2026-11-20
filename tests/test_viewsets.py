@@ -5,9 +5,10 @@ Tests for the OpenID Client
 import copy
 import json
 import os
+import threading
 import time
-from itertools import permutations
 from datetime import timedelta
+from itertools import permutations
 from urllib.parse import parse_qs, urlparse
 
 from django.conf import settings
@@ -3232,10 +3233,10 @@ class TestSSOCookieJWTExpiry(TestCase):
             time.tzset()
 
 
-# The browser-visible name prefix of the binding slot cookies.
+# The browser-visible name prefix of the browser identifier cookies.
 # Deliberately a literal, not an import, so renaming the cookies the
 # deployed browsers already hold fails a test.
-BINDING_COOKIE_PREFIX = "oidc_login_bind"
+BINDING_COOKIE_PREFIX = "oidc_login_browser_"
 
 # Built without ENFORCE_BROWSER_BINDING so these tests exercise the
 # default, which is enforcement ON.
@@ -3310,6 +3311,61 @@ class LoginBrowserBindingTestCase(TestCase):
         self.assertEqual(response.status_code, 302)
         mock_verify.assert_called_once()
 
+    def test_login_sets_one_session_identifier_cookie_per_mode(self):
+        """The first start sets an HttpOnly session cookie named for its mode."""
+        _, response = self._start_login_response({})
+
+        cookies = self._binding_cookies(response)
+        self.assertEqual(list(cookies), ["oidc_login_browser_form_post"])
+        cookie = cookies["oidc_login_browser_form_post"]
+        self.assertTrue(cookie["httponly"])
+        self.assertEqual(cookie["path"], "/")
+        # A session cookie: it lives as long as the browser session,
+        # so it never expires under a pending login.
+        self.assertEqual(cookie["max-age"], "")
+        self.assertEqual(cookie["expires"], "")
+
+    def _jar_with_identifier(self):
+        """A jar whose browser has started, and finished, one login."""
+        jar = {}
+        state, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
+        self._callback_with_cookies(state, self._cross_site_post_cookies(jar))
+        return jar
+
+    def _assert_state_spent(self, state, jar):
+        """``state`` no longer passes the binding check in this browser."""
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_verify:
+            request = self.factory.post(
+                "/", data={"id_token": "a.b.c", "state": state}
+            )
+            request.COOKIES.update({n: m.value for n, m in jar.items()})
+            response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 401)
+        mock_verify.assert_not_called()
+
+    def _login_response(self, jar, auth_server="default"):
+        """GET the login action sending ``jar``'s cookies."""
+        login_view = UserModelOpenIDConnectViewset.as_view({"get": "login"})
+        request = self.factory.get("/")
+        request.COOKIES.update(
+            {name: morsel.value for name, morsel in jar.items()}
+        )
+        return login_view(request, auth_server=auth_server)
+
+    def test_later_starts_reuse_the_identifier_without_rewriting_it(self):
+        """Once the browser carries its identifier, starts set no cookie."""
+        jar = {}
+        _, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
+
+        _, response = self._start_login_response(jar)
+
+        self.assertEqual(self._binding_cookies(response), {})
+
     @staticmethod
     def _binding_cookies(response):
         """The binding cookie morsels a response sets, by cookie name."""
@@ -3362,24 +3418,19 @@ class LoginBrowserBindingTestCase(TestCase):
 
     def _start_login_response(self, jar, auth_server="default"):
         """GET the login action sending ``jar``'s cookies; return (state, response)."""
-        login_view = UserModelOpenIDConnectViewset.as_view({"get": "login"})
-        request = self.factory.get("/")
-        request.COOKIES.update(
-            {name: morsel.value for name, morsel in jar.items()}
-        )
-        response = login_view(request, auth_server=auth_server)
+        response = self._login_response(jar, auth_server)
         state = parse_qs(urlparse(response.url).query)["state"][0]
         return state, response
 
     def test_overlapping_login_starts_can_both_complete(self):
         """Two logins started before either response lands can both finish.
 
-        Both requests go out with the same initial cookie jar, so
-        neither start sees the other's Set-Cookie, and the browser
-        then stores both responses' cookies. Neither callback may be
-        rejected.
+        The browser already carries its identifier. Both requests go
+        out with the same jar, so neither start sees the other's
+        response, and the browser then stores both responses. Neither
+        callback may be rejected.
         """
-        jar = {}
+        jar = self._jar_with_identifier()
         first_state, first_response = self._start_login_response(jar)
         second_state, second_response = self._start_login_response(jar)
         self._store_cookies(jar, first_response)
@@ -3390,6 +3441,35 @@ class LoginBrowserBindingTestCase(TestCase):
                     state, self._cross_site_post_cookies(jar)
                 )
                 self.assertEqual(response.status_code, 302)
+
+    def test_racing_first_starts_lose_one_login_and_a_retry_recovers(self):
+        """Without an identifier yet, racing starts complete only the last.
+
+        Both requests carry identical cookies, so each mints its own
+        identifier and the later Set-Cookie wins. This is the agreed
+        limit: the other login fails once, and a retry, which now
+        carries the identifier, completes.
+        """
+        jar = {}
+        first_state, first_response = self._start_login_response(jar)
+        second_state, second_response = self._start_login_response(jar)
+        self._store_cookies(jar, first_response)
+        self._store_cookies(jar, second_response)
+
+        response = self._callback_with_cookies(
+            second_state, self._cross_site_post_cookies(jar)
+        )
+        self.assertEqual(response.status_code, 302)
+        response = self._callback_with_cookies(
+            first_state, self._cross_site_post_cookies(jar)
+        )
+        self.assertEqual(response.status_code, 401)
+        retry_state, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
+        response = self._callback_with_cookies(
+            retry_state, self._cross_site_post_cookies(jar)
+        )
+        self.assertEqual(response.status_code, 302)
 
     def test_query_login_start_keeps_form_post_login_completable(self):
         """A query-mode login start does not break a form_post login in flight.
@@ -3419,32 +3499,31 @@ class LoginBrowserBindingTestCase(TestCase):
             self.assertEqual(response.status_code, 302)
 
     def test_repeated_login_starts_keep_a_bounded_cookie_jar(self):
-        """Abandoned login starts cannot grow the cookie jar without bound.
+        """Abandoned login starts cannot grow the cookie jar.
 
         Unchecked growth lets a hostile page drive the Cookie header
         past browser and proxy limits, breaking the whole site for the
-        victim until the cookies expire.
+        victim until the cookies expire. Every start reuses the one
+        identifier cookie, and starts past six pending are refused.
         """
         jar = {}
-        now = time.time()
-        for offset in range(48):
-            # Distinct clock ticks exercise eviction age-ordering
-            # even when the loop runs within one real second.
-            with patch("time.time", return_value=now + offset):
-                _, response = self._start_login_response(jar)
+        statuses = []
+        for _ in range(48):
+            response = self._login_response(jar)
+            statuses.append(response.status_code)
             self._store_cookies(jar, response)
         binding = [name for name in jar if name.startswith(BINDING_COOKIE_PREFIX)]
-        self.assertEqual(len(binding), 6)
+        self.assertEqual(binding, ["oidc_login_browser_form_post"])
+        self.assertEqual(statuses, [302] * 6 + [429] * 42)
 
     def test_burst_of_racing_login_starts_keeps_the_jar_bounded(self):
-        """Starts racing on one cookie jar cannot grow it past the cap.
+        """Starts racing on one cookie jar leave a single binding cookie.
 
         Every request goes out before any response lands, so no start
         sees another's Set-Cookie. That is how a hostile page grows
-        the jar fastest. The browser must still end up with a bounded
-        set of binding cookies and a Cookie header far below proxy
-        header limits, with the newest attempt completable and the
-        earliest evicted.
+        the jar fastest. Each response sets the same cookie name, so
+        the browser keeps one, and the start whose response landed
+        last is completable.
         """
         initial_jar = {}
         started = [self._start_login_response(initial_jar) for _ in range(48)]
@@ -3452,27 +3531,19 @@ class LoginBrowserBindingTestCase(TestCase):
         for _, response in started:
             self._store_cookies(jar, response)
         binding = [name for name in jar if name.startswith(BINDING_COOKIE_PREFIX)]
-        self.assertEqual(len(binding), 6)
-        cookie_header = "; ".join(
-            f"{name}={morsel.value}" for name, morsel in jar.items()
-        )
-        self.assertLess(len(cookie_header), 4096)
+        self.assertEqual(binding, ["oidc_login_browser_form_post"])
         response = self._callback_with_cookies(
             started[-1][0], self._cross_site_post_cookies(jar)
         )
         self.assertEqual(response.status_code, 302)
-        response = self._callback_with_cookies(
-            started[0][0], self._cross_site_post_cookies(jar)
-        )
-        self.assertEqual(response.status_code, 401)
 
     def test_racing_starts_on_a_partly_filled_jar_stay_completable(self):
-        """Foreign traffic cannot make racing starts overwrite a binding.
+        """Other browsers' starts cannot make racing starts collide.
 
-        Browser A holds two pending logins; other browsers' starts
-        then advance the shared slot counter; A fires two more starts
-        that race on its unchanged jar. All four of A's logins stay
-        independently completable, since the browser remains below the
+        Browser A holds two pending logins; other browsers then start
+        logins of their own; A fires two more starts that race on its
+        unchanged jar. All four of A's logins stay independently
+        completable, since the browser remains below the
         pending-attempt limit.
         """
         jar = {}
@@ -3482,8 +3553,7 @@ class LoginBrowserBindingTestCase(TestCase):
             self._store_cookies(jar, response)
             states.append(state)
         for _ in range(4):
-            # Other browsers' starts advance the shared counter, but
-            # their responses never reach browser A's jar.
+            # Other browsers' responses never reach browser A's jar.
             self._start_login_response({})
         racing = [self._start_login_response(jar) for _ in range(2)]
         for state, response in racing:
@@ -3530,18 +3600,19 @@ class LoginBrowserBindingTestCase(TestCase):
 
         Two logins are pending and three more overlap. Each start
         sends the jar as it then stands, and each response reaches
-        the jar at some later point. The test enumerates every valid
-        order of those six events, then completes all five logins.
-        This pins the invariant itself rather than one reported
-        sequence. A browser that never exceeds the pending-attempt
-        limit loses no login, whatever the event order. The test does
-        not sweep callback order; completions only free slots and
-        cannot collide.
+        the jar at some later point. Another browser's whole login,
+        start to callback, runs at every point in between. The test
+        enumerates every valid order of those seven events, then
+        completes all five logins. A browser that never exceeds the
+        pending-attempt limit loses no login, whatever the event
+        order or the traffic from other browsers.
         """
         overlap = 3
-        events = [("start", i) for i in range(overlap)] + [
-            ("apply", i) for i in range(overlap)
-        ]
+        events = (
+            [("start", i) for i in range(overlap)]
+            + [("apply", i) for i in range(overlap)]
+            + [("other", 0)]
+        )
         for order in permutations(range(len(events))):
             sequence = [events[i] for i in order]
             if any(
@@ -3561,41 +3632,131 @@ class LoginBrowserBindingTestCase(TestCase):
                 for kind, i in sequence:
                     if kind == "start":
                         started[i] = self._start_login_response(jar)
-                    else:
+                    elif kind == "apply":
                         state, response = started[i]
                         states.append(state)
                         self._store_cookies(jar, response)
+                    else:
+                        other_jar = {}
+                        other_state, response = self._start_login_response(
+                            other_jar
+                        )
+                        self._store_cookies(other_jar, response)
+                        response = self._callback_with_cookies(
+                            other_state, self._cross_site_post_cookies(other_jar)
+                        )
+                        self.assertEqual(response.status_code, 302)
                 for state in states:
                     response = self._callback_with_cookies(
                         state, self._cross_site_post_cookies(jar)
                     )
                     self.assertEqual(response.status_code, 302)
+    def test_simultaneous_starts_on_one_jar_both_complete(self):
+        """Starts processed at the same moment by two workers both bind.
 
-    def test_cap_evicts_the_oldest_attempt_and_keeps_the_newest(self):
-        """Past the cap the oldest attempt is evicted and the newest stay completable."""
+        The browser holds four pending logins and sends two more starts
+        with the same jar; two threads serve them concurrently.
+        """
         jar = {}
         states = []
-        now = time.time()
-        for offset in range(7):
-            with patch("time.time", return_value=now + offset):
-                state, response = self._start_login_response(jar)
+        for _ in range(4):
+            state, response = self._start_login_response(jar)
             self._store_cookies(jar, response)
             states.append(state)
-        response = self._callback_with_cookies(
-            states[0], self._cross_site_post_cookies(jar)
-        )
-        self.assertEqual(response.status_code, 401)
-        response = self._callback_with_cookies(
-            states[-1], self._cross_site_post_cookies(jar)
-        )
-        self.assertEqual(response.status_code, 302)
+        barrier = threading.Barrier(2)
+        racing = []
 
-    def test_completed_login_expires_only_its_own_binding_cookie(self):
-        """The success response deletes the finished attempt's cookie, no other.
+        def start():
+            barrier.wait()
+            racing.append(self._start_login_response(dict(jar)))
 
-        A still-pending attempt's cookie survives and that login stays
-        completable; the browser is left with no cookie for the spent
-        state.
+        threads = [threading.Thread(target=start) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        for state, response in racing:
+            self._store_cookies(jar, response)
+            states.append(state)
+
+        self.assertEqual(len(states), 6)
+        for state in states:
+            with self.subTest(state=state):
+                response = self._callback_with_cookies(
+                    state, self._cross_site_post_cookies(jar)
+                )
+                self.assertEqual(response.status_code, 302)
+
+    def test_response_held_back_for_minutes_keeps_every_login_completable(self):
+        """A start whose response is slow to land never loses its binding.
+
+        Two logins are pending. A and B start on the same jar; B's
+        response lands, A's is held back for over a minute, and C then
+        starts. All five logins stay completable.
+        """
+        jar = {}
+        states = []
+        for _ in range(2):
+            state, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+            states.append(state)
+        state_a, response_a = self._start_login_response(jar)
+        state_b, response_b = self._start_login_response(jar)
+        self._store_cookies(jar, response_b)
+        later = time.time() + 61
+        with patch("time.time", return_value=later):
+            state_c, response_c = self._start_login_response(jar)
+            self._store_cookies(jar, response_a)
+            self._store_cookies(jar, response_c)
+            for state in states + [state_a, state_b, state_c]:
+                with self.subTest(state=state):
+                    response = self._callback_with_cookies(
+                        state, self._cross_site_post_cookies(jar)
+                    )
+                    self.assertEqual(response.status_code, 302)
+
+    def test_start_past_six_pending_is_refused_and_keeps_the_six(self):
+        """A seventh pending start is refused; the six pending all complete."""
+        jar = {}
+        states = []
+        for _ in range(6):
+            state, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+            states.append(state)
+
+        response = self._login_response(jar)
+
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(self._binding_cookies(response), {})
+        for state in states:
+            with self.subTest(state=state):
+                response = self._callback_with_cookies(
+                    state, self._cross_site_post_cookies(jar)
+                )
+                self.assertEqual(response.status_code, 302)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {**BINDING_AUTH_SERVERS["default"], "USE_PKCE": True}
+        }
+    )
+    def test_refused_start_leaves_no_pkce_verifier_behind(self):
+        """A refused start drops the PKCE verifier login() cached."""
+        jar = {}
+        for _ in range(6):
+            _, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+        with patch("oidc.client.secrets.token_urlsafe", return_value="refused"):
+            response = self._login_response(jar)
+
+        self.assertEqual(response.status_code, 429)
+        self.assertIsNone(cache.get(state_cache_key("refused")))
+
+    def test_completed_login_ends_only_its_own_binding(self):
+        """Success ends the finished attempt's binding and no other.
+
+        The spent state cannot pass the binding check again, and a
+        still-pending attempt stays completable.
         """
         jar = {}
         first_state, response = self._start_login_response(jar)
@@ -3607,11 +3768,7 @@ class LoginBrowserBindingTestCase(TestCase):
             first_state, self._cross_site_post_cookies(jar)
         )
         self.assertEqual(response.status_code, 302)
-        self._store_cookies(jar, response)
-        remaining = [
-            name for name in jar if name.startswith(BINDING_COOKIE_PREFIX)
-        ]
-        self.assertEqual(len(remaining), 1)
+        self._assert_state_spent(first_state, jar)
 
         response = self._callback_with_cookies(
             second_state, self._cross_site_post_cookies(jar)
@@ -3624,8 +3781,7 @@ class LoginBrowserBindingTestCase(TestCase):
         A callback whose username is already taken renders the form
         without ending the attempt. The same-origin re-POST carries
         the state and the binding cookie and must pass the binding
-        check, and the success response deletes the attempt's binding
-        cookie.
+        check, and the success response ends the attempt's binding.
         """
         User.objects.create(username="anna", email="anna@example.com")
         claims = {
@@ -3672,16 +3828,13 @@ class LoginBrowserBindingTestCase(TestCase):
             response = view(request, auth_server="default")
         self.assertEqual(response.status_code, 302)
         self.assertTrue(User.objects.filter(username="annabelle").exists())
-        self._store_cookies(jar, response)
-        self.assertEqual(
-            [name for name in jar if name.startswith(BINDING_COOKIE_PREFIX)], []
-        )
+        self._assert_state_spent(state, jar)
 
-    def test_rejected_unknown_user_login_expires_its_binding_cookie(self):
-        """The not-authorized response also deletes the attempt's cookie.
+    def test_rejected_unknown_user_login_ends_its_binding(self):
+        """The not-authorized response also ends the attempt's binding.
 
         With AUTO_CREATE_USER off and no matching account the flow ends
-        at that 401, so the attempt's cookie must not linger.
+        at that 401, so the attempt's binding must not linger.
         """
         with override_settings(
             OPENID_CONNECT_VIEWSET_CONFIG={
@@ -3696,11 +3849,7 @@ class LoginBrowserBindingTestCase(TestCase):
                 state, self._cross_site_post_cookies(jar)
             )
             self.assertEqual(response.status_code, 401)
-            self._store_cookies(jar, response)
-            self.assertEqual(
-                [name for name in jar if name.startswith(BINDING_COOKIE_PREFIX)],
-                [],
-            )
+            self._assert_state_spent(state, jar)
 
     def test_login_in_second_tab_keeps_first_tab_completable(self):
         """A newer login start does not invalidate an older tab's login."""
@@ -3743,13 +3892,13 @@ class LoginBrowserBindingTestCase(TestCase):
         )
         self.assertEqual(response.status_code, 401)
 
-    def test_tampered_binding_cookie_is_rejected(self):
-        """A binding cookie that fails signature verification binds nothing."""
+    def test_unknown_identifier_cookie_is_rejected(self):
+        """An identifier the server never bound this state to binds nothing."""
         jar = {}
         state, response = self._start_login_response(jar)
         self._store_cookies(jar, response)
         cookies = {
-            name: value[:-1]
+            name: value[:-1] + ("A" if value[-1] != "A" else "B")
             for name, value in self._cross_site_post_cookies(jar).items()
         }
         response = self._callback_with_cookies(state, cookies)

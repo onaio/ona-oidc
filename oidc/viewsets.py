@@ -41,19 +41,18 @@ from rest_framework.reverse import reverse
 import oidc.settings as default
 from oidc.client import (
     ID_TOKEN_LEEWAY_SECONDS,
-    LOGIN_BINDING_MAX_AGE,
     REDIRECT_AFTER_AUTH,
     NoJSONWebKeyFound,
     NonceVerificationFailed,
     OpenIDClient,
     TokenVerificationFailed,
     UserInfoRequestFailed,
-    allocate_login_binding_slot,
-    login_binding_matches,
-    matching_login_binding_cookie,
-    release_login_binding_slot,
-    seal_login_binding,
-    stale_login_binding_cookies,
+    claim_login_binding,
+    has_login_binding,
+    login_browser_cookie_name,
+    login_browser_id,
+    mint_login_browser_id,
+    release_login_binding,
     state_cache_key,
 )
 from oidc.renderers import SensitiveTemplateHTMLRenderer
@@ -239,33 +238,44 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             )
             if client.enforce_browser_binding:
                 state = parse_qs(urlparse(response.url).query)["state"][0]
-                # form_post callbacks are cross-site POSTs from the
-                # IdP, which browsers strip Lax cookies from; browsers
-                # only accept SameSite=None cookies over HTTPS.
-                samesite = "None" if client.response_mode == "form_post" else "Lax"
-                # Bindings are stored in a fixed set of slot cookies,
-                # so no number of login starts, sequential or racing
-                # on the same jar before any response lands, can grow
-                # the Cookie header past the slot count. The slot
-                # taken holds no other attempt's pending binding while
-                # a free one exists, so overlapping logins (other
-                # tabs, other providers, either response mode) stay
-                # independently completable up to the slot count.
-                slot_name = allocate_login_binding_slot(request.COOKIES)
-                response.set_cookie(
-                    slot_name,
-                    seal_login_binding(state),
-                    max_age=LOGIN_BINDING_MAX_AGE,
-                    httponly=True,
-                    secure=samesite == "None" or request.is_secure(),
-                    samesite=samesite,
-                    path="/",
-                )
-                # Drop binding cookies nothing can use: broken slot
-                # values and prefixed names outside the slot set.
-                for stale_name in stale_login_binding_cookies(request.COOKIES):
-                    if stale_name != slot_name:
-                        response.delete_cookie(stale_name, path="/", samesite=samesite)
+                browser_id = login_browser_id(request.COOKIES, client.response_mode)
+                is_new_browser = browser_id is None
+                if is_new_browser:
+                    browser_id = mint_login_browser_id()
+                if not claim_login_binding(browser_id, state):
+                    self._clear_login_states({"state": state})
+                    logger.warning(
+                        "Refused login start for auth_server=%r: the browser "
+                        "has too many pending logins, or the cache write failed",
+                        auth_server,
+                    )
+                    return Response(
+                        {
+                            "error": _(
+                                "Too many sign-ins are in progress in this "
+                                "browser. Finish one, or wait a while, then "
+                                "try again."
+                            ),
+                            "error_title": _("Too many sign-ins in progress"),
+                        },
+                        status=status.HTTP_429_TOO_MANY_REQUESTS,
+                        template_name="oidc/oidc_unrecoverable_error.html",
+                    )
+                if is_new_browser:
+                    # form_post callbacks are cross-site POSTs from the
+                    # IdP, which browsers strip Lax cookies from; browsers
+                    # only accept SameSite=None cookies over HTTPS. A
+                    # session cookie never expires under a pending login,
+                    # and an existing one is never rewritten.
+                    samesite = "None" if client.response_mode == "form_post" else "Lax"
+                    response.set_cookie(
+                        login_browser_cookie_name(client.response_mode),
+                        browser_id,
+                        httponly=True,
+                        secure=samesite == "None" or request.is_secure(),
+                        samesite=samesite,
+                        path="/",
+                    )
             # Delete only csrftoken for the current domain
             response.delete_cookie(
                 "csrftoken",
@@ -685,31 +695,22 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
     @staticmethod
     def _expire_login_binding(
-        response: HttpResponse,
         client: OpenIDClient,
         request_cookies: Mapping[str, str],
         state: Optional[str],
     ) -> None:
-        """Expire a finished login attempt's binding cookie.
+        """End a finished login attempt's binding.
 
         Called on the callback's terminal responses, alongside
-        ``_clear_login_states``. The attempt is over, so this deletes
-        the slot cookie holding its binding, found by its signed state
-        digest in ``request_cookies``, instead of leaving it until max
-        age. Other attempts' slots are untouched. The attributes
-        mirror the ones login() set so the deletion addresses the same
-        cookie.
+        ``_clear_login_states``, so the spent state cannot pass the
+        binding check again and its slot is free for the next start.
+        The browser's other pending logins are untouched.
         """
         if not client.enforce_browser_binding:
             return
-        slot_name = matching_login_binding_cookie(request_cookies, state)
-        if slot_name:
-            response.delete_cookie(
-                slot_name,
-                path="/",
-                samesite="None" if client.response_mode == "form_post" else "Lax",
-            )
-            release_login_binding_slot(slot_name)
+        release_login_binding(
+            login_browser_id(request_cookies, client.response_mode), state
+        )
 
     @action(methods=["POST", "GET"], detail=False)
     @sensitive_variables()
@@ -759,8 +760,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 server_response = request.query_params
 
             state_value = server_response.get("state")
-            if client.enforce_browser_binding and not login_binding_matches(
-                request.COOKIES, state_value
+            if client.enforce_browser_binding and not has_login_binding(
+                login_browser_id(request.COOKIES, client.response_mode),
+                state_value,
             ):
                 # This runs before the callback consults any cache
                 # entry or touches the token. The callback only honours
@@ -900,7 +902,6 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             template_name="oidc/oidc_unrecoverable_error.html",
                         )
                         self._expire_login_binding(
-                            response,
                             client,
                             request.COOKIES,
                             server_response.get("state"),
@@ -1017,7 +1018,6 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             auth_server=auth_server,
                         )
                         self._expire_login_binding(
-                            response,
                             client,
                             request.COOKIES,
                             server_response.get("state"),
