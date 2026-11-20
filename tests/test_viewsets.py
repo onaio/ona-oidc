@@ -3320,8 +3320,8 @@ class LoginBrowserBindingTestCase(TestCase):
         cookie = cookies["oidc_login_browser_form_post"]
         self.assertTrue(cookie["httponly"])
         self.assertEqual(cookie["path"], "/")
-        # A session cookie: it lives as long as the browser session,
-        # so it never expires under a pending login.
+        # A session cookie lasts as long as the browser session, so it
+        # never expires under a pending login.
         self.assertEqual(cookie["max-age"], "")
         self.assertEqual(cookie["expires"], "")
 
@@ -3447,8 +3447,8 @@ class LoginBrowserBindingTestCase(TestCase):
 
         Both requests carry identical cookies, so each mints its own
         identifier and the later Set-Cookie wins. This is the agreed
-        limit: the other login fails once, and a retry, which now
-        carries the identifier, completes.
+        limit. The other login fails once, and a retry completes,
+        because it now carries the identifier.
         """
         jar = {}
         first_state, first_response = self._start_login_response(jar)
@@ -3540,9 +3540,9 @@ class LoginBrowserBindingTestCase(TestCase):
     def test_racing_starts_on_a_partly_filled_jar_stay_completable(self):
         """Other browsers' starts cannot make racing starts collide.
 
-        Browser A holds two pending logins; other browsers then start
-        logins of their own; A fires two more starts that race on its
-        unchanged jar. All four of A's logins stay independently
+        Browser A holds two pending logins. Other browsers then start
+        logins of their own, and A sends two more starts that race on
+        its unchanged jar. All four of A's logins stay independently
         completable, since the browser remains below the
         pending-attempt limit.
         """
@@ -3716,7 +3716,7 @@ class LoginBrowserBindingTestCase(TestCase):
                     self.assertEqual(response.status_code, 302)
 
     def test_start_past_six_pending_is_refused_and_keeps_the_six(self):
-        """A seventh pending start is refused; the six pending all complete."""
+        """The login endpoint refuses a seventh start, and all six complete."""
         jar = {}
         states = []
         for _ in range(6):

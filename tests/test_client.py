@@ -1977,7 +1977,7 @@ class ClaimLoginBindingTestCase(TestCase):
         CACHES={"default": {"BACKEND": "tests.caches.SilentSetFailureCache"}}
     )
     def test_claim_never_reports_success_without_a_stored_binding(self):
-        """A cache that drops writes refuses the start, never half-binds."""
+        """When the cache drops writes, a claim fails rather than lie."""
         claimed = claim_login_binding(self.browser, "state-a")
 
         self.assertEqual(claimed, has_login_binding(self.browser, "state-a"))
@@ -2092,7 +2092,7 @@ class _ConcurrentClaimsMixin:
             release_login_binding(browser, f"p{i}")
 
     def test_racing_starts_never_exceed_six_or_half_bind(self):
-        """Simultaneous starts win at most six slots; winners are bound."""
+        """Simultaneous starts win at most six slots, and each winner is bound."""
         for round_ in range(self.ROUNDS):
             with self.subTest(round=round_):
                 # Rounds start empty so no backend culls entries
@@ -2229,7 +2229,7 @@ class CheckLoginBindingCacheTestCase(TestCase):
     }
 
     def test_unsupported_backend_is_a_configuration_error(self):
-        """No shared, atomic state: enforcing binding fails loudly."""
+        """Enforcing binding on a cache without shared, atomic state fails."""
         for name, config in self.UNSUPPORTED.items():
             with self.subTest(backend=name), override_settings(
                 CACHES={"default": config},

@@ -70,17 +70,18 @@ def state_cache_key(state: str) -> str:
 # Login bindings (RFC 9700 §4.4, login CSRF). Each browser carries a
 # random identifier in an HttpOnly cookie, one per response mode. A
 # login start records its state's digest in the shared cache under
-# that identifier, and the callback requires the echoed state to be
-# recorded for the identifier the browser sends, before it consults
-# any other cache entry. Starts racing on the same jar carry the same
-# identifier, so the order their responses land in does not matter.
+# that identifier. The callback checks that the echoed state is
+# recorded for the identifier the browser sends. It does this before
+# it reads any other cache entry. Starts racing on the same jar send
+# the same identifier, so the order their responses land in does not
+# matter.
 _LOGIN_BROWSER_COOKIE_PREFIX = "oidc_login_browser_"
 # Must outlive the longest time a user plausibly leaves the IdP page
 # open; the state/nonce cache TTLs end a flow earlier anyway.
 LOGIN_BINDING_MAX_AGE = 1800
-# The most pending logins one browser can have per response mode. A
-# start beyond it is refused, so a page cannot grow a browser's
-# bindings without bound. Six leaves room for every login a user
+# The most pending logins one browser can have per response mode.
+# The login endpoint refuses a start beyond it, so a page cannot grow
+# a browser's bindings without bound. Six leaves room for every login a user
 # plausibly keeps open at once.
 LOGIN_BINDING_SLOTS = 6
 # How long a slot hand-off key lives. A start writes the slot right
@@ -103,7 +104,8 @@ def login_browser_cookie_name(response_mode: str) -> str:
     return f"{_LOGIN_BROWSER_COOKIE_PREFIX}{response_mode}"
 
 
-# secrets.token_urlsafe(32): 43 characters of the URL-safe alphabet.
+# secrets.token_urlsafe(32) returns 43 characters of the URL-safe
+# alphabet.
 _LOGIN_BROWSER_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}")
 
 
@@ -128,8 +130,8 @@ def _login_binding_namespace(browser_id: str) -> str:
 
 
 def _login_binding_key(browser_id: str, digest: str) -> str:
-    # One record per login: the state digest makes the key unique to
-    # its binding, so deleting it can never remove another login's.
+    # Each login has its own record. The state digest makes the key
+    # unique, so deleting it never removes another login's record.
     return f"{_login_binding_namespace(browser_id)}:{digest}"
 
 
@@ -142,9 +144,9 @@ def claim_login_binding(browser_id: str, state: str) -> bool:
     """
     digest = _state_digest(state)
     key = _login_binding_key(browser_id, digest)
-    # add() rather than set(): the key is unique to this login, so
-    # False can only mean the write failed, which some backends (the
-    # database cache) report no other way.
+    # The key is unique to this login, so add() returns False only
+    # when the write failed. The database cache reports a failed set()
+    # no other way.
     if not cache.add(key, True, LOGIN_BINDING_MAX_AGE):
         return False
     namespace = _login_binding_namespace(browser_id)
@@ -186,7 +188,7 @@ def release_login_binding(browser_id: Optional[str], state: Optional[str]) -> No
     End the binding of ``state`` to the browser identified by
     ``browser_id`` once its login has finished.
 
-    Only this login's own record is deleted; its key is unique to the
+    It deletes only this login's own record. The key is unique to the
     state, so a delayed call never removes another login's binding.
     """
     if not browser_id or not state or not isinstance(state, str):
@@ -194,9 +196,9 @@ def release_login_binding(browser_id: Optional[str], state: Optional[str]) -> No
     cache.delete(_login_binding_key(browser_id, _state_digest(state)))
 
 
-# Backends that cannot hold login bindings: the dummy cache stores
-# nothing, and the file cache is local to one host and its add() is a
-# separate check and write.
+# Backends that cannot hold login bindings. The dummy cache stores
+# nothing. The file cache is local to one host, and its add() checks
+# and writes in separate steps.
 _UNSUPPORTED_LOGIN_BINDING_CACHES = (DummyCache, FileBasedCache)
 
 

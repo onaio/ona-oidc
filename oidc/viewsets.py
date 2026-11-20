@@ -263,10 +263,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     )
                 if is_new_browser:
                     # form_post callbacks are cross-site POSTs from the
-                    # IdP, which browsers strip Lax cookies from; browsers
+                    # IdP, which browsers strip Lax cookies from. Browsers
                     # only accept SameSite=None cookies over HTTPS. A
                     # session cookie never expires under a pending login,
-                    # and an existing one is never rewritten.
+                    # and later starts leave it unchanged.
                     samesite = "None" if client.response_mode == "form_post" else "Lax"
                     response.set_cookie(
                         login_browser_cookie_name(client.response_mode),
