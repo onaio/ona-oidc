@@ -5,8 +5,11 @@ Tests for the OpenID Client
 import copy
 import json
 import os
+import threading
 import time
 from datetime import timedelta
+from itertools import permutations
+from urllib.parse import parse_qs, urlparse
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -74,6 +77,9 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "RESPONSE_TYPE": "code",
         "RESPONSE_MODE": "form_post",
         "USE_NONCES": False,
+        # These tests predate browser binding and drive the callback
+        # directly; binding has its own test class below.
+        "ENFORCE_BROWSER_BINDING": False,
     },
     "pkce": {
         "AUTHORIZATION_ENDPOINT": "https://example.com/oauth2/v2.0/authorize",
@@ -90,6 +96,7 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "PKCE_CODE_CHALLENGE_METHOD": "S256",
         "PKCE_CODE_CHALLENGE_TIMEOUT": 600,
         "PKCE_CODE_VERIFIER_LENGTH": 128,
+        "ENFORCE_BROWSER_BINDING": False,
     },
 }
 OPENID_CONNECT_VIEWSET_CONFIG = {
@@ -2754,6 +2761,7 @@ class TestPerProviderTargetUrlAfterAuth(TestCase):
                 "RESPONSE_MODE": "form_post",
                 "USE_NONCES": False,
                 "USE_EMAIL_USERNAME": True,
+                "ENFORCE_BROWSER_BINDING": False,
                 "TARGET_URL_AFTER_AUTH": "https://primary.example.com/landing",
             },
         },
@@ -2791,6 +2799,7 @@ class TestPerProviderTargetUrlAfterAuth(TestCase):
                 "RESPONSE_MODE": "form_post",
                 "USE_NONCES": False,
                 "USE_EMAIL_USERNAME": True,
+                "ENFORCE_BROWSER_BINDING": False,
                 "TARGET_URL_AFTER_AUTH": "https://primary.example.com/landing",
             },
         },
@@ -2829,6 +2838,7 @@ class TestPerProviderTargetUrlAfterAuth(TestCase):
                 "RESPONSE_MODE": "form_post",
                 "USE_NONCES": False,
                 "USE_EMAIL_USERNAME": True,
+                "ENFORCE_BROWSER_BINDING": False,
             },
         },
         OPENID_CONNECT_VIEWSET_CONFIG={
@@ -2865,6 +2875,7 @@ class TestPerProviderTargetUrlAfterAuth(TestCase):
                 "RESPONSE_MODE": "form_post",
                 "USE_NONCES": False,
                 "USE_EMAIL_USERNAME": True,
+                "ENFORCE_BROWSER_BINDING": False,
                 "TARGET_URL_AFTER_AUTH": "https://primary.example.com/landing",
             },
             "secondary": {
@@ -2879,6 +2890,7 @@ class TestPerProviderTargetUrlAfterAuth(TestCase):
                 "RESPONSE_MODE": "form_post",
                 "USE_NONCES": False,
                 "USE_EMAIL_USERNAME": True,
+                "ENFORCE_BROWSER_BINDING": False,
                 "TARGET_URL_AFTER_AUTH": "https://secondary.example.com",
             },
         },
@@ -3219,3 +3231,716 @@ class TestSSOCookieJWTExpiry(TestCase):
             else:
                 os.environ["TZ"] = original_tz
             time.tzset()
+
+
+# The browser-visible name prefix of the browser identifier cookies.
+# Deliberately a literal, not an import, so renaming the cookies the
+# deployed browsers already hold fails a test.
+BINDING_COOKIE_PREFIX = "oidc_login_browser_"
+
+# Built without ENFORCE_BROWSER_BINDING so these tests exercise the
+# default, which is enforcement ON.
+BINDING_AUTH_SERVERS = {
+    "default": {
+        k: v
+        for k, v in OPENID_CONNECT_AUTH_SERVERS["default"].items()
+        if k != "ENFORCE_BROWSER_BINDING"
+    }
+}
+
+
+@override_settings(
+    OPENID_CONNECT_AUTH_SERVERS=BINDING_AUTH_SERVERS,
+    OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+)
+class LoginBrowserBindingTestCase(TestCase):
+    """Authorization responses must come back to the browser that
+    started the login (login CSRF defense, RFC 9700 4.4)."""
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        cache.clear()
+
+    def test_callback_without_binding_cookie_is_rejected(self):
+        """A callback in a browser that never started a login is rejected.
+
+        The response's state must match the signed cookie login() set,
+        before any cache entry is consulted or any token is verified.
+        """
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_verify:
+            request = self.factory.post(
+                "/", data={"id_token": "a.b.c", "state": "attacker-state"}
+            )
+            response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 401)
+        mock_verify.assert_not_called()
+
+    def test_login_sets_binding_cookie_that_its_callback_satisfies(self):
+        """The login redirect sets a cookie its own callback accepts.
+
+        The state in the login redirect URL plus the cookie login() set
+        are exactly what the callback requires, end to end.
+        """
+        jar = {}
+        state, login_response = self._start_login_response(jar)
+        self.assertEqual(login_response.status_code, 302)
+
+        binding_cookies = self._binding_cookies(login_response)
+        self.assertEqual(len(binding_cookies), 1)
+        self.assertTrue(next(iter(binding_cookies.values()))["httponly"])
+        self._store_cookies(jar, login_response)
+
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_verify:
+            mock_verify.return_value = {
+                "given_name": "anna",
+                "family_name": "doe",
+                "email": "anna@example.com",
+                "preferred_username": "anna",
+            }
+            request = self.factory.post(
+                "/", data={"id_token": "a.b.c", "state": state}
+            )
+            request.COOKIES.update(self._cross_site_post_cookies(jar))
+            response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 302)
+        mock_verify.assert_called_once()
+
+    def test_login_sets_one_session_identifier_cookie_per_mode(self):
+        """The first start sets an HttpOnly session cookie named for its mode."""
+        _, response = self._start_login_response({})
+
+        cookies = self._binding_cookies(response)
+        self.assertEqual(list(cookies), ["oidc_login_browser_form_post"])
+        cookie = cookies["oidc_login_browser_form_post"]
+        self.assertTrue(cookie["httponly"])
+        self.assertEqual(cookie["path"], "/")
+        # A session cookie lasts as long as the browser session, so it
+        # never expires under a pending login.
+        self.assertEqual(cookie["max-age"], "")
+        self.assertEqual(cookie["expires"], "")
+
+    def _jar_with_identifier(self):
+        """A jar whose browser has started, and finished, one login."""
+        jar = {}
+        state, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
+        self._callback_with_cookies(state, self._cross_site_post_cookies(jar))
+        return jar
+
+    def _assert_state_spent(self, state, jar):
+        """``state`` no longer passes the binding check in this browser."""
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_verify:
+            request = self.factory.post(
+                "/", data={"id_token": "a.b.c", "state": state}
+            )
+            request.COOKIES.update({n: m.value for n, m in jar.items()})
+            response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 401)
+        mock_verify.assert_not_called()
+
+    def _login_response(self, jar, auth_server="default"):
+        """GET the login action sending ``jar``'s cookies."""
+        login_view = UserModelOpenIDConnectViewset.as_view({"get": "login"})
+        request = self.factory.get("/")
+        request.COOKIES.update(
+            {name: morsel.value for name, morsel in jar.items()}
+        )
+        return login_view(request, auth_server=auth_server)
+
+    def test_later_starts_reuse_the_identifier_without_rewriting_it(self):
+        """Once the browser carries its identifier, starts set no cookie."""
+        jar = {}
+        _, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
+
+        _, response = self._start_login_response(jar)
+
+        self.assertEqual(self._binding_cookies(response), {})
+
+    @staticmethod
+    def _binding_cookies(response):
+        """The binding cookie morsels a response sets, by cookie name."""
+        return {
+            name: morsel
+            for name, morsel in response.cookies.items()
+            if name.startswith(BINDING_COOKIE_PREFIX) and morsel["max-age"] != 0
+        }
+
+    @staticmethod
+    def _store_cookies(jar, response):
+        """Apply a response's Set-Cookie headers to a simulated browser jar."""
+        for name, morsel in response.cookies.items():
+            if morsel["max-age"] == 0:
+                # delete_cookie sends Max-Age=0; a browser drops the cookie.
+                jar.pop(name, None)
+            else:
+                jar[name] = morsel
+
+    @staticmethod
+    def _cross_site_post_cookies(jar):
+        """The subset of ``jar`` a browser sends on a cross-site POST.
+
+        Browsers withhold SameSite=Lax (and Strict) cookies from
+        cross-site POSTs, which is how a form_post IdP delivers the
+        authorization response.
+        """
+        return {
+            name: morsel.value
+            for name, morsel in jar.items()
+            if morsel["samesite"] == "None"
+        }
+
+    def _callback_with_cookies(self, state, cookies, auth_server="default"):
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_verify:
+            mock_verify.return_value = {
+                "given_name": "anna",
+                "family_name": "doe",
+                "email": "anna@example.com",
+                "preferred_username": "anna",
+            }
+            request = self.factory.post(
+                "/", data={"id_token": "a.b.c", "state": state}
+            )
+            request.COOKIES.update(cookies)
+            return view(request, auth_server=auth_server)
+
+    def _start_login_response(self, jar, auth_server="default"):
+        """GET the login action sending ``jar``'s cookies; return (state, response)."""
+        response = self._login_response(jar, auth_server)
+        state = parse_qs(urlparse(response.url).query)["state"][0]
+        return state, response
+
+    def test_overlapping_login_starts_can_both_complete(self):
+        """Two logins started before either response lands can both finish.
+
+        The browser already carries its identifier. Both requests go
+        out with the same jar, so neither start sees the other's
+        response, and the browser then stores both responses. Neither
+        callback may be rejected.
+        """
+        jar = self._jar_with_identifier()
+        first_state, first_response = self._start_login_response(jar)
+        second_state, second_response = self._start_login_response(jar)
+        self._store_cookies(jar, first_response)
+        self._store_cookies(jar, second_response)
+        for state in (first_state, second_state):
+            with self.subTest(state=state):
+                response = self._callback_with_cookies(
+                    state, self._cross_site_post_cookies(jar)
+                )
+                self.assertEqual(response.status_code, 302)
+
+    def test_racing_first_starts_lose_one_login_and_a_retry_recovers(self):
+        """Without an identifier yet, racing starts complete only the last.
+
+        Both requests carry identical cookies, so each mints its own
+        identifier and the later Set-Cookie wins. This is the agreed
+        limit. The other login fails once, and a retry completes,
+        because it now carries the identifier.
+        """
+        jar = {}
+        first_state, first_response = self._start_login_response(jar)
+        second_state, second_response = self._start_login_response(jar)
+        self._store_cookies(jar, first_response)
+        self._store_cookies(jar, second_response)
+
+        response = self._callback_with_cookies(
+            second_state, self._cross_site_post_cookies(jar)
+        )
+        self.assertEqual(response.status_code, 302)
+        response = self._callback_with_cookies(
+            first_state, self._cross_site_post_cookies(jar)
+        )
+        self.assertEqual(response.status_code, 401)
+        retry_state, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
+        response = self._callback_with_cookies(
+            retry_state, self._cross_site_post_cookies(jar)
+        )
+        self.assertEqual(response.status_code, 302)
+
+    def test_query_login_start_keeps_form_post_login_completable(self):
+        """A query-mode login start does not break a form_post login in flight.
+
+        The form_post provider's callback is a cross-site POST, which
+        the browser only sends SameSite=None cookies on. A later login
+        start against a query-mode provider must not leave the first
+        login's binding in a cookie the browser withholds from that POST.
+        """
+        with override_settings(
+            OPENID_CONNECT_AUTH_SERVERS={
+                **BINDING_AUTH_SERVERS,
+                "queryidp": {
+                    **BINDING_AUTH_SERVERS["default"],
+                    "RESPONSE_MODE": "query",
+                },
+            }
+        ):
+            jar = {}
+            form_post_state, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+            _, response = self._start_login_response(jar, auth_server="queryidp")
+            self._store_cookies(jar, response)
+            response = self._callback_with_cookies(
+                form_post_state, self._cross_site_post_cookies(jar)
+            )
+            self.assertEqual(response.status_code, 302)
+
+    def test_repeated_login_starts_keep_a_bounded_cookie_jar(self):
+        """Abandoned login starts cannot grow the cookie jar.
+
+        Unchecked growth lets a hostile page drive the Cookie header
+        past browser and proxy limits, breaking the whole site for the
+        victim until the cookies expire. Every start reuses the one
+        identifier cookie, and starts past six pending are refused.
+        """
+        jar = {}
+        statuses = []
+        for _ in range(48):
+            response = self._login_response(jar)
+            statuses.append(response.status_code)
+            self._store_cookies(jar, response)
+        binding = [name for name in jar if name.startswith(BINDING_COOKIE_PREFIX)]
+        self.assertEqual(binding, ["oidc_login_browser_form_post"])
+        self.assertEqual(statuses, [302] * 6 + [429] * 42)
+
+    def test_burst_of_racing_login_starts_keeps_the_jar_bounded(self):
+        """Starts racing on one cookie jar leave a single binding cookie.
+
+        Every request goes out before any response lands, so no start
+        sees another's Set-Cookie. That is how a hostile page grows
+        the jar fastest. Each response sets the same cookie name, so
+        the browser keeps one, and the start whose response landed
+        last is completable.
+        """
+        initial_jar = {}
+        started = [self._start_login_response(initial_jar) for _ in range(48)]
+        jar = {}
+        for _, response in started:
+            self._store_cookies(jar, response)
+        binding = [name for name in jar if name.startswith(BINDING_COOKIE_PREFIX)]
+        self.assertEqual(binding, ["oidc_login_browser_form_post"])
+        response = self._callback_with_cookies(
+            started[-1][0], self._cross_site_post_cookies(jar)
+        )
+        self.assertEqual(response.status_code, 302)
+
+    def test_racing_starts_on_a_partly_filled_jar_stay_completable(self):
+        """Other browsers' starts cannot make racing starts collide.
+
+        Browser A holds two pending logins. Other browsers then start
+        logins of their own, and A sends two more starts that race on
+        its unchanged jar. All four of A's logins stay independently
+        completable, since the browser remains below the
+        pending-attempt limit.
+        """
+        jar = {}
+        states = []
+        for _ in range(2):
+            state, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+            states.append(state)
+        for _ in range(4):
+            # Other browsers' responses never reach browser A's jar.
+            self._start_login_response({})
+        racing = [self._start_login_response(jar) for _ in range(2)]
+        for state, response in racing:
+            states.append(state)
+            self._store_cookies(jar, response)
+        for state in states:
+            with self.subTest(state=state):
+                response = self._callback_with_cookies(
+                    state, self._cross_site_post_cookies(jar)
+                )
+                self.assertEqual(response.status_code, 302)
+
+    def test_response_order_races_keep_every_login_completable(self):
+        """Out-of-order responses cannot break a pending login.
+
+        Two logins are pending. A and B start against the same jar; B's
+        response reaches the browser while A's is still outstanding,
+        and C starts against that updated jar. A's and C's responses
+        then arrive. All five logins must stay completable, since the
+        browser never exceeds the pending-attempt limit.
+        """
+        jar = {}
+        states = []
+        for _ in range(2):
+            state, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+            states.append(state)
+        state_a, response_a = self._start_login_response(jar)
+        state_b, response_b = self._start_login_response(jar)
+        self._store_cookies(jar, response_b)
+        state_c, response_c = self._start_login_response(jar)
+        self._store_cookies(jar, response_a)
+        self._store_cookies(jar, response_c)
+        states += [state_a, state_b, state_c]
+        for state in states:
+            with self.subTest(state=state):
+                response = self._callback_with_cookies(
+                    state, self._cross_site_post_cookies(jar)
+                )
+                self.assertEqual(response.status_code, 302)
+
+    def test_every_start_and_response_order_keeps_logins_completable(self):
+        """All five logins complete under every start and response order.
+
+        Two logins are pending and three more overlap. Each start
+        sends the jar as it then stands, and each response reaches
+        the jar at some later point. Another browser's whole login,
+        start to callback, runs at every point in between. The test
+        enumerates every valid order of those seven events, then
+        completes all five logins. A browser that never exceeds the
+        pending-attempt limit loses no login, whatever the event
+        order or the traffic from other browsers.
+        """
+        overlap = 3
+        events = (
+            [("start", i) for i in range(overlap)]
+            + [("apply", i) for i in range(overlap)]
+            + [("other", 0)]
+        )
+        for order in permutations(range(len(events))):
+            sequence = [events[i] for i in order]
+            if any(
+                sequence.index(("start", i)) > sequence.index(("apply", i))
+                for i in range(overlap)
+            ):
+                continue
+            with self.subTest(sequence=sequence):
+                cache.clear()
+                jar = {}
+                states = []
+                for _ in range(2):
+                    state, response = self._start_login_response(jar)
+                    self._store_cookies(jar, response)
+                    states.append(state)
+                started = {}
+                for kind, i in sequence:
+                    if kind == "start":
+                        started[i] = self._start_login_response(jar)
+                    elif kind == "apply":
+                        state, response = started[i]
+                        states.append(state)
+                        self._store_cookies(jar, response)
+                    else:
+                        other_jar = {}
+                        other_state, response = self._start_login_response(
+                            other_jar
+                        )
+                        self._store_cookies(other_jar, response)
+                        response = self._callback_with_cookies(
+                            other_state, self._cross_site_post_cookies(other_jar)
+                        )
+                        self.assertEqual(response.status_code, 302)
+                for state in states:
+                    response = self._callback_with_cookies(
+                        state, self._cross_site_post_cookies(jar)
+                    )
+                    self.assertEqual(response.status_code, 302)
+    def test_simultaneous_starts_on_one_jar_both_complete(self):
+        """Starts processed at the same moment by two workers both bind.
+
+        The browser holds four pending logins and sends two more starts
+        with the same jar; two threads serve them concurrently.
+        """
+        jar = {}
+        states = []
+        for _ in range(4):
+            state, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+            states.append(state)
+        barrier = threading.Barrier(2)
+        racing = []
+
+        def start():
+            barrier.wait()
+            racing.append(self._start_login_response(dict(jar)))
+
+        threads = [threading.Thread(target=start) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        for state, response in racing:
+            self._store_cookies(jar, response)
+            states.append(state)
+
+        self.assertEqual(len(states), 6)
+        for state in states:
+            with self.subTest(state=state):
+                response = self._callback_with_cookies(
+                    state, self._cross_site_post_cookies(jar)
+                )
+                self.assertEqual(response.status_code, 302)
+
+    def test_response_held_back_for_minutes_keeps_every_login_completable(self):
+        """A start whose response is slow to land never loses its binding.
+
+        Two logins are pending. A and B start on the same jar; B's
+        response lands, A's is held back for over a minute, and C then
+        starts. All five logins stay completable.
+        """
+        jar = {}
+        states = []
+        for _ in range(2):
+            state, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+            states.append(state)
+        state_a, response_a = self._start_login_response(jar)
+        state_b, response_b = self._start_login_response(jar)
+        self._store_cookies(jar, response_b)
+        later = time.time() + 61
+        with patch("time.time", return_value=later):
+            state_c, response_c = self._start_login_response(jar)
+            self._store_cookies(jar, response_a)
+            self._store_cookies(jar, response_c)
+            for state in states + [state_a, state_b, state_c]:
+                with self.subTest(state=state):
+                    response = self._callback_with_cookies(
+                        state, self._cross_site_post_cookies(jar)
+                    )
+                    self.assertEqual(response.status_code, 302)
+
+    def test_start_past_six_pending_is_refused_and_keeps_the_six(self):
+        """The login endpoint refuses a seventh start, and all six complete."""
+        jar = {}
+        states = []
+        for _ in range(6):
+            state, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+            states.append(state)
+
+        response = self._login_response(jar)
+
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(self._binding_cookies(response), {})
+        for state in states:
+            with self.subTest(state=state):
+                response = self._callback_with_cookies(
+                    state, self._cross_site_post_cookies(jar)
+                )
+                self.assertEqual(response.status_code, 302)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {**BINDING_AUTH_SERVERS["default"], "USE_PKCE": True}
+        }
+    )
+    def test_refused_start_leaves_no_pkce_verifier_behind(self):
+        """A refused start drops the PKCE verifier login() cached."""
+        jar = {}
+        for _ in range(6):
+            _, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+        with patch("oidc.client.secrets.token_urlsafe", return_value="refused"):
+            response = self._login_response(jar)
+
+        self.assertEqual(response.status_code, 429)
+        self.assertIsNone(cache.get(state_cache_key("refused")))
+
+    def test_completed_login_ends_only_its_own_binding(self):
+        """Success ends the finished attempt's binding and no other.
+
+        The spent state cannot pass the binding check again, and a
+        still-pending attempt stays completable.
+        """
+        jar = {}
+        first_state, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
+        second_state, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
+
+        response = self._callback_with_cookies(
+            first_state, self._cross_site_post_cookies(jar)
+        )
+        self.assertEqual(response.status_code, 302)
+        self._assert_state_spent(first_state, jar)
+
+        response = self._callback_with_cookies(
+            second_state, self._cross_site_post_cookies(jar)
+        )
+        self.assertEqual(response.status_code, 302)
+
+    def test_username_form_continuation_stays_bound_and_cleans_up(self):
+        """The username-form re-submit passes binding and ends the attempt.
+
+        A callback whose username is already taken renders the form
+        without ending the attempt. The same-origin re-POST carries
+        the form's continuation key and the binding cookie. It must
+        pass the binding check for the state stashed with the
+        continuation, and the success response ends the attempt's
+        binding.
+        """
+        User.objects.create(username="anna", email="anna@example.com")
+        claims = {
+            "given_name": "anna",
+            "family_name": "doe",
+            "email": "second.anna@example.com",
+            "preferred_username": "anna",
+        }
+        jar = {}
+        state, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
+
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_verify:
+            mock_verify.return_value = claims
+            request = self.factory.post(
+                "/", data={"id_token": "a.b.c", "state": state}
+            )
+            request.COOKIES.update(self._cross_site_post_cookies(jar))
+            response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
+        continuation = response.data[LOGIN_CONTINUATION_FIELD]
+
+        with patch(
+            "oidc.viewsets.OpenIDClient.verify_and_decode_id_token"
+        ) as mock_verify:
+            mock_verify.return_value = claims
+            request = self.factory.post(
+                "/",
+                data={
+                    LOGIN_CONTINUATION_FIELD: continuation,
+                    "username": "annabelle",
+                    USERNAME_FORM_MARKER_FIELD: USERNAME_FORM_MARKER_VALUE,
+                },
+            )
+            # The re-POST is same-origin, so the browser sends every
+            # cookie in the jar regardless of SameSite.
+            request.COOKIES.update(
+                {name: morsel.value for name, morsel in jar.items()}
+            )
+            response = view(request, auth_server="default")
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(User.objects.filter(username="annabelle").exists())
+        self._assert_state_spent(state, jar)
+
+    def test_rejected_unknown_user_login_ends_its_binding(self):
+        """The not-authorized response also ends the attempt's binding.
+
+        With AUTO_CREATE_USER off and no matching account the flow ends
+        at that 401, so the attempt's binding must not linger.
+        """
+        with override_settings(
+            OPENID_CONNECT_VIEWSET_CONFIG={
+                **OPENID_CONNECT_VIEWSET_CONFIG,
+                "AUTO_CREATE_USER": False,
+            }
+        ):
+            jar = {}
+            state, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+            response = self._callback_with_cookies(
+                state, self._cross_site_post_cookies(jar)
+            )
+            self.assertEqual(response.status_code, 401)
+            self._assert_state_spent(state, jar)
+
+    def test_login_in_second_tab_keeps_first_tab_completable(self):
+        """A newer login start does not invalidate an older tab's login."""
+        jar = {}
+        first_state, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
+        _, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
+        response = self._callback_with_cookies(
+            first_state, self._cross_site_post_cookies(jar)
+        )
+        self.assertEqual(response.status_code, 302)
+
+    def test_many_sequential_login_starts_keep_the_oldest_completable(self):
+        """No number of newer login starts evicts an older attempt's binding."""
+        jar = {}
+        oldest_state, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
+        for _ in range(3):
+            _, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+        response = self._callback_with_cookies(
+            oldest_state, self._cross_site_post_cookies(jar)
+        )
+        self.assertEqual(response.status_code, 302)
+
+    def test_attacker_state_with_victim_cookie_is_rejected(self):
+        """A response for a login this browser never started is rejected.
+
+        This is the login CSRF attack. The victim's browser holds a
+        binding cookie from their own login start, but the delivered
+        response carries the attacker's state.
+        """
+        victim_jar = {}
+        _, response = self._start_login_response(victim_jar)
+        self._store_cookies(victim_jar, response)
+        attacker_state, _ = self._start_login_response({})
+        response = self._callback_with_cookies(
+            attacker_state, self._cross_site_post_cookies(victim_jar)
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_unknown_identifier_cookie_is_rejected(self):
+        """An identifier the server never bound this state to binds nothing."""
+        jar = {}
+        state, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
+        cookies = {
+            name: value[:-1] + ("A" if value[-1] != "A" else "B")
+            for name, value in self._cross_site_post_cookies(jar).items()
+        }
+        response = self._callback_with_cookies(state, cookies)
+        self.assertEqual(response.status_code, 401)
+
+    def test_opted_out_server_keeps_the_old_behaviour(self):
+        """With ENFORCE_BROWSER_BINDING=False no cookie is set and none is required."""
+        with override_settings(
+            OPENID_CONNECT_AUTH_SERVERS={
+                "default": {
+                    **BINDING_AUTH_SERVERS["default"],
+                    "ENFORCE_BROWSER_BINDING": False,
+                }
+            }
+        ):
+            _, login_response = self._start_login_response({})
+            self.assertEqual(self._binding_cookies(login_response), {})
+            response = self._callback_with_cookies("any-state", {})
+            self.assertEqual(response.status_code, 302)
+
+    def test_binding_cookie_attributes_follow_the_response_mode(self):
+        """form_post needs SameSite=None + Secure; query mode gets Lax.
+
+        The IdP delivers a form_post response as a cross-site POST,
+        which browsers strip Lax cookies from, and they only accept
+        SameSite=None cookies over HTTPS.
+        """
+        _, response = self._start_login_response({})
+        (cookie,) = self._binding_cookies(response).values()
+        self.assertEqual(cookie["samesite"], "None")
+        self.assertTrue(cookie["secure"])
+
+        with override_settings(
+            OPENID_CONNECT_AUTH_SERVERS={
+                "default": {
+                    **BINDING_AUTH_SERVERS["default"],
+                    "RESPONSE_MODE": "query",
+                }
+            }
+        ):
+            _, response = self._start_login_response({})
+            (cookie,) = self._binding_cookies(response).values()
+            self.assertEqual(cookie["samesite"], "Lax")

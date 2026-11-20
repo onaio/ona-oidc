@@ -9,6 +9,11 @@ concurrency:
 jobs:
   github-action-ci:
     runs-on: ubuntu-22.04
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
     strategy:
       fail-fast: false
       matrix:
@@ -50,3 +55,4 @@ jobs:
         run: tox
         env:
           TOXENV: ${{ matrix.toxenv }}
+          OIDC_TEST_REDIS_URL: redis://localhost:6379/0
