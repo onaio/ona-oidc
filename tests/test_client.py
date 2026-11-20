@@ -704,6 +704,23 @@ class OpenIDClientTestCase(TestCase):
                 ):
                     client_with(timeout)
 
+    @patch.object(requests, "post")
+    def test_retrieve_tokens_sends_the_redirect_uri_it_is_given(
+        self, mock_requests_post
+    ):
+        """The exchange must repeat the authorize request's redirect_uri, which
+        for a step-up is not the login callback."""
+        mock_requests_post.return_value = MagicMock(
+            status_code=200, **{"json.return_value": {"id_token": "id_token"}}
+        )
+
+        OpenIDClient("default").retrieve_tokens_using_auth_code(
+            "auth_code", redirect_uri="https://app.example/stepup/callback"
+        )
+
+        sent = mock_requests_post.call_args.kwargs["data"]
+        self.assertEqual(sent["redirect_uri"], "https://app.example/stepup/callback")
+
     @override_settings(
         OPENID_CONNECT_AUTH_SERVERS={
             "default": {
