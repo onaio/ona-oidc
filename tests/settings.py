@@ -21,6 +21,13 @@ DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         "NAME": str(BASE_DIR + "/db.sqlite3"),
+        # The concurrency tests write from several threads at once. A
+        # file database makes a locked write wait instead of failing,
+        # as Django's default in-memory test database does, and
+        # IMMEDIATE transactions take the write lock up front, so two
+        # writers never deadlock upgrading a read lock.
+        "OPTIONS": {"transaction_mode": "IMMEDIATE"},
+        "TEST": {"NAME": str(BASE_DIR + "/test_db.sqlite3")},
     }
 }
 

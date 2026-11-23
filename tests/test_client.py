@@ -2123,13 +2123,21 @@ class _ConcurrentClaimsMixin:
     ROUNDS = 20
 
     def _race(self, browser, states):
+        """Claim every state at once; return {state: won}.
+
+        Every start must end in exactly one outcome, a win or a
+        refusal. A worker that raises fails the test with its error.
+        """
         barrier = threading.Barrier(len(states))
         results = {}
+        errors = {}
 
         def run(state):
             try:
                 barrier.wait()
                 results[state] = claim_login_binding(browser, state)
+            except Exception as error:
+                errors[state] = error
             finally:
                 # Each thread opens its own database connection.
                 connections.close_all()
@@ -2144,6 +2152,10 @@ class _ConcurrentClaimsMixin:
                 thread.join()
         finally:
             sys.setswitchinterval(interval)
+        if errors:
+            raise next(iter(errors.values()))
+        self.assertEqual(set(results), set(states))
+        self.assertTrue(all(isinstance(won, bool) for won in results.values()))
         return results
 
     def _assert_race_safe(self, browser, results, room):
@@ -2185,10 +2197,6 @@ class _ConcurrentClaimsMixin:
                 for i in (1, 3, 5):
                     self.assertTrue(has_login_binding(browser, f"p{i}"))
 
-
-class _ExactConcurrentClaimsMixin(_ConcurrentClaimsMixin):
-    """For backends whose add() fails only when the key exists."""
-
     def test_racing_starts_fill_exactly_six_slots(self):
         """Of twelve simultaneous starts, exactly six win."""
         for round_ in range(self.ROUNDS):
@@ -2217,7 +2225,7 @@ class _ExactConcurrentClaimsMixin(_ConcurrentClaimsMixin):
                 self.assertFalse(claim_login_binding(browser, "late"))
 
 
-class LocMemConcurrentClaimLoginBindingTestCase(_ExactConcurrentClaimsMixin, TestCase):
+class LocMemConcurrentClaimLoginBindingTestCase(_ConcurrentClaimsMixin, TestCase):
     """Tests for method claim_login_binding"""
 
     def setUp(self):
@@ -2245,7 +2253,7 @@ class DatabaseConcurrentClaimLoginBindingTestCase(
 @unittest.skipUnless(
     os.environ.get("OIDC_TEST_REDIS_URL"), "OIDC_TEST_REDIS_URL is not set"
 )
-class RedisConcurrentClaimLoginBindingTestCase(_ExactConcurrentClaimsMixin, TestCase):
+class RedisConcurrentClaimLoginBindingTestCase(_ConcurrentClaimsMixin, TestCase):
     """Tests for method claim_login_binding"""
 
     def setUp(self):
