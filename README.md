@@ -228,7 +228,8 @@ it unchanged. The recorded logins are kept in Django's cache.
   sign-ins in progress" page, and the six pending logins are kept.
   A pending login expires 30 minutes after it starts. A login that
   succeeds or fails frees its place at once. A login waiting on the
-  username form keeps its place.
+  username form keeps its place for as long as the form can be
+  submitted, then frees it.
 - Two logins started at the same moment from a browser that has no
   identifier cookie yet cannot be told apart from two browsers. The
   one whose response the browser stores last completes; the other

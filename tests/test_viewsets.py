@@ -58,6 +58,7 @@ def stash_login_continuation(
     """Stash a verified ID token the way a username-form render does."""
     viewset = UserModelOpenIDConnectViewset()
     return viewset._stash_login_continuation(
+        APIRequestFactory().post("/"),
         OpenIDClient(auth_server),
         ID_TOKEN,
         decoded_id_token,
@@ -3942,6 +3943,37 @@ class LoginBrowserBindingTestCase(TestCase):
         response = self._login_response(jar)
 
         self.assertEqual(response.status_code, 302)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {**BINDING_AUTH_SERVERS["default"], "NONCE_CACHE_TIMEOUT": 60}
+        }
+    )
+    def test_username_form_binding_expires_with_its_continuation(self):
+        """A username form left open past its lifetime frees its place.
+
+        Once the continuation expires the re-submit cannot name its
+        sign-in, so the binding must not outlive it.
+        """
+        User.objects.create(username="anna", email="anna@example.com")
+        claims = {
+            "given_name": "anna",
+            "family_name": "doe",
+            "email": "second.anna@example.com",
+            "preferred_username": "anna",
+        }
+        jar = {}
+        now = time.time()
+        with patch("time.time", return_value=now):
+            state, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+            response = self._failing_callback(
+                state, jar, verify_and_decode_id_token={"return_value": claims}
+            )
+            self.assertEqual(response.template_name, "oidc/oidc_user_data_entry.html")
+
+        with patch("time.time", return_value=now + 61):
+            self._assert_state_spent(state, jar)
 
     def test_rejected_unknown_user_login_ends_its_binding(self):
         """The not-authorized response also ends the attempt's binding.

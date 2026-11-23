@@ -43,6 +43,7 @@ from oidc.client import (
     login_browser_id,
     mint_login_browser_id,
     release_login_binding,
+    set_login_binding_timeout,
     state_cache_key,
 )
 from tests.error_reports import escaped_frames, reported_locals
@@ -2050,6 +2051,71 @@ class ReleaseLoginBindingTestCase(TestCase):
 
         self.assertTrue(has_login_binding(self.browser, "state-a"))
 
+
+
+class SetLoginBindingTimeoutTestCase(TestCase):
+    """Tests for method set_login_binding_timeout"""
+
+    def setUp(self):
+        cache.clear()
+        self.browser = mint_login_browser_id()
+        claim_login_binding(self.browser, "state-a")
+        claim_login_binding(self.browser, "state-b")
+
+    def test_binding_expires_after_the_new_timeout(self):
+        """The binding lasts exactly the new timeout from now."""
+        now = time.time()
+        with patch("time.time", return_value=now):
+            set_login_binding_timeout(self.browser, "state-a", 60)
+
+        with patch("time.time", return_value=now + 59):
+            self.assertTrue(has_login_binding(self.browser, "state-a"))
+        with patch("time.time", return_value=now + 61):
+            self.assertFalse(has_login_binding(self.browser, "state-a"))
+            self.assertTrue(has_login_binding(self.browser, "state-b"))
+
+    def test_binding_can_outlive_its_original_expiry(self):
+        """A longer timeout keeps a binding started long ago."""
+        now = time.time()
+        with patch("time.time", return_value=now + LOGIN_BINDING_MAX_AGE - 10):
+            set_login_binding_timeout(self.browser, "state-a", 600)
+
+        with patch("time.time", return_value=now + LOGIN_BINDING_MAX_AGE + 100):
+            self.assertTrue(has_login_binding(self.browser, "state-a"))
+
+    def test_extended_binding_keeps_its_place_past_the_original_expiry(self):
+        """While an extended binding lives, its slot stays taken."""
+        now = time.time()
+        with patch("time.time", return_value=now):
+            for i in range(4):
+                claim_login_binding(self.browser, f"state-{i}")
+        with patch("time.time", return_value=now + LOGIN_BINDING_MAX_AGE - 10):
+            set_login_binding_timeout(self.browser, "state-a", 600)
+
+        with patch("time.time", return_value=now + LOGIN_BINDING_MAX_AGE + 100):
+            # Every other binding has expired; five places are free.
+            won = [claim_login_binding(self.browser, f"new-{i}") for i in range(6)]
+
+        self.assertEqual(won, [True] * 5 + [False])
+
+    def test_expired_binding_frees_its_place(self):
+        """Once the shortened binding expires, its slot is free again."""
+        for i in range(4):
+            claim_login_binding(self.browser, f"state-{i}")
+        now = time.time()
+        with patch("time.time", return_value=now):
+            set_login_binding_timeout(self.browser, "state-a", 60)
+
+        with patch("time.time", return_value=now + 61):
+            self.assertTrue(claim_login_binding(self.browser, "state-new"))
+
+    def test_missing_or_malformed_input_is_ignored(self):
+        """Nothing changes, and nothing raises, for bad input."""
+        for browser, state in ((None, "state-a"), (self.browser, None), (self.browser, 7)):
+            with self.subTest(browser=browser, state=state):
+                set_login_binding_timeout(browser, state, 0)
+
+        self.assertTrue(has_login_binding(self.browser, "state-a"))
 
 class _ConcurrentClaimsMixin:
     """Races real threads through claim_login_binding on one browser."""

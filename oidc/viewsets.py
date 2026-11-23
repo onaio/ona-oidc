@@ -53,6 +53,7 @@ from oidc.client import (
     login_browser_id,
     mint_login_browser_id,
     release_login_binding,
+    set_login_binding_timeout,
     state_cache_key,
 )
 from oidc.renderers import SensitiveTemplateHTMLRenderer
@@ -415,6 +416,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
     def _stash_login_continuation(
         self,
+        request: HttpRequest,
         client: OpenIDClient,
         id_token: str,
         decoded_id_token: dict,
@@ -426,7 +428,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         form to post back.
 
         The entry lasts ``NONCE_CACHE_TIMEOUT`` seconds at most, and never
-        longer than the ID token would still verify.
+        longer than the ID token would still verify. The login's browser
+        binding gets the same lifetime. Once the entry expires, the
+        re-submit cannot name its login, so the binding must not keep
+        the browser's place.
         """
         key = secrets.token_urlsafe(_LOGIN_CONTINUATION_KEY_BYTES)
         timeout = client.nonce_cache_timeout
@@ -450,6 +455,12 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             },
             timeout,
         )
+        if client.enforce_browser_binding:
+            set_login_binding_timeout(
+                login_browser_id(request.COOKIES, client.response_mode),
+                state,
+                timeout,
+            )
         return key
 
     def _pop_login_continuation(self, client: OpenIDClient, key: str) -> Optional[dict]:
@@ -935,6 +946,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             ):
                                 data = {
                                     LOGIN_CONTINUATION_FIELD: self._stash_login_continuation(
+                                        request,
                                         client,
                                         id_token,
                                         decoded_id_token,
@@ -965,6 +977,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             if field:
                                 data = {
                                     LOGIN_CONTINUATION_FIELD: self._stash_login_continuation(
+                                        request,
                                         client,
                                         id_token,
                                         decoded_id_token,
@@ -995,6 +1008,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         {
                             "error": str(e),
                             LOGIN_CONTINUATION_FIELD: self._stash_login_continuation(
+                                request,
                                 client,
                                 id_token,
                                 decoded_id_token,
