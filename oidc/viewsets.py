@@ -429,9 +429,9 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
         The entry lasts ``NONCE_CACHE_TIMEOUT`` seconds at most, and never
         longer than the ID token would still verify. The login's browser
-        binding gets the same lifetime. Once the entry expires, the
-        re-submit cannot name its login, so the binding must not keep
-        the browser's place.
+        binding gets the same lifetime. Once the entry expires, a
+        re-submit no longer says which login it belongs to, so the
+        binding must not keep the browser's place.
         """
         key = secrets.token_urlsafe(_LOGIN_CONTINUATION_KEY_BYTES)
         timeout = client.nonce_cache_timeout

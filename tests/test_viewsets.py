@@ -3952,8 +3952,8 @@ class LoginBrowserBindingTestCase(TestCase):
     def test_username_form_binding_expires_with_its_continuation(self):
         """A username form left open past its lifetime frees its place.
 
-        Once the continuation expires the re-submit cannot name its
-        sign-in, so the binding must not outlive it.
+        Once the continuation expires, a re-submit no longer says which
+        sign-in it belongs to, so the binding must not outlive it.
         """
         User.objects.create(username="anna", email="anna@example.com")
         claims = {

@@ -202,16 +202,18 @@ def set_login_binding_timeout(
     """
     Make the binding of ``state`` expire ``timeout`` seconds from now.
 
-    The username form calls this so a binding lasts as long as the
-    form's continuation, whether that is shorter or longer than the
-    binding has left. A non-positive timeout ends the binding.
+    The callback calls this when it shows the username form. The
+    binding then lasts as long as the form's continuation, whether
+    that is shorter or longer than the binding has left. A
+    non-positive timeout ends the binding.
     """
     if not browser_id or not state or not isinstance(state, str):
         return
     digest = _state_digest(state)
     cache.touch(_login_binding_key(browser_id, digest), timeout)
-    # The slot pointing at this binding must not expire first, or a
-    # new start could take the slot while the binding still counts.
+    # The slot that points at this binding must not expire first.
+    # Otherwise a new start could take the slot while the binding
+    # still counts as pending.
     namespace = _login_binding_namespace(browser_id)
     for slot in range(LOGIN_BINDING_SLOTS):
         slot_key = f"{namespace}:slot:{slot}"

@@ -2063,7 +2063,7 @@ class SetLoginBindingTimeoutTestCase(TestCase):
         claim_login_binding(self.browser, "state-b")
 
     def test_binding_expires_after_the_new_timeout(self):
-        """The binding lasts exactly the new timeout from now."""
+        """The binding expires the new timeout from now."""
         now = time.time()
         with patch("time.time", return_value=now):
             set_login_binding_timeout(self.browser, "state-a", 60)
@@ -2084,7 +2084,7 @@ class SetLoginBindingTimeoutTestCase(TestCase):
             self.assertTrue(has_login_binding(self.browser, "state-a"))
 
     def test_extended_binding_keeps_its_place_past_the_original_expiry(self):
-        """While an extended binding lives, its slot stays taken."""
+        """While an extended binding is pending, its slot stays taken."""
         now = time.time()
         with patch("time.time", return_value=now):
             for i in range(4):
@@ -2093,7 +2093,7 @@ class SetLoginBindingTimeoutTestCase(TestCase):
             set_login_binding_timeout(self.browser, "state-a", 600)
 
         with patch("time.time", return_value=now + LOGIN_BINDING_MAX_AGE + 100):
-            # Every other binding has expired; five places are free.
+            # Every other binding has expired, so five places are free.
             won = [claim_login_binding(self.browser, f"new-{i}") for i in range(6)]
 
         self.assertEqual(won, [True] * 5 + [False])
