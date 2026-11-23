@@ -701,10 +701,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     ) -> None:
         """End a finished login attempt's binding.
 
-        Called on the callback's terminal responses, alongside
-        ``_clear_login_states``, so the spent state cannot pass the
-        binding check again and its slot is free for the next start.
-        The browser's other pending logins are untouched.
+        The callback calls this on every response after the binding
+        check except the username form, and when it raises. The spent
+        state cannot pass the binding check again, and its slot is free
+        for the next start. The browser's other pending logins are
+        untouched.
         """
         if not client.enforce_browser_binding:
             return
@@ -714,7 +715,27 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
     @action(methods=["POST", "GET"], detail=False)
     @sensitive_variables()
-    def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
+    def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
+        # Filled in once the response passes the browser binding check.
+        bound = {}
+        continues = False
+        try:
+            response = self._callback_response(request, bound, **kwargs)
+            # Only the username form keeps the sign-in going; it hands
+            # the browser a continuation to post back.
+            data = getattr(response, "data", None)
+            continues = isinstance(data, dict) and LOGIN_CONTINUATION_FIELD in data
+            return response
+        finally:
+            if bound and not continues:
+                self._expire_login_binding(
+                    bound["client"], request.COOKIES, bound["state"]
+                )
+
+    @sensitive_variables()
+    def _callback_response(  # noqa
+        self, request: HttpRequest, bound: dict, **kwargs: dict
+    ) -> HttpResponse:
         auth_server = kwargs.get("auth_server")
         client = self._get_client(auth_server=auth_server)
         user = redirect_after = code_verifier = None
@@ -784,6 +805,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                     status=status.HTTP_401_UNAUTHORIZED,
                     template_name="oidc/oidc_unrecoverable_error.html",
                 )
+            bound.update(client=client, state=state_value)
             if client.use_pkce and state_value:
                 # Get the original code verifier for PKCE flow. We only
                 # consult the namespaced key — never the raw state value
@@ -901,11 +923,6 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             status=status.HTTP_401_UNAUTHORIZED,
                             template_name="oidc/oidc_unrecoverable_error.html",
                         )
-                        self._expire_login_binding(
-                            client,
-                            request.COOKIES,
-                            server_response.get("state"),
-                        )
                         return response
 
                     if not user:
@@ -1016,11 +1033,6 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             user,
                             redirect_after=redirect_after,
                             auth_server=auth_server,
-                        )
-                        self._expire_login_binding(
-                            client,
-                            request.COOKIES,
-                            server_response.get("state"),
                         )
                         return response
         auth_servers = list(settings.OPENID_CONNECT_AUTH_SERVERS.keys())

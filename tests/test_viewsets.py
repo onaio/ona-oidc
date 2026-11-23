@@ -7,6 +7,7 @@ import json
 import os
 import threading
 import time
+from contextlib import ExitStack
 from datetime import timedelta
 from itertools import permutations
 from urllib.parse import parse_qs, urlparse
@@ -1631,8 +1632,10 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             lambda: view(request, auth_server="default"), RuntimeError, "callback"
         )
 
-        self.assertIn(tokens["access_token"], str(frames[0].f_locals["user_tokens"]))
-        self.assertIn("user_tokens", reported_locals(frames[0]))
+        # The callback action wraps the method that holds the tokens.
+        (body,) = [f for f in frames if f.f_code.co_name == "_callback_response"]
+        self.assertIn(tokens["access_token"], str(body.f_locals["user_tokens"]))
+        self.assertIn("user_tokens", reported_locals(body))
         for frame in frames:
             for value in tokens.values():
                 self.assertNotIn(value, str(reported_locals(frame)))
@@ -3831,6 +3834,112 @@ class LoginBrowserBindingTestCase(TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertTrue(User.objects.filter(username="annabelle").exists())
         self._assert_state_spent(state, jar)
+
+    def _failing_callback(self, state, jar, data=None, **patches):
+        """POST a callback for ``state`` with ``patches`` on OpenIDClient."""
+        view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
+        request = self.factory.post(
+            "/", data={"state": state, **(data or {"id_token": "a.b.c"})}
+        )
+        request.COOKIES.update(self._cross_site_post_cookies(jar))
+        with ExitStack() as stack:
+            for name, kwargs in patches.items():
+                stack.enter_context(
+                    patch(f"oidc.viewsets.OpenIDClient.{name}", **kwargs)
+                )
+            return view(request, auth_server="default")
+
+    def test_every_terminal_failure_ends_its_binding(self):
+        """A sign-in that fails for good stops counting as pending.
+
+        Otherwise six failed attempts fill the browser's places, and
+        every later start is refused until they expire.
+        """
+        unverified = {
+            "email": "anna@example.com",
+            "email_verified": False,
+            "preferred_username": "anna",
+        }
+        scenarios = {
+            "unverified email": (
+                {"CHECK_EMAIL_VERIFIED": True},
+                None,
+                {"verify_and_decode_id_token": {"return_value": unverified}},
+            ),
+            "invalid ID token": (
+                {},
+                None,
+                {
+                    "verify_and_decode_id_token": {
+                        "side_effect": jwt.InvalidTokenError("bad")
+                    }
+                },
+            ),
+            "code exchange fails": (
+                {},
+                {"code": "the-code"},
+                {
+                    "retrieve_tokens_using_auth_code": {
+                        "side_effect": TokenVerificationFailed("no")
+                    }
+                },
+            ),
+        }
+        for name, (config, data, patches) in scenarios.items():
+            with self.subTest(name), override_settings(
+                OPENID_CONNECT_AUTH_SERVERS={
+                    "default": {**BINDING_AUTH_SERVERS["default"], **config}
+                }
+            ):
+                cache.clear()
+                jar = {}
+                state, response = self._start_login_response(jar)
+                self._store_cookies(jar, response)
+
+                response = self._failing_callback(state, jar, data, **patches)
+
+                self.assertGreaterEqual(response.status_code, 400)
+                self._assert_state_spent(state, jar)
+
+    def test_unexpected_error_ends_its_binding(self):
+        """A callback that raises still ends the attempt's binding."""
+        jar = {}
+        state, response = self._start_login_response(jar)
+        self._store_cookies(jar, response)
+
+        with self.assertRaises(RuntimeError):
+            self._failing_callback(
+                state,
+                jar,
+                verify_and_decode_id_token={"side_effect": RuntimeError("boom")},
+            )
+
+        self._assert_state_spent(state, jar)
+
+    @override_settings(
+        OPENID_CONNECT_AUTH_SERVERS={
+            "default": {**BINDING_AUTH_SERVERS["default"], "CHECK_EMAIL_VERIFIED": True}
+        }
+    )
+    def test_six_failed_sign_ins_do_not_block_the_next_start(self):
+        """After six refused sign-ins, the browser can start another."""
+        unverified = {
+            "email": "anna@example.com",
+            "email_verified": False,
+            "preferred_username": "anna",
+        }
+        jar = {}
+        for _ in range(6):
+            state, response = self._start_login_response(jar)
+            self._store_cookies(jar, response)
+            response = self._failing_callback(
+                state, jar, verify_and_decode_id_token={"return_value": unverified}
+            )
+            self.assertEqual(response.status_code, 401)
+
+        response = self._login_response(jar)
+
+        self.assertEqual(response.status_code, 302)
 
     def test_rejected_unknown_user_login_ends_its_binding(self):
         """The not-authorized response also ends the attempt's binding.
