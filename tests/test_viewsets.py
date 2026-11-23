@@ -1632,7 +1632,8 @@ class TestUserModelOpenIDConnectViewset(TestCase):
             lambda: view(request, auth_server="default"), RuntimeError, "callback"
         )
 
-        # The callback action wraps the method that holds the tokens.
+        # The tokens are local variables of _callback_response, which
+        # the callback action calls.
         (body,) = [f for f in frames if f.f_code.co_name == "_callback_response"]
         self.assertIn(tokens["access_token"], str(body.f_locals["user_tokens"]))
         self.assertIn("user_tokens", reported_locals(body))
@@ -3850,10 +3851,11 @@ class LoginBrowserBindingTestCase(TestCase):
             return view(request, auth_server="default")
 
     def test_every_terminal_failure_ends_its_binding(self):
-        """A sign-in that fails for good stops counting as pending.
+        """A failed sign-in stops counting as pending.
 
-        Otherwise six failed attempts fill the browser's places, and
-        every later start is refused until they expire.
+        Otherwise six failed attempts take all six of the browser's
+        places, and the login endpoint refuses every later start until
+        they expire.
         """
         unverified = {
             "email": "anna@example.com",

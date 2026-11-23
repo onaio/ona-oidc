@@ -701,11 +701,11 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     ) -> None:
         """End a finished login attempt's binding.
 
-        The callback calls this on every response after the binding
-        check except the username form, and when it raises. The spent
+        The callback calls this when it raises, and on every response
+        after the binding check except the username form. The spent
         state cannot pass the binding check again, and its slot is free
-        for the next start. The browser's other pending logins are
-        untouched.
+        for the next start. The browser's other pending logins keep
+        their bindings.
         """
         if not client.enforce_browser_binding:
             return
@@ -716,13 +716,14 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
     @action(methods=["POST", "GET"], detail=False)
     @sensitive_variables()
     def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
-        # Filled in once the response passes the browser binding check.
+        # _callback_response fills this in once the request passes the
+        # browser binding check.
         bound = {}
         continues = False
         try:
             response = self._callback_response(request, bound, **kwargs)
-            # Only the username form keeps the sign-in going; it hands
-            # the browser a continuation to post back.
+            # Only the username form keeps the sign-in going. Its
+            # response carries a continuation for the browser to post back.
             data = getattr(response, "data", None)
             continues = isinstance(data, dict) and LOGIN_CONTINUATION_FIELD in data
             return response
