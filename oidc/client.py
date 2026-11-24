@@ -6,14 +6,18 @@ import base64
 import hashlib
 import json
 import logging
+import re
 import secrets
 from typing import Any, Callable, Mapping, Optional
 from urllib.parse import quote, urlencode
 
 from django.conf import settings
-from django.core.cache import cache
+from django.core.cache import DEFAULT_CACHE_ALIAS, cache
+from django.core.cache.backends.dummy import DummyCache
+from django.core.cache.backends.filebased import FileBasedCache
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpResponseRedirect
+from django.utils.module_loading import import_string
 from django.views.decorators.debug import sensitive_variables
 
 import jwt
@@ -61,6 +65,197 @@ def state_cache_key(state: str) -> str:
     entries (Django sessions, rate-limit counters, etc.).
     """
     return f"{_STATE_CACHE_PREFIX}{state}"
+
+
+# Login bindings (RFC 9700 §4.4, login CSRF). Each browser carries a
+# random identifier in an HttpOnly cookie, one per response mode. A
+# login start records its state's digest in the shared cache under
+# that identifier. The callback checks that the echoed state is
+# recorded for the identifier the browser sends. It does this before
+# it reads any other cache entry. Starts racing on the same jar send
+# the same identifier, so the order their responses land in does not
+# matter.
+_LOGIN_BROWSER_COOKIE_PREFIX = "oidc_login_browser_"
+# Must outlive the longest time a user plausibly leaves the IdP page
+# open; the state/nonce cache TTLs end a flow earlier anyway.
+LOGIN_BINDING_MAX_AGE = 1800
+# The most pending logins one browser can have per response mode.
+# The login endpoint refuses a start beyond it, so a page cannot grow
+# a browser's bindings without bound. Six leaves room for every login a user
+# plausibly keeps open at once.
+LOGIN_BINDING_SLOTS = 6
+# How long a slot hand-off key lives. A start writes the slot right
+# after taking the hand-off, so the key only has to outlast that.
+_LOGIN_BINDING_HANDOFF_TTL = 60
+
+
+def _state_digest(state: str) -> str:
+    return hashlib.sha256(state.encode("utf-8")).hexdigest()
+
+
+def login_browser_cookie_name(response_mode: str) -> str:
+    """
+    Return the name of the cookie carrying the browser identifier for
+    logins in ``response_mode``.
+
+    Each mode gets its own cookie, so a query-mode start never
+    rewrites the SameSite=None cookie that form_post logins need.
+    """
+    return f"{_LOGIN_BROWSER_COOKIE_PREFIX}{response_mode}"
+
+
+# secrets.token_urlsafe(32) returns 43 characters of the URL-safe
+# alphabet.
+_LOGIN_BROWSER_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{43}")
+
+
+def login_browser_id(cookies: Mapping[str, str], response_mode: str) -> Optional[str]:
+    """
+    Return the browser identifier carried for ``response_mode``, or
+    None when the browser has none or the value is malformed.
+    """
+    value = cookies.get(login_browser_cookie_name(response_mode))
+    if isinstance(value, str) and _LOGIN_BROWSER_ID_PATTERN.fullmatch(value):
+        return value
+    return None
+
+
+def mint_login_browser_id() -> str:
+    """Return a new random browser identifier."""
+    return secrets.token_urlsafe(32)
+
+
+def _login_binding_namespace(browser_id: str) -> str:
+    return f"oidc:login-binding:{_state_digest(browser_id)[:32]}"
+
+
+def _login_binding_key(browser_id: str, digest: str) -> str:
+    # Each login has its own record. The state digest makes the key
+    # unique, so deleting it never removes another login's record.
+    return f"{_login_binding_namespace(browser_id)}:{digest}"
+
+
+def claim_login_binding(browser_id: str, state: str) -> bool:
+    """
+    Bind ``state`` to the browser identified by ``browser_id``.
+
+    Returns False, binding nothing, when the browser already has
+    ``LOGIN_BINDING_SLOTS`` pending logins.
+    """
+    digest = _state_digest(state)
+    key = _login_binding_key(browser_id, digest)
+    # The key is unique to this login, so add() returns False only
+    # when the write failed. The database cache reports a failed set()
+    # no other way.
+    if not cache.add(key, True, LOGIN_BINDING_MAX_AGE):
+        return False
+    namespace = _login_binding_namespace(browser_id)
+    for slot in range(LOGIN_BINDING_SLOTS):
+        slot_key = f"{namespace}:slot:{slot}"
+        if cache.add(slot_key, digest, LOGIN_BINDING_MAX_AGE):
+            return True
+        holder = cache.get(slot_key)
+        if not isinstance(holder, str):
+            continue
+        if cache.get(_login_binding_key(browser_id, holder)) is not None:
+            continue
+        # The holder's login finished or expired, and its record never
+        # comes back, so the slot is free. The hand-off key names the
+        # holder, so exactly one start can take this slot over.
+        if cache.add(f"{slot_key}:after:{holder}", True, _LOGIN_BINDING_HANDOFF_TTL):
+            cache.set(slot_key, digest, LOGIN_BINDING_MAX_AGE)
+            return True
+    cache.delete(key)
+    return False
+
+
+def has_login_binding(browser_id: Optional[str], state: Optional[str]) -> bool:
+    """
+    Whether the browser identified by ``browser_id`` started the login
+    that minted ``state``.
+
+    A missing identifier, or a non-string ``state`` from a malformed
+    callback body, matches nothing and never raises.
+    """
+    if not browser_id or not state or not isinstance(state, str):
+        return False
+    key = _login_binding_key(browser_id, _state_digest(state))
+    return cache.get(key) is not None
+
+
+def release_login_binding(browser_id: Optional[str], state: Optional[str]) -> None:
+    """
+    End the binding of ``state`` to the browser identified by
+    ``browser_id`` once its login has finished.
+
+    It deletes only this login's own record. The key is unique to the
+    state, so a delayed call never removes another login's binding.
+    """
+    if not browser_id or not state or not isinstance(state, str):
+        return
+    cache.delete(_login_binding_key(browser_id, _state_digest(state)))
+
+
+def set_login_binding_timeout(
+    browser_id: Optional[str], state: Optional[str], timeout: int
+) -> None:
+    """
+    Make the binding of ``state`` expire ``timeout`` seconds from now.
+
+    The callback calls this when it shows the username form. The
+    binding then lasts as long as the form's continuation, whether
+    that is shorter or longer than the binding has left. A
+    non-positive timeout ends the binding.
+    """
+    if not browser_id or not state or not isinstance(state, str):
+        return
+    digest = _state_digest(state)
+    cache.touch(_login_binding_key(browser_id, digest), timeout)
+    # The slot that points at this binding must not expire first.
+    # Otherwise a new start could take the slot while the binding
+    # still counts as pending.
+    namespace = _login_binding_namespace(browser_id)
+    for slot in range(LOGIN_BINDING_SLOTS):
+        slot_key = f"{namespace}:slot:{slot}"
+        if cache.get(slot_key) == digest:
+            cache.touch(slot_key, timeout)
+            break
+
+
+# Backends that cannot hold login bindings. The dummy cache stores
+# nothing. The file cache is local to one host, and its add() checks
+# and writes in separate steps.
+_UNSUPPORTED_LOGIN_BINDING_CACHES = (DummyCache, FileBasedCache)
+
+
+def check_login_binding_cache() -> None:
+    """
+    Raise ImproperlyConfigured when any configured auth server enforces
+    browser binding and the default cache cannot hold the bindings.
+
+    Bindings need a cache that every worker shares and whose ``add``
+    is atomic, such as Redis, Memcached or the database cache.
+    """
+    default_config = getattr(default, "OPENID_CONNECT_AUTH_SERVERS", {})["default"]
+    servers = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
+    enforced = any(
+        str_to_bool(
+            config.get(
+                "ENFORCE_BROWSER_BINDING",
+                default_config["ENFORCE_BROWSER_BINDING"],
+            )
+        )
+        for config in servers.values()
+    )
+    backend_path = settings.CACHES[DEFAULT_CACHE_ALIAS]["BACKEND"]
+    if enforced and issubclass(
+        import_string(backend_path), _UNSUPPORTED_LOGIN_BINDING_CACHES
+    ):
+        raise ImproperlyConfigured(
+            "ENFORCE_BROWSER_BINDING needs a cache shared by every worker "
+            "with an atomic add(), such as Redis, Memcached or the "
+            f"database cache; the default cache is {backend_path}."
+        )
 
 
 RESERVED_AUTHORIZE_PARAMS = frozenset(
@@ -182,6 +377,12 @@ class OpenIDClient:
         )
         self.cache_nonces = str_to_bool(
             config[auth_server].get("USE_NONCES", default_config["USE_NONCES"])
+        )
+        self.enforce_browser_binding = str_to_bool(
+            config[auth_server].get(
+                "ENFORCE_BROWSER_BINDING",
+                default_config["ENFORCE_BROWSER_BINDING"],
+            )
         )
         self.should_verify_access_token = str_to_bool(
             config[auth_server].get(
@@ -674,6 +875,12 @@ class OpenIDClient:
                     ("state", state),
                 ]
             )
+        else:
+            # The IdP echoes state back verbatim in every response
+            # mode, so the callback can bind the authorization response
+            # to the browser that started the login. Without PKCE
+            # nothing is cached under it.
+            params.append(("state", secrets.token_urlsafe(32)))
 
         if self.cache_nonces or redirect_after:
             nonce = secrets.token_urlsafe(32)
@@ -685,7 +892,12 @@ class OpenIDClient:
             params.append(("nonce", nonce))
 
         query = urlencode(params, quote_via=quote, safe=_AUTHORIZE_URL_SAFE_CHARS)
-        return HttpResponseRedirect(f"{self.authorization_endpoint}?{query}")
+        response = HttpResponseRedirect(f"{self.authorization_endpoint}?{query}")
+        # The redirect is specific to one browser. Its state, and the
+        # binding cookie the viewset adds, must never come out of a
+        # shared cache into another browser.
+        response["Cache-Control"] = "no-store"
+        return response
 
     def logout(
         self,

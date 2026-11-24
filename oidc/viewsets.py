@@ -10,7 +10,8 @@ import secrets
 import time
 import traceback
 from datetime import UTC, datetime, timedelta
-from typing import List, Optional, Tuple
+from typing import List, Mapping, Optional, Tuple
+from urllib.parse import parse_qs, urlparse
 
 from django.conf import settings
 from django.contrib.auth import get_user_model, login
@@ -46,6 +47,13 @@ from oidc.client import (
     OpenIDClient,
     TokenVerificationFailed,
     UserInfoRequestFailed,
+    claim_login_binding,
+    has_login_binding,
+    login_browser_cookie_name,
+    login_browser_id,
+    mint_login_browser_id,
+    release_login_binding,
+    set_login_binding_timeout,
     state_cache_key,
 )
 from oidc.renderers import SensitiveTemplateHTMLRenderer
@@ -229,6 +237,46 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 redirect_after=redirect_after,
                 extra_params=extra_params,
             )
+            if client.enforce_browser_binding:
+                state = parse_qs(urlparse(response.url).query)["state"][0]
+                browser_id = login_browser_id(request.COOKIES, client.response_mode)
+                is_new_browser = browser_id is None
+                if is_new_browser:
+                    browser_id = mint_login_browser_id()
+                if not claim_login_binding(browser_id, state):
+                    self._clear_login_states({"state": state})
+                    logger.warning(
+                        "Refused login start for auth_server=%r: the browser "
+                        "has too many pending logins, or the cache write failed",
+                        auth_server,
+                    )
+                    return Response(
+                        {
+                            "error": _(
+                                "Too many sign-ins are in progress in this "
+                                "browser. Finish one, or wait a while, then "
+                                "try again."
+                            ),
+                            "error_title": _("Too many sign-ins in progress"),
+                        },
+                        status=status.HTTP_429_TOO_MANY_REQUESTS,
+                        template_name="oidc/oidc_unrecoverable_error.html",
+                    )
+                if is_new_browser:
+                    # form_post callbacks are cross-site POSTs from the
+                    # IdP, which browsers strip Lax cookies from. Browsers
+                    # only accept SameSite=None cookies over HTTPS. A
+                    # session cookie never expires under a pending login,
+                    # and later starts leave it unchanged.
+                    samesite = "None" if client.response_mode == "form_post" else "Lax"
+                    response.set_cookie(
+                        login_browser_cookie_name(client.response_mode),
+                        browser_id,
+                        httponly=True,
+                        secure=samesite == "None" or request.is_secure(),
+                        samesite=samesite,
+                        path="/",
+                    )
             # Delete only csrftoken for the current domain
             response.delete_cookie(
                 "csrftoken",
@@ -368,6 +416,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
     def _stash_login_continuation(
         self,
+        request: HttpRequest,
         client: OpenIDClient,
         id_token: str,
         decoded_id_token: dict,
@@ -379,7 +428,10 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         form to post back.
 
         The entry lasts ``NONCE_CACHE_TIMEOUT`` seconds at most, and never
-        longer than the ID token would still verify.
+        longer than the ID token would still verify. The login's browser
+        binding gets the same lifetime. Once the entry expires, a
+        re-submit no longer says which login it belongs to, so the
+        binding must not keep the browser's place.
         """
         key = secrets.token_urlsafe(_LOGIN_CONTINUATION_KEY_BYTES)
         timeout = client.nonce_cache_timeout
@@ -403,6 +455,12 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             },
             timeout,
         )
+        if client.enforce_browser_binding:
+            set_login_binding_timeout(
+                login_browser_id(request.COOKIES, client.response_mode),
+                state,
+                timeout,
+            )
         return key
 
     def _pop_login_continuation(self, client: OpenIDClient, key: str) -> Optional[dict]:
@@ -646,9 +704,50 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
         if state:
             cache.delete(state_cache_key(state))
 
+    @staticmethod
+    def _expire_login_binding(
+        client: OpenIDClient,
+        request_cookies: Mapping[str, str],
+        state: Optional[str],
+    ) -> None:
+        """End a finished login attempt's binding.
+
+        The callback calls this when it raises, and on every response
+        after the binding check except the username form. The spent
+        state cannot pass the binding check again, and its slot is free
+        for the next start. The browser's other pending logins keep
+        their bindings.
+        """
+        if not client.enforce_browser_binding:
+            return
+        release_login_binding(
+            login_browser_id(request_cookies, client.response_mode), state
+        )
+
     @action(methods=["POST", "GET"], detail=False)
     @sensitive_variables()
-    def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:  # noqa
+    def callback(self, request: HttpRequest, **kwargs: dict) -> HttpResponse:
+        # _callback_response fills this in once the request passes the
+        # browser binding check.
+        bound = {}
+        continues = False
+        try:
+            response = self._callback_response(request, bound, **kwargs)
+            # Only the username form keeps the sign-in going. Its
+            # response carries a continuation for the browser to post back.
+            data = getattr(response, "data", None)
+            continues = isinstance(data, dict) and LOGIN_CONTINUATION_FIELD in data
+            return response
+        finally:
+            if bound and not continues:
+                self._expire_login_binding(
+                    bound["client"], request.COOKIES, bound["state"]
+                )
+
+    @sensitive_variables()
+    def _callback_response(  # noqa
+        self, request: HttpRequest, bound: dict, **kwargs: dict
+    ) -> HttpResponse:
         auth_server = kwargs.get("auth_server")
         client = self._get_client(auth_server=auth_server)
         user = redirect_after = code_verifier = None
@@ -694,6 +793,31 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 server_response = request.query_params
 
             state_value = server_response.get("state")
+            if client.enforce_browser_binding and not has_login_binding(
+                login_browser_id(request.COOKIES, client.response_mode),
+                state_value,
+            ):
+                # This runs before the callback consults any cache
+                # entry or touches the token. The callback only honours
+                # an authorization response in the browser whose login()
+                # minted its state (login CSRF, RFC 9700 §4.4).
+                logger.warning(
+                    "Rejected authorization response not bound to this "
+                    "browser for auth_server=%r",
+                    auth_server,
+                )
+                return Response(
+                    {
+                        "error": _(
+                            "This sign-in was not started in this browser. "
+                            "Kindly retry the authentication process."
+                        ),
+                        "error_title": _("Authentication request verification failed"),
+                    },
+                    status=status.HTTP_401_UNAUTHORIZED,
+                    template_name="oidc/oidc_unrecoverable_error.html",
+                )
+            bound.update(client=client, state=state_value)
             if client.use_pkce and state_value:
                 # Get the original code verifier for PKCE flow. We only
                 # consult the namespaced key — never the raw state value
@@ -801,7 +925,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
 
                     if not user and not self.auto_create_user:
                         self._clear_login_states(server_response)
-                        return Response(
+                        response = Response(
                             {
                                 "error": _(
                                     "The request is not authorized. Please contact the administrator."
@@ -811,6 +935,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             status=status.HTTP_401_UNAUTHORIZED,
                             template_name="oidc/oidc_unrecoverable_error.html",
                         )
+                        return response
 
                     if not user:
                         user_data, missing_fields = self._clean_user_data(user_data)
@@ -821,6 +946,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             ):
                                 data = {
                                     LOGIN_CONTINUATION_FIELD: self._stash_login_continuation(
+                                        request,
                                         client,
                                         id_token,
                                         decoded_id_token,
@@ -851,6 +977,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                             if field:
                                 data = {
                                     LOGIN_CONTINUATION_FIELD: self._stash_login_continuation(
+                                        request,
                                         client,
                                         id_token,
                                         decoded_id_token,
@@ -881,6 +1008,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         {
                             "error": str(e),
                             LOGIN_CONTINUATION_FIELD: self._stash_login_continuation(
+                                request,
                                 client,
                                 id_token,
                                 decoded_id_token,
@@ -915,12 +1043,13 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                         user.last_login = timezone.now()
                         user.save(update_fields=["last_login"])
                         self._clear_login_states(server_response)
-                        return self.generate_successful_response(
+                        response = self.generate_successful_response(
                             request,
                             user,
                             redirect_after=redirect_after,
                             auth_server=auth_server,
                         )
+                        return response
         auth_servers = list(settings.OPENID_CONNECT_AUTH_SERVERS.keys())
         default_auth_server = auth_servers[0] if auth_servers else "default"
         return Response(

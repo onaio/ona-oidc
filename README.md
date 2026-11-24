@@ -208,6 +208,57 @@ rendering of that response carries the same key.
   positive. With `USE_PKCE`, the re-submit
   also needs the PKCE verifier, which expires `PKCE_CODE_CHALLENGE_TIMEOUT`
   seconds after the login started.
+### Browser binding (login CSRF)
+
+Every login carries a `state` value, and the login start records it
+against the browser that started it. The callback only honours an
+authorization response whose echoed `state` was recorded for the
+browser it arrives in, so an attacker cannot replay a response
+captured in one browser into another to log a victim into the
+attacker's account (RFC 9700 §4.4).
+
+The browser is identified by a random, `HttpOnly` session cookie
+(`oidc_login_browser_form_post` or `oidc_login_browser_query`, one per
+response mode). The first login start sets it and later starts reuse
+it unchanged. The recorded logins are kept in Django's cache.
+
+- A browser can have up to six pending logins per response mode, in
+  any mix of tabs and configured providers, and each one completes
+  independently. A start beyond six is refused with a "too many
+  sign-ins in progress" page, and the six pending logins are kept.
+  A pending login expires 30 minutes after it starts. A login that
+  succeeds or fails frees its place at once. A login waiting on the
+  username form keeps its place for as long as the form can be
+  submitted, then frees it.
+- Two logins started at the same moment from a browser that has no
+  identifier cookie yet cannot be told apart from two browsers. The
+  one whose response the browser stores last completes; the other
+  fails once, and retrying it succeeds.
+- **`ENFORCE_BROWSER_BINDING`** (`bool`, default `True`), per auth
+  server. Set it to `False` only for deployments whose logins do not
+  start at this application's login endpoint, such as IdP-initiated
+  logins from the provider's own portal. Those logins can never carry
+  the cookie, so the callback would always reject them.
+- With `RESPONSE_MODE=form_post` the IdP delivers the response as a
+  cross-site POST, so the cookie carries `SameSite=None; Secure` and
+  the deployment must run over HTTPS. `query` mode uses
+  `SameSite=Lax`, with `Secure` set when Django sees the request as
+  HTTPS. A deployment that terminates TLS at a proxy needs Django's
+  `SECURE_PROXY_SSL_HEADER` configured, and the proxy sending the
+  matching header, for Django to see HTTPS.
+- The default cache must be shared by every worker process and
+  support an atomic `add`: Redis, Memcached or the database cache.
+  Local-memory caching works for a single process only. With binding
+  enforced, the dummy and file-based caches fail at startup with
+  `ImproperlyConfigured`. Size the cache so it does not evict entries
+  younger than 30 minutes, as the PKCE and `next=` handling already
+  require; an evicted entry fails that login once. On the database
+  cache, starts racing for a slot whose entry just expired can
+  briefly let a seventh login in.
+- The login endpoint is unauthenticated and writes cache entries per
+  start, so rate-limit it as you would any unauthenticated endpoint.
+- Logins in flight when this feature is first deployed predate the
+  cookie, so the callback rejects them; retrying the login recovers.
 
 ### SSO cookie security
 

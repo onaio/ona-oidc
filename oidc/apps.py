@@ -17,6 +17,13 @@ class oidcConfig(AppConfig):
     verbose_name = _("OpenID Connect")
 
     def ready(self):
+        """
+        Register the request-mode check, and fail at startup when
+        browser binding is enforced on a cache that cannot store login
+        bindings.
+        """
         from oidc.checks import check_request_mode
+        from oidc.client import check_login_binding_cache
 
         register(check_request_mode, Tags.security)
+        check_login_binding_cache()

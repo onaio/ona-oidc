@@ -12,6 +12,7 @@ isort = "*"
 pre-commit = "*"
 mock = "*"
 tox = "*"
+redis = "*"
 
 [packages]
 e1839a8 = {editable = true,path = "."}
