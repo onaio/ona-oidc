@@ -197,6 +197,18 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             config.get("AUTO_CREATE_USER", default_config["AUTO_CREATE_USER"])
         )
 
+    def sso_cookie_domain(self, auth_server: object) -> Optional[str]:
+        """Domain of the SSO cookie that ``auth_server``'s logins set.
+
+        Subclasses that set or delete the SSO cookie themselves must use it
+        so their cookie matches the one this viewset sets.
+        """
+        auth_servers = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
+        domain: Optional[str] = auth_servers.get(auth_server, {}).get(
+            "SSO_COOKIE_DOMAIN", self.cookie_domain
+        )
+        return domain
+
     @sensitive_variables()
     def _get_client(self, auth_server: str) -> Optional[OpenIDClient]:
         auth_config = getattr(settings, "OPENID_CONNECT_AUTH_SERVERS", {})
@@ -366,7 +378,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             if self.use_sso:
                 response.delete_cookie(
                     SSO_COOKIE_NAME,
-                    domain=self.cookie_domain,
+                    domain=self.sso_cookie_domain(auth_server),
                     path=self.cookie_path,
                     samesite=self.cookie_samesite,
                 )
@@ -571,7 +583,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
                 SSO_COOKIE_NAME,
                 value=sso_cookie,
                 max_age=self.cookie_max_age,
-                domain=self.cookie_domain,
+                domain=self.sso_cookie_domain(auth_server),
                 path=self.cookie_path,
                 httponly=self.cookie_httponly,
                 secure=self._resolve_cookie_secure(),

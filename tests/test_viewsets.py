@@ -101,6 +101,17 @@ OPENID_CONNECT_AUTH_SERVERS = {
         "ENFORCE_BROWSER_BINDING": False,
     },
 }
+TENANT_AUTH_SERVERS = {
+    **OPENID_CONNECT_AUTH_SERVERS,
+    "tenant": {
+        **OPENID_CONNECT_AUTH_SERVERS["default"],
+        "SSO_COOKIE_DOMAIN": ".tenant.example.org",
+    },
+    "hostonly": {
+        **OPENID_CONNECT_AUTH_SERVERS["default"],
+        "SSO_COOKIE_DOMAIN": None,
+    },
+}
 OPENID_CONNECT_VIEWSET_CONFIG = {
     "REQUIRED_USER_CREATION_FIELDS": ["email", "first_name", "username"],
     "USER_CREATION_FIELDS": ["email", "first_name", "last_name", "username"],
@@ -2497,7 +2508,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         )
         self.assertIsNone(cache.get(state_cache_key(state)))
 
-    def _callback_cookie(self, mock_verify, mock_encode):
+    def _callback_cookie(self, mock_verify, mock_encode, auth_server="default"):
         mock_verify.return_value = {
             "given_name": "john",
             "family_name": "doe",
@@ -2507,7 +2518,7 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         mock_encode.return_value = "jwt.token.here"
         view = UserModelOpenIDConnectViewset.as_view({"post": "callback"})
         request = self.factory.post("/", data={"id_token": "test.token.here"})
-        response = view(request, auth_server="default")
+        response = view(request, auth_server=auth_server)
         self.assertEqual(response.status_code, 302)
         return response.cookies.get("SSO")
 
@@ -2642,6 +2653,54 @@ class TestUserModelOpenIDConnectViewset(TestCase):
         self.assertEqual(cookie["path"], "/app")
         self.assertEqual(cookie["samesite"], "Strict")
         self.assertEqual(cookie["max-age"], 0)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+        OPENID_CONNECT_AUTH_SERVERS=TENANT_AUTH_SERVERS,
+    )
+    @patch.object(jwt, "encode")
+    @patch.object(OpenIDClient, "verify_and_decode_id_token")
+    def test_cookie_domain_per_provider(self, mock_verify, mock_encode):
+        """A provider's SSO_COOKIE_DOMAIN overrides the global one."""
+        default_cookie = self._callback_cookie(mock_verify, mock_encode)
+        tenant_cookie = self._callback_cookie(
+            mock_verify, mock_encode, auth_server="tenant"
+        )
+        self.assertEqual(default_cookie["domain"], ".example.com")
+        self.assertEqual(tenant_cookie["domain"], ".tenant.example.org")
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+        OPENID_CONNECT_AUTH_SERVERS=TENANT_AUTH_SERVERS,
+    )
+    def test_logout_deletes_cookie_on_provider_domain(self):
+        """Logout deletes the SSO cookie on the provider's own domain."""
+        view = UserModelOpenIDConnectViewset.as_view({"get": "logout"})
+        response = view(self.factory.get("/"), auth_server="tenant")
+        cookie = response.cookies.get("SSO")
+        self.assertIsNotNone(cookie)
+        self.assertEqual(cookie["domain"], ".tenant.example.org")
+        self.assertEqual(cookie["max-age"], 0)
+
+    @override_settings(
+        OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
+        OPENID_CONNECT_AUTH_SERVERS=TENANT_AUTH_SERVERS,
+    )
+    @patch.object(jwt, "encode")
+    @patch.object(OpenIDClient, "verify_and_decode_id_token")
+    def test_provider_cookie_domain_none_is_host_only(self, mock_verify, mock_encode):
+        """A provider SSO_COOKIE_DOMAIN of None gives a host-only cookie."""
+        login_cookie = self._callback_cookie(
+            mock_verify, mock_encode, auth_server="hostonly"
+        )
+        logout_view = UserModelOpenIDConnectViewset.as_view({"get": "logout"})
+        logout_response = logout_view(self.factory.get("/"), auth_server="hostonly")
+        logout_cookie = logout_response.cookies.get("SSO")
+        self.assertEqual(login_cookie.value, "jwt.token.here")
+        self.assertEqual(login_cookie["domain"], "")
+        self.assertIsNotNone(logout_cookie)
+        self.assertEqual(logout_cookie["max-age"], 0)
+        self.assertEqual(logout_cookie["domain"], "")
 
     @override_settings(
         OPENID_CONNECT_VIEWSET_CONFIG=OPENID_CONNECT_VIEWSET_CONFIG,
