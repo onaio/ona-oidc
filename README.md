@@ -279,6 +279,20 @@ The `SSO` cookie emitted on successful authentication honours these keys:
 - **`SSO_COOKIE_HTTPONLY`** (`bool`, default `True`). Leave on unless you
   have a specific reason to expose the cookie to JavaScript.
 - **`SSO_COOKIE_PATH`** (`str`, default `"/"`).
+- **`SSO_COOKIE_DOMAIN`** (`str | None`, default `"localhost"`). A provider in
+  `OPENID_CONNECT_AUTH_SERVERS` can set its own `SSO_COOKIE_DOMAIN`, which
+  wins over this one for logins and logouts through that provider, including
+  `None` for a host-only cookie. Set it when one install serves clients on
+  different parent domains, so each client's browser receives the cookie its
+  login set. That provider's `REDIRECT_URI` and its `logout` route in
+  `oidc.urls` must be served from a host under its domain (the same host,
+  for `None`), or browsers ignore the cookie change without an error. A
+  viewset subclass that sets or deletes the cookie itself should take its
+  domain from `sso_cookie_domain(auth_server)`, and one that calls
+  `generate_successful_response` must pass `auth_server`. Logout deletes the
+  cookie on that provider's domain only, so keep provider domains from
+  overlapping each other or the global one. After changing a provider's
+  domain, cookies set on the old one survive logout until they expire.
 
 The cookie's JWT carries `iat` and `exp` claims: the token expires
 `SSO_COOKIE_MAX_AGE` seconds after it is minted, or after 7 days when
