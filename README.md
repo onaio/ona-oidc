@@ -181,6 +181,15 @@ callback matches. Don't rely on it if your provider lists unverified
 addresses in `emails`, or if `MAP_CLAIM_TO_MODEL` maps another claim
 onto `email`.
 
+Step-up applies the same two settings when it identifies the user by the
+`email` or `emails` claim, and refuses with `email_unverified`. With both
+off, the default, step-up accepts an unverified address. An attacker with
+the user's password could then pass step-up as a provider account holding
+the user's address, using their own factor. Turn `CHECK_EMAIL_VERIFIED` on
+for any server that runs step-up and lets users add an address they don't
+own. An app that builds its own step-up callback must call
+`verify_email_verified` itself.
+
 ### The username form
 
 When a new user needs to choose a username, the callback renders

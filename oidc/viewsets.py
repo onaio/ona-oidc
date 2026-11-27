@@ -59,6 +59,7 @@ from oidc.client import (
 from oidc.renderers import SensitiveTemplateHTMLRenderer
 from oidc.utils import (
     authenticate_sso,
+    email_claim_is_unverified,
     email_usename_to_url_safe,
     get_login_query_param_allowlist,
     get_logout_query_param_allowlist,
@@ -685,14 +686,7 @@ class BaseOpenIDConnectViewset(viewsets.ViewSet):
             return False
         if not has_email_address(user_data):
             return False
-        if "email_verified" not in claims:
-            return bool(client.require_verified_email)
-        verified = claims["email_verified"]
-        # Some providers send the claim as a string.
-        return not (
-            verified is True
-            or (isinstance(verified, str) and verified.strip().lower() == "true")
-        )
+        return email_claim_is_unverified(claims, client.require_verified_email)
 
     def _unverified_email_response(self) -> Response:
         return Response(

@@ -111,6 +111,21 @@ def has_email_address(claims: dict) -> bool:
     return "email" in cleaned or "emails" in cleaned
 
 
+def email_claim_is_unverified(claims: dict, require_claim: bool) -> bool:
+    """Whether ``claims`` fail to mark their address verified.
+
+    A missing ``email_verified`` claim counts as unverified only when
+    ``require_claim`` is set. Some providers send the claim as a string.
+    """
+    if "email_verified" not in claims:
+        return bool(require_claim)
+    verified = claims["email_verified"]
+    return not (
+        verified is True
+        or (isinstance(verified, str) and verified.strip().lower() == "true")
+    )
+
+
 def email_usename_to_url_safe(email_username):
     return email_username.split("@")[0]
 

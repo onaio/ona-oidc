@@ -12,6 +12,7 @@ from rest_framework.test import APIRequestFactory
 
 from oidc.utils import (
     authenticate_sso,
+    email_claim_is_unverified,
     get_login_query_param_allowlist,
     is_safe_login_redirect,
     str_to_bool,
@@ -247,3 +248,28 @@ class TestStrToBool(TestCase):
             with self.subTest(val=val):
                 with self.assertRaises(ImproperlyConfigured):
                     str_to_bool(val)
+
+
+class TestEmailClaimIsUnverified(TestCase):
+    def test_each_shape_of_email_verified(self):
+        cases = [
+            ({"email_verified": True}, False, False),
+            ({"email_verified": "true"}, False, False),
+            ({"email_verified": " TRUE "}, False, False),
+            ({"email_verified": False}, False, True),
+            ({"email_verified": "false"}, False, True),
+            ({}, False, False),
+            ({"email_verified": True}, True, False),
+            ({"email_verified": False}, True, True),
+            ({}, True, True),
+        ]
+        for claims, require_claim, unverified in cases:
+            with self.subTest(claims=claims, require_claim=require_claim):
+                self.assertIs(
+                    email_claim_is_unverified(claims, require_claim), unverified
+                )
+
+    def test_an_unset_require_setting_is_returned_as_a_bool(self):
+        """str_to_bool passes None and ints through unchanged."""
+        self.assertIs(email_claim_is_unverified({}, None), False)
+        self.assertIs(email_claim_is_unverified({}, 1), True)
