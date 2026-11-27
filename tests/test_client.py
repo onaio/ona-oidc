@@ -3,17 +3,23 @@
 import base64
 import hashlib
 import json
+import os
 import secrets
+import sys
+import threading
 import time
 import traceback
+import unittest
 from itertools import product
 from unittest.mock import MagicMock, patch
 from urllib.parse import quote, urlencode
 
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
+from django.core.management import call_command
+from django.db import connections
 from django.http import HttpResponseRedirect
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 from django.test.utils import override_settings
 
 import jwt
@@ -22,6 +28,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 
 from oidc.client import (
+    LOGIN_BINDING_MAX_AGE,
     REDIRECT_AFTER_AUTH,
     REQUEST_MODES,
     NoJSONWebKeyFound,
@@ -29,6 +36,14 @@ from oidc.client import (
     OpenIDClient,
     TokenVerificationFailed,
     UserInfoRequestFailed,
+    check_login_binding_cache,
+    claim_login_binding,
+    has_login_binding,
+    login_browser_cookie_name,
+    login_browser_id,
+    mint_login_browser_id,
+    release_login_binding,
+    set_login_binding_timeout,
     state_cache_key,
 )
 from tests.error_reports import escaped_frames, reported_locals
@@ -99,6 +114,7 @@ class OpenIDClientTestCase(TestCase):
             "scope=openid%20profile&"
             "response_type=code&"
             "response_mode=form_post&"
+            "state=123&"
             "nonce=123"
         )
         client = OpenIDClient("default")
@@ -125,6 +141,33 @@ class OpenIDClientTestCase(TestCase):
     @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
     @patch.object(cache, "set")
     @patch.object(secrets, "token_urlsafe")
+    def test_login_always_carries_state(self, mock_token_urlsafe, _mock_cache_set):
+        """Every login URL carries a state value, with or without PKCE.
+
+        The callback can only bind an authorization response to the
+        browser that started the login if the IdP echoes a state value
+        back, so a flow without state could never be bound.
+        """
+        mock_token_urlsafe.return_value = "123"
+        for auth_server in ("default", "pkce"):
+            with self.subTest(auth_server=auth_server):
+                result_url = OpenIDClient(auth_server).login().url
+                self.assertIn("state=123", result_url)
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    def test_login_redirect_is_never_cached(self):
+        """The login redirect declares no-store.
+
+        The redirect carries a per-browser state (and Set-Cookie), so a
+        shared cache replaying it would hand the same login attempt to
+        several browsers.
+        """
+        response = OpenIDClient("default").login()
+        self.assertEqual(response["Cache-Control"], "no-store")
+
+    @override_settings(OPENID_CONNECT_AUTH_SERVERS=OPENID_CONNECT_AUTH_SERVERS)
+    @patch.object(cache, "set")
+    @patch.object(secrets, "token_urlsafe")
     def test_login_forwards_extra_params(self, mock_token_urlsafe, mock_cache_set):
         mock_token_urlsafe.return_value = "123"
         client = OpenIDClient("default")
@@ -147,6 +190,7 @@ class OpenIDClientTestCase(TestCase):
             "kc_idp_hint=onadata&"
             "login_hint=alice%40example.com&"
             "prompt=login&"
+            "state=123&"
             "nonce=123"
         )
         self.assertIsInstance(result, HttpResponseRedirect)
@@ -163,7 +207,7 @@ class OpenIDClientTestCase(TestCase):
         mock_token_urlsafe.return_value = "123"
         client = OpenIDClient("default")
 
-        unchanged_tail = "response_mode=form_post&nonce=123"
+        unchanged_tail = "response_mode=form_post&state=123&nonce=123"
 
         self.assertTrue(client.login(extra_params=None).url.endswith(unchanged_tail))
         self.assertTrue(client.login(extra_params={}).url.endswith(unchanged_tail))
@@ -202,6 +246,7 @@ class OpenIDClientTestCase(TestCase):
             "response_type=code&"
             "response_mode=form_post&"
             "kc_idp_hint=onadata&"
+            "state=123&"
             "nonce=123"
         )
         self.assertEqual(result_url, expected_url)
@@ -374,6 +419,7 @@ class OpenIDClientTestCase(TestCase):
             "scope=openid%20profile&"
             "response_type=code&"
             "response_mode=form_post&"
+            "state=123&"
             "nonce=123"
         )
         client = OpenIDClient("default")
@@ -1797,3 +1843,505 @@ class IDTokenValidationTestCase(TestCase):
                 decoded = self._verify_with_settings(token, ID_TOKEN_REQUIRE_SUB=value)
                 self.assertNotIn("sub", decoded)
                 self.assertEqual(decoded["aud"], "client")
+
+
+class StateCacheKeyTestCase(TestCase):
+    """Tests for method state_cache_key"""
+
+    def test_keys_carry_the_oidc_state_namespace_prefix(self):
+        """A state's cache key is the state under the oidc:state: namespace.
+
+        The literal prefix is the security boundary that keeps
+        attacker-chosen state values from addressing unrelated cache
+        entries, so renaming it must fail a test.
+        """
+        self.assertEqual(state_cache_key("state-1"), "oidc:state:state-1")
+
+    def test_distinct_states_get_distinct_keys(self):
+        """Two different states never share a cache key."""
+        self.assertNotEqual(state_cache_key("state-1"), state_cache_key("state-2"))
+
+
+class LoginBrowserCookieNameTestCase(TestCase):
+    """Tests for method login_browser_cookie_name"""
+
+    def test_each_response_mode_gets_its_own_cookie(self):
+        """form_post and query identifiers live under different names."""
+        self.assertEqual(
+            login_browser_cookie_name("form_post"), "oidc_login_browser_form_post"
+        )
+        self.assertEqual(login_browser_cookie_name("query"), "oidc_login_browser_query")
+
+
+class LoginBrowserIdTestCase(TestCase):
+    """Tests for method login_browser_id"""
+
+    VALID_ID = "A" * 21 + "b-_" + "9" * 19
+
+    def test_returns_the_identifier_the_mode_cookie_carries(self):
+        """A well-formed identifier is returned for reuse."""
+        cookies = {"oidc_login_browser_form_post": self.VALID_ID}
+
+        self.assertEqual(login_browser_id(cookies, "form_post"), self.VALID_ID)
+
+    def test_missing_cookie_returns_none(self):
+        """A browser without the cookie has no identifier yet."""
+        self.assertIsNone(login_browser_id({}, "form_post"))
+
+    def test_other_modes_cookie_is_not_used(self):
+        """The query identifier never stands in for the form_post one."""
+        cookies = {"oidc_login_browser_query": self.VALID_ID}
+
+        self.assertIsNone(login_browser_id(cookies, "form_post"))
+
+    def test_malformed_identifier_returns_none(self):
+        """Values of the wrong length or alphabet are not reused."""
+        for value in ("", "short", self.VALID_ID + "x", "!" * 43, "a b" * 14 + "c"):
+            with self.subTest(value=value):
+                cookies = {"oidc_login_browser_query": value}
+
+                self.assertIsNone(login_browser_id(cookies, "query"))
+
+
+class MintLoginBrowserIdTestCase(TestCase):
+    """Tests for method mint_login_browser_id"""
+
+    def test_minted_identifier_is_accepted_on_return(self):
+        """A minted identifier reads back from its cookie unchanged."""
+        browser_id = mint_login_browser_id()
+        cookies = {login_browser_cookie_name("query"): browser_id}
+
+        self.assertEqual(login_browser_id(cookies, "query"), browser_id)
+
+    def test_every_call_mints_a_new_identifier(self):
+        """Two browsers never share an identifier."""
+        self.assertEqual(len({mint_login_browser_id() for _ in range(100)}), 100)
+
+
+class ClaimLoginBindingTestCase(TestCase):
+    """Tests for method claim_login_binding"""
+
+    def setUp(self):
+        cache.clear()
+        self.browser = mint_login_browser_id()
+
+    def test_claimed_state_is_bound_to_the_browser(self):
+        """After a claim, the browser holds a binding for that state."""
+        self.assertTrue(claim_login_binding(self.browser, "state-a"))
+
+        self.assertTrue(has_login_binding(self.browser, "state-a"))
+
+    def test_claim_beyond_six_pending_is_rejected(self):
+        """A seventh pending login is refused and not bound."""
+        for i in range(6):
+            self.assertTrue(claim_login_binding(self.browser, f"state-{i}"))
+
+        self.assertFalse(claim_login_binding(self.browser, "state-6"))
+        self.assertFalse(has_login_binding(self.browser, "state-6"))
+
+    def test_rejected_claim_preserves_existing_bindings(self):
+        """Refusing a start keeps all six pending logins completable."""
+        for i in range(6):
+            claim_login_binding(self.browser, f"state-{i}")
+
+        claim_login_binding(self.browser, "state-6")
+
+        for i in range(6):
+            with self.subTest(i=i):
+                self.assertTrue(has_login_binding(self.browser, f"state-{i}"))
+
+    def test_finished_login_frees_its_slot(self):
+        """After a release, a full browser can start one more login."""
+        for i in range(6):
+            claim_login_binding(self.browser, f"state-{i}")
+        release_login_binding(self.browser, "state-2")
+
+        self.assertTrue(claim_login_binding(self.browser, "state-6"))
+        self.assertFalse(claim_login_binding(self.browser, "state-7"))
+        for i in (0, 1, 3, 4, 5, 6):
+            with self.subTest(i=i):
+                self.assertTrue(has_login_binding(self.browser, f"state-{i}"))
+
+    def test_expired_login_frees_its_slot(self):
+        """Abandoned logins stop counting once their binding expires."""
+        now = time.time()
+        with patch("time.time", return_value=now):
+            for i in range(6):
+                claim_login_binding(self.browser, f"state-{i}")
+
+        with patch("time.time", return_value=now + LOGIN_BINDING_MAX_AGE + 1):
+            self.assertTrue(claim_login_binding(self.browser, "state-6"))
+            self.assertTrue(has_login_binding(self.browser, "state-6"))
+
+    def test_delayed_release_cannot_remove_the_binding_that_reused_its_slot(self):
+        """A late callback for an expired login leaves its slot's new owner."""
+        now = time.time()
+        with patch("time.time", return_value=now):
+            claim_login_binding(self.browser, "expired")
+        with patch("time.time", return_value=now + 100):
+            for i in range(5):
+                claim_login_binding(self.browser, f"state-{i}")
+
+        with patch("time.time", return_value=now + LOGIN_BINDING_MAX_AGE + 1):
+            # The only free slot is the expired login's.
+            self.assertTrue(claim_login_binding(self.browser, "newer"))
+            release_login_binding(self.browser, "expired")
+
+            self.assertTrue(has_login_binding(self.browser, "newer"))
+            # The slot stays taken by the newer login.
+            self.assertFalse(claim_login_binding(self.browser, "one-too-many"))
+
+    @override_settings(
+        CACHES={"default": {"BACKEND": "tests.caches.SilentSetFailureCache"}}
+    )
+    def test_claim_never_reports_success_without_a_stored_binding(self):
+        """When the cache drops writes, a claim fails rather than lie."""
+        claimed = claim_login_binding(self.browser, "state-a")
+
+        self.assertEqual(claimed, has_login_binding(self.browser, "state-a"))
+
+    def test_cap_is_per_browser(self):
+        """Another browser's six pending logins leave this one's room."""
+        other = mint_login_browser_id()
+        for i in range(6):
+            claim_login_binding(other, f"other-{i}")
+
+        self.assertTrue(claim_login_binding(self.browser, "state-a"))
+
+
+class HasLoginBindingTestCase(TestCase):
+    """Tests for method has_login_binding"""
+
+    def setUp(self):
+        cache.clear()
+        self.browser = mint_login_browser_id()
+        claim_login_binding(self.browser, "state-a")
+
+    def test_missing_or_malformed_input_matches_nothing(self):
+        """No identifier, or a non-string state, is never bound."""
+        for browser, state in (
+            (None, "state-a"),
+            ("", "state-a"),
+            (self.browser, None),
+            (self.browser, ""),
+            (self.browser, ["state-a"]),
+            (self.browser, {"state": "state-a"}),
+        ):
+            with self.subTest(browser=browser, state=state):
+                self.assertFalse(has_login_binding(browser, state))
+
+    def test_other_browsers_do_not_hold_the_binding(self):
+        """A state bound to one browser does not pass in another."""
+        self.assertFalse(has_login_binding(mint_login_browser_id(), "state-a"))
+
+    def test_unknown_state_is_not_bound(self):
+        """A state this browser never claimed does not pass."""
+        self.assertFalse(has_login_binding(self.browser, "state-b"))
+
+
+class ReleaseLoginBindingTestCase(TestCase):
+    """Tests for method release_login_binding"""
+
+    def setUp(self):
+        cache.clear()
+        self.browser = mint_login_browser_id()
+        claim_login_binding(self.browser, "state-a")
+        claim_login_binding(self.browser, "state-b")
+
+    def test_released_binding_no_longer_matches(self):
+        """A finished login's state cannot be replayed."""
+        release_login_binding(self.browser, "state-a")
+
+        self.assertFalse(has_login_binding(self.browser, "state-a"))
+
+    def test_other_pending_logins_survive(self):
+        """Releasing one binding leaves the browser's others intact."""
+        release_login_binding(self.browser, "state-a")
+
+        self.assertTrue(has_login_binding(self.browser, "state-b"))
+
+    def test_missing_or_malformed_input_is_ignored(self):
+        """Nothing is released, and nothing raises, for bad input."""
+        for browser, state in ((None, "state-a"), (self.browser, None), (self.browser, 7)):
+            with self.subTest(browser=browser, state=state):
+                release_login_binding(browser, state)
+
+        self.assertTrue(has_login_binding(self.browser, "state-a"))
+
+
+
+class SetLoginBindingTimeoutTestCase(TestCase):
+    """Tests for method set_login_binding_timeout"""
+
+    def setUp(self):
+        cache.clear()
+        self.browser = mint_login_browser_id()
+        claim_login_binding(self.browser, "state-a")
+        claim_login_binding(self.browser, "state-b")
+
+    def test_binding_expires_after_the_new_timeout(self):
+        """The binding expires the new timeout from now."""
+        now = time.time()
+        with patch("time.time", return_value=now):
+            set_login_binding_timeout(self.browser, "state-a", 60)
+
+        with patch("time.time", return_value=now + 59):
+            self.assertTrue(has_login_binding(self.browser, "state-a"))
+        with patch("time.time", return_value=now + 61):
+            self.assertFalse(has_login_binding(self.browser, "state-a"))
+            self.assertTrue(has_login_binding(self.browser, "state-b"))
+
+    def test_binding_can_outlive_its_original_expiry(self):
+        """A longer timeout keeps a binding started long ago."""
+        now = time.time()
+        with patch("time.time", return_value=now + LOGIN_BINDING_MAX_AGE - 10):
+            set_login_binding_timeout(self.browser, "state-a", 600)
+
+        with patch("time.time", return_value=now + LOGIN_BINDING_MAX_AGE + 100):
+            self.assertTrue(has_login_binding(self.browser, "state-a"))
+
+    def test_extended_binding_keeps_its_place_past_the_original_expiry(self):
+        """While an extended binding is pending, its slot stays taken."""
+        now = time.time()
+        with patch("time.time", return_value=now):
+            for i in range(4):
+                claim_login_binding(self.browser, f"state-{i}")
+        with patch("time.time", return_value=now + LOGIN_BINDING_MAX_AGE - 10):
+            set_login_binding_timeout(self.browser, "state-a", 600)
+
+        with patch("time.time", return_value=now + LOGIN_BINDING_MAX_AGE + 100):
+            # Every other binding has expired, so five places are free.
+            won = [claim_login_binding(self.browser, f"new-{i}") for i in range(6)]
+
+        self.assertEqual(won, [True] * 5 + [False])
+
+    def test_expired_binding_frees_its_place(self):
+        """Once the shortened binding expires, its slot is free again."""
+        for i in range(4):
+            claim_login_binding(self.browser, f"state-{i}")
+        now = time.time()
+        with patch("time.time", return_value=now):
+            set_login_binding_timeout(self.browser, "state-a", 60)
+
+        with patch("time.time", return_value=now + 61):
+            self.assertTrue(claim_login_binding(self.browser, "state-new"))
+
+    def test_missing_or_malformed_input_is_ignored(self):
+        """Nothing changes, and nothing raises, for bad input."""
+        for browser, state in ((None, "state-a"), (self.browser, None), (self.browser, 7)):
+            with self.subTest(browser=browser, state=state):
+                set_login_binding_timeout(browser, state, 0)
+
+        self.assertTrue(has_login_binding(self.browser, "state-a"))
+
+class _ConcurrentClaimsMixin:
+    """Races real threads through claim_login_binding on one browser."""
+
+    ROUNDS = 20
+
+    def _race(self, browser, states):
+        """Claim every state at once; return {state: won}.
+
+        Every start must end in exactly one outcome, a win or a
+        refusal. A worker that raises fails the test with its error.
+        """
+        barrier = threading.Barrier(len(states))
+        results = {}
+        errors = {}
+
+        def run(state):
+            try:
+                barrier.wait()
+                results[state] = claim_login_binding(browser, state)
+            except Exception as error:
+                errors[state] = error
+            finally:
+                # Each thread opens its own database connection.
+                connections.close_all()
+
+        threads = [threading.Thread(target=run, args=(s,)) for s in states]
+        interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)
+        try:
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        finally:
+            sys.setswitchinterval(interval)
+        if errors:
+            raise next(iter(errors.values()))
+        self.assertEqual(set(results), set(states))
+        self.assertTrue(all(isinstance(won, bool) for won in results.values()))
+        return results
+
+    def _assert_race_safe(self, browser, results, room):
+        self.assertLessEqual(sum(results.values()), room)
+        for state, won in results.items():
+            self.assertEqual(has_login_binding(browser, state), won)
+
+    def _fill_then_free(self, browser, freed):
+        for i in range(6):
+            claim_login_binding(browser, f"p{i}")
+        for i in freed:
+            release_login_binding(browser, f"p{i}")
+
+    def test_racing_starts_never_exceed_six_or_half_bind(self):
+        """Simultaneous starts win at most six slots, and each winner is bound."""
+        for round_ in range(self.ROUNDS):
+            with self.subTest(round=round_):
+                # Rounds start empty so no backend culls entries
+                # mid-round once it reaches its entry limit.
+                cache.clear()
+                browser = mint_login_browser_id()
+                results = self._race(browser, [f"s{i}" for i in range(12)])
+
+                self._assert_race_safe(browser, results, 6)
+
+    def test_racing_starts_on_freed_slots_keep_survivors(self):
+        """Starts racing for freed slots leave pending logins bound."""
+        for round_ in range(self.ROUNDS):
+            with self.subTest(round=round_):
+                # Rounds start empty so no backend culls entries
+                # mid-round once it reaches its entry limit.
+                cache.clear()
+                browser = mint_login_browser_id()
+                self._fill_then_free(browser, (0, 2, 4))
+
+                results = self._race(browser, [f"s{i}" for i in range(6)])
+
+                self._assert_race_safe(browser, results, 3)
+                for i in (1, 3, 5):
+                    self.assertTrue(has_login_binding(browser, f"p{i}"))
+
+    def test_racing_starts_fill_exactly_six_slots(self):
+        """Of twelve simultaneous starts, exactly six win."""
+        for round_ in range(self.ROUNDS):
+            with self.subTest(round=round_):
+                # Rounds start empty so no backend culls entries
+                # mid-round once it reaches its entry limit.
+                cache.clear()
+                browser = mint_login_browser_id()
+                results = self._race(browser, [f"s{i}" for i in range(12)])
+
+                self.assertEqual(sum(results.values()), 6)
+
+    def test_racing_starts_take_every_freed_slot_once(self):
+        """Three freed slots go to exactly three of six racing starts."""
+        for round_ in range(self.ROUNDS):
+            with self.subTest(round=round_):
+                # Rounds start empty so no backend culls entries
+                # mid-round once it reaches its entry limit.
+                cache.clear()
+                browser = mint_login_browser_id()
+                self._fill_then_free(browser, (0, 2, 4))
+
+                results = self._race(browser, [f"s{i}" for i in range(6)])
+
+                self.assertEqual(sum(results.values()), 3)
+                self.assertFalse(claim_login_binding(browser, "late"))
+
+
+class LocMemConcurrentClaimLoginBindingTestCase(_ConcurrentClaimsMixin, TestCase):
+    """Tests for method claim_login_binding"""
+
+    def setUp(self):
+        cache.clear()
+
+
+@override_settings(
+    CACHES={
+        "default": {
+            "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+            "LOCATION": "oidc_test_cache",
+        }
+    }
+)
+class DatabaseConcurrentClaimLoginBindingTestCase(
+    _ConcurrentClaimsMixin, TransactionTestCase
+):
+    """Tests for method claim_login_binding"""
+
+    def setUp(self):
+        call_command("createcachetable", verbosity=0)
+        cache.clear()
+
+
+@unittest.skipUnless(
+    os.environ.get("OIDC_TEST_REDIS_URL"), "OIDC_TEST_REDIS_URL is not set"
+)
+class RedisConcurrentClaimLoginBindingTestCase(_ConcurrentClaimsMixin, TestCase):
+    """Tests for method claim_login_binding"""
+
+    def setUp(self):
+        settings_override = override_settings(
+            CACHES={
+                "default": {
+                    "BACKEND": "django.core.cache.backends.redis.RedisCache",
+                    "LOCATION": os.environ["OIDC_TEST_REDIS_URL"],
+                }
+            }
+        )
+        settings_override.enable()
+        self.addCleanup(settings_override.disable)
+        cache.clear()
+
+
+ENFORCING_SERVERS = {"default": {"CLIENT_ID": "client"}}
+NON_ENFORCING_SERVERS = {
+    "default": {"CLIENT_ID": "client", "ENFORCE_BROWSER_BINDING": False}
+}
+
+
+class CheckLoginBindingCacheTestCase(TestCase):
+    """Tests for method check_login_binding_cache"""
+
+    UNSUPPORTED = {
+        "dummy": {"BACKEND": "django.core.cache.backends.dummy.DummyCache"},
+        "file": {
+            "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
+            "LOCATION": "/tmp/oidc-binding-check",
+        },
+    }
+    SUPPORTED = {
+        "locmem": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"},
+        "database": {
+            "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+            "LOCATION": "oidc_test_cache",
+        },
+        "redis": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": "redis://127.0.0.1:6379",
+        },
+        "memcached": {
+            "BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache",
+            "LOCATION": "127.0.0.1:11211",
+        },
+    }
+
+    def test_unsupported_backend_is_a_configuration_error(self):
+        """Enforcing binding on a cache without shared, atomic state fails."""
+        for name, config in self.UNSUPPORTED.items():
+            with self.subTest(backend=name), override_settings(
+                CACHES={"default": config},
+                OPENID_CONNECT_AUTH_SERVERS=ENFORCING_SERVERS,
+            ):
+                with self.assertRaisesMessage(ImproperlyConfigured, config["BACKEND"]):
+                    check_login_binding_cache()
+
+    def test_supported_backends_pass(self):
+        """Backends with an atomic add() are accepted."""
+        for name, config in self.SUPPORTED.items():
+            with self.subTest(backend=name), override_settings(
+                CACHES={"default": config},
+                OPENID_CONNECT_AUTH_SERVERS=ENFORCING_SERVERS,
+            ):
+                check_login_binding_cache()
+
+    def test_unsupported_backend_is_allowed_without_enforcement(self):
+        """Deployments that turned binding off keep any cache."""
+        with override_settings(
+            CACHES={"default": self.UNSUPPORTED["dummy"]},
+            OPENID_CONNECT_AUTH_SERVERS=NON_ENFORCING_SERVERS,
+        ):
+            check_login_binding_cache()

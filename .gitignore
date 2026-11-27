@@ -12,3 +12,5 @@ dist/
 .tox/
 .eggs
 .python-version
+# Test database left behind by an interrupted test run
+test_db.sqlite3
